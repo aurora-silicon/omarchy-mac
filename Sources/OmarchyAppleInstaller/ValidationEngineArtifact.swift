@@ -18,11 +18,11 @@
   /// An installation engine fix ships in a catalog without rebuilding
   /// and re-notarizing the app. Nothing may require them to be equal.
   public struct ValidationEngineArtifactLocator: Sendable {
-    public static let version = "v0.9.2-omarchy.32"
-    public static let fileName = "installer-v0.9.2-omarchy.32.tar.gz"
+    public static let version = "v0.9.2-omarchy.37"
+    public static let fileName = "installer-v0.9.2-omarchy.37.tar.gz"
     public static let expectedDigest =
-      "sha256:12ba2f04ebdf01854cc791d89d5e577763d97453a88cc521f2092b42d30ea82c"
-    public static let expectedSizeBytes: UInt64 = 17_853_995
+      "sha256:000568ea4a57a9b5b38e9be97b6c6af68eb74b58d4be276eee8f8d80181a5559"
+    public static let expectedSizeBytes: UInt64 = 17_864_321
 
     public init() {}
 
@@ -35,6 +35,12 @@
         ),
         resourceDirectory: Bundle.main.resourceURL
       )
+    }
+
+    public func locate(in bundle: Bundle) throws -> PinnedAsahiEngineArchive {
+      try locate(
+        environment: [:], currentDirectory: bundle.bundleURL,
+        resourceDirectory: bundle.resourceURL)
     }
 
     func locate(

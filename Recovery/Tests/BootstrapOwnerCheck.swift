@@ -18,6 +18,15 @@ import Foundation
       admins: admins, targetUsers: users([]), bootstrap: bootstrap,
       source: { (sourceInfo, users([first])) })
     precondition(result.username == "source-owner" && result.uuid == UUID(uuidString: first))
+    let pending = RecoveryOwner(username: "new-owner", uuid: UUID(uuidString: second)!)
+    let firstBoot = try RecoveryOwnerResolver.resolve(
+      admins: admins, targetUsers: users([]), bootstrap: bootstrap, pendingAccount: pending,
+      source: { (sourceInfo, users([first])) })
+    precondition(firstBoot == result)
+    let authorized = try RecoveryOwnerResolver.resolve(
+      admins: admins, targetUsers: users([second]), bootstrap: bootstrap, pendingAccount: pending,
+      source: { fatalError("authorized recovery account must not fall back to source") })
+    precondition(authorized == pending)
     let actualTarget = try RecoveryOwnerResolver.resolve(
       admins: admins, targetUsers: users([first]), bootstrap: bootstrap,
       source: { fatalError("target owner must not query source") })
@@ -27,6 +36,11 @@ import Foundation
         _ = try work()
         fatalError("unexpected owner authorization")
       } catch {}
+    }
+    refused {
+      try RecoveryOwnerResolver.resolve(
+        admins: admins, targetUsers: users([first]), bootstrap: nil, pendingAccount: pending,
+        source: { fatalError("pending account requires explicitly configured bootstrap") })
     }
     refused {
       try RecoveryOwnerResolver.resolve(

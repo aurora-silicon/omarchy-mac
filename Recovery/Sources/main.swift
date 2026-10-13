@@ -5,7 +5,7 @@ import SwiftUI
 // Explicit macOS previews simulate the flow; enrollment requires paired 1TR.
 // Credentials stay in memory and never enter command arguments or logs.
 enum Stage: Int, CaseIterable {
-  case welcome, installing, complete
+  case welcome, installing, account, complete
 }
 
 final class InstallerModel: ObservableObject {
@@ -15,6 +15,7 @@ final class InstallerModel: ObservableObject {
   @Published var stage: Stage = .welcome
   @Published var password = ""
   @Published var authorizationOwner: RecoveryOwner?
+  @Published var authorizationUsesSourceOwner = false
   @Published var progress = 0.0
   @Published var currentOperation = "Preparing installation"
   @Published var machoBootMode = false {
@@ -29,6 +30,73 @@ final class InstallerModel: ObservableObject {
   @Published var checkingEnvironment = false
   @Published var debugEnabled = false
   @Published var proxyEnabled = false
+  @Published var accountUsername = ""
+  @Published var accountPassword = ""
+  @Published var accountConfirmation = ""
+  @Published var accountAlreadyStarted = false
+  @Published var creatingAccount = false
+
+  var canCreateAccount: Bool {
+    !creatingAccount && RecoveryAccountInstaller.validName(accountUsername)
+      && !accountPassword.isEmpty && accountPassword == accountConfirmation
+      && (try? RecoveryAccountInstaller.validatePassword(Data(accountPassword.utf8))) != nil
+  }
+
+  private func showAccountStep(_ record: RecoveryAccountRecord?, required: Bool = true) {
+    accountUsername = record?.username ?? ""
+    accountAlreadyStarted = record != nil
+    accountPassword = ""
+    accountConfirmation = ""
+    stage =
+      !required
+        || record.map { ["prepared", "awaiting-ownership", "finalized"].contains($0.phase) } == true
+      ? .complete : .account
+  }
+
+  func resumeAccountSetup() {
+    guard RecoveryActions.inRecovery, RecoveryActions.recovering else { return }
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        guard try RecoveryActions.accountCreationRequired() else { return }
+        let record = try RecoveryActions.recoveryAccount()
+        if record == nil || ["allocating", "creating"].contains(record!.phase) {
+          DispatchQueue.main.async { self.showAccountStep(record) }
+        }
+      } catch {
+        DispatchQueue.main.async { self.failure = error.localizedDescription }
+      }
+    }
+  }
+
+  func createRecoveryAccount() {
+    guard canCreateAccount else { return }
+    let name = accountUsername
+    let secret = Data(accountPassword.utf8)
+    accountPassword = ""
+    accountConfirmation = ""
+    creatingAccount = true
+    if RecoveryActions.isPreview {
+      creatingAccount = false
+      stage = .complete
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        try RecoveryActions.createRecoveryAccount(username: name, password: secret)
+        DispatchQueue.main.async {
+          self.creatingAccount = false
+          self.accountAlreadyStarted = true
+          self.stage = .complete
+        }
+      } catch {
+        InstallerLog.shared.append("Recovery account setup failed: " + error.localizedDescription)
+        DispatchQueue.main.async {
+          self.creatingAccount = false
+          self.failure = error.localizedDescription
+        }
+      }
+    }
+  }
 
   func toggleBootFlag(_ name: String) {
     let enabled = !(name == "debug" ? debugEnabled : proxyEnabled)
@@ -65,9 +133,13 @@ final class InstallerModel: ObservableObject {
         InstallerLog.shared.append(
           "Recovery environment verified. Resolving the installation owner.")
         let owner = try RecoveryActions.resolveOwner()
+        let sourceOwner =
+          (try RecoveryActions.configuration.get()).bootstrap?.ownerUUIDs.contains(
+            owner.uuid.uuidString) == true
         DispatchQueue.main.async {
           self.checkingEnvironment = false
           self.authorizationOwner = owner
+          self.authorizationUsesSourceOwner = sourceOwner
           ready()
         }
       } catch {
@@ -144,10 +216,12 @@ final class InstallerModel: ObservableObject {
     DispatchQueue.global(qos: .userInitiated).async {
       do {
         try RecoveryActions.cli(["recover"])
+        let required = try RecoveryActions.accountCreationRequired()
+        let account = required ? try RecoveryActions.recoveryAccount() : nil
         DispatchQueue.main.async {
           self.progress = 1
           self.operations = ["Startup software restored and verified"]
-          self.stage = .complete
+          self.showAccountStep(account, required: required)
         }
       } catch {
         DispatchQueue.main.async {
@@ -185,7 +259,8 @@ final class InstallerModel: ObservableObject {
               self.operations.append(operation)
             }
           }
-          DispatchQueue.main.async { self.stage = .complete }
+          let account = try RecoveryActions.recoveryAccount()
+          DispatchQueue.main.async { self.showAccountStep(account) }
         } catch {
           InstallerLog.shared.append("Setup failed: " + error.localizedDescription)
           DispatchQueue.main.async {
@@ -217,25 +292,38 @@ final class InstallerModel: ObservableObject {
         }
         self.operations.append("\(step) — simulated")
       }
-      self.stage = .complete
+      self.stage = self.recoveryInterface ? .complete : .account
     }
   }
 
-  func restart() {
+  func openStartupDisk() {
     if RecoveryActions.isPreview {
-      reset()
+      let alert = NSAlert()
+      alert.messageText = "Choose your startup disk"
+      alert.informativeText =
+        "In Recovery, this opens Startup Disk. Select \(DestinationVolume.name), click Restart, and authorize your recovery account when asked."
+      alert.runModal()
       return
     }
     guard RecoveryActions.inRecovery else {
       environmentIssue = .notRecovery
       return
     }
-    do { try RecoveryActions.restart() } catch { failure = error.localizedDescription }
+    do {
+      let application = try RecoveryActions.prepareStartupDiskHandoff()
+      NSWorkspace.shared.openApplication(at: application, configuration: .init()) { _, error in
+        if let error {
+          DispatchQueue.main.async { self.failure = error.localizedDescription }
+        }
+      }
+    } catch { failure = error.localizedDescription }
   }
 
   func reset() {
     installationTask?.cancel()
     password.removeAll(keepingCapacity: false)
+    accountPassword.removeAll(keepingCapacity: false)
+    accountConfirmation.removeAll(keepingCapacity: false)
     progress = 0
     operations = []
     stage = .welcome
@@ -301,6 +389,8 @@ struct InstallerView: View {
   @ObservedObject var model: InstallerModel
   @ObservedObject private var log = InstallerLog.shared
   @FocusState private var passwordFocused: Bool
+  @FocusState private var accountField: AccountField?
+  private enum AccountField: Hashable { case username, password, confirmation }
   @State private var activeSheet: InstallerSheet?
   @State private var authorizingRecoveryRepair = false
   @State private var copyingLog = false
@@ -310,6 +400,7 @@ struct InstallerView: View {
     case .welcome: return model.recoveryInterface ? "Repair startup" : "Finish setup"
     case .installing:
       return model.recoveryInterface ? "Restoring startup software" : "Setting up Omarchy"
+    case .account: return "Create a recovery account"
     case .complete: return model.recoveryInterface ? "Recovery complete" : "Installation complete"
     }
   }
@@ -330,11 +421,12 @@ struct InstallerView: View {
         switch model.stage {
         case .welcome: welcome
         case .installing: installing
+        case .account: account
         case .complete: complete
         }
       }
       .frame(maxWidth: 510)
-      .frame(height: 244, alignment: .top)
+      .frame(height: model.stage == .account ? 288 : 244, alignment: .top)
       Spacer(minLength: 12)
 
       Group {
@@ -480,7 +572,9 @@ struct InstallerView: View {
         .font(OmarchyTheme.mono(12)).foregroundColor(OmarchyTheme.secondaryText)
         if !authorizingRecoveryRepair {
           Text(
-            "Use your Omarchy installation’s credentials to adjust its security settings. The security of your macOS installations is unaffected."
+            model.authorizationUsesSourceOwner
+              ? "Use your existing macOS owner’s password to set up Omarchy. Your macOS security settings are unaffected."
+              : "Use your Omarchy installation’s credentials to adjust its security settings. The security of your macOS installations is unaffected."
           )
           .font(OmarchyTheme.mono(12)).foregroundColor(OmarchyTheme.secondaryText)
           .fixedSize(horizontal: false, vertical: true)
@@ -564,7 +658,7 @@ struct InstallerView: View {
   }
 
   private var complete: some View {
-    VStack(spacing: 36) {
+    VStack(spacing: 16) {
       Text("\(DestinationVolume.name) is ready to start.")
         .font(OmarchyTheme.mono(15))
         .foregroundColor(OmarchyTheme.secondaryText)
@@ -574,6 +668,55 @@ struct InstallerView: View {
         .scaledToFit()
         .frame(width: 96, height: 96)
         .accessibilityHidden(true)
+      VStack(spacing: 8) {
+        Text("Select “\(DestinationVolume.name)”, click “Restart…”, then “Authorize Users…”.")
+        Text(
+          "Enter the credentials for your macOS account and the recovery account you just created."
+        )
+        .foregroundColor(OmarchyTheme.secondaryText)
+      }
+      .font(OmarchyTheme.mono(12))
+      .multilineTextAlignment(.center)
+    }
+  }
+
+  private var account: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(
+        "Create a separate recovery account for your Linux volume. Next, authorize it as a volume owner to manage Linux boot settings independently of your macOS account.\nYour Linux login is separate."
+      )
+      .font(OmarchyTheme.mono(12)).foregroundColor(OmarchyTheme.secondaryText)
+      VStack(alignment: .leading, spacing: 5) {
+        Text("Username").font(OmarchyTheme.mono(12))
+        TextField("omarchy-owner", text: $model.accountUsername)
+          .textContentType(.username).autocorrectionDisabled()
+          .disabled(model.accountAlreadyStarted)
+          .focused($accountField, equals: .username)
+          .onSubmit { accountField = .password }
+      }
+      VStack(alignment: .leading, spacing: 5) {
+        Text("Password").font(OmarchyTheme.mono(12))
+        SecureField("Password", text: $model.accountPassword)
+          .privacySensitive()
+          .focused($accountField, equals: .password)
+          .onSubmit { accountField = .confirmation }
+      }
+      VStack(alignment: .leading, spacing: 5) {
+        Text("Retype password").font(OmarchyTheme.mono(12))
+        SecureField("Retype password", text: $model.accountConfirmation)
+          .privacySensitive()
+          .focused($accountField, equals: .confirmation)
+          .onSubmit { model.createRecoveryAccount() }
+      }
+      if model.creatingAccount { ProgressView("Creating account…").controlSize(.small) }
+    }
+    .frame(width: 380)
+    .textFieldStyle(.roundedBorder)
+    .disabled(model.creatingAccount)
+    .onAppear { accountField = model.accountAlreadyStarted ? .password : .username }
+    .onDisappear {
+      model.accountPassword = ""
+      model.accountConfirmation = ""
     }
   }
 
@@ -604,8 +747,12 @@ struct InstallerView: View {
       .disabled(model.checkingEnvironment)
     case .installing:
       EmptyView()
+    case .account:
+      Button("Create Account") { model.createRecoveryAccount() }
+        .buttonStyle(RecoveryPrimaryButtonStyle()).controlSize(.large)
+        .disabled(!model.canCreateAccount)
     case .complete:
-      Button("Restart") { model.restart() }
+      Button("Restart") { model.openStartupDisk() }
         .buttonStyle(RecoveryPrimaryButtonStyle()).controlSize(.large)
     }
   }
@@ -702,6 +849,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if model.recoveryInterface && RecoveryActions.inRecovery {
       // Restoring an already enrolled stage 2 does not change boot policy.
       model.refreshBootFlags()
+      model.resumeAccountSetup()
       do { try RecoveryActions.installCommand() } catch {
         model.failure = error.localizedDescription
       }
@@ -805,7 +953,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     alert.informativeText =
       RecoveryActions.inRecovery
       ? "Install or restore Omarchy startup software. The aura command is available in Recovery Terminal after opening this app."
-      : "This preview demonstrates the Recovery installation flow. Enter any text in the preview password field. No startup software, boot policy, or disk content is changed. Restart returns to the welcome screen in this demo. Utilities → Terminal opens the real Terminal app."
+      : "This preview demonstrates the Recovery installation flow. Enter any text in the preview password field. No startup software, boot policy, or disk content is changed. Restart previews the Startup Disk handoff. Utilities → Terminal opens the real Terminal app."
     alert.runModal()
   }
 

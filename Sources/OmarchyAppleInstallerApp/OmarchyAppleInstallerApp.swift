@@ -174,7 +174,7 @@ struct OmarchyAppleInstallerApp: App {
             Toggle("Slow Playback", isOn: $simulation.slow)
             Toggle("Dark Appearance", isOn: $simulation.dark)
             Divider()
-            Button("Preview Recovery Account…") { simulation.previewsRecoveryAccount = true }
+            Button("Preview Recovery Handoff…") { simulation.previewsRecoveryHandoff = true }
             Picker("Removal Scenario", selection: $simulation.removalScenario) {
               ForEach(RemovalPreviewScenario.allCases, id: \.self) { item in
                 Text(item.rawValue).tag(item)

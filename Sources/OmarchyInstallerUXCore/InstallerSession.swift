@@ -2,6 +2,7 @@
   import Foundation
   import Observation
   import OmarchyAppleInstallerTrustCore
+  import RecoveryAccountCore
 
   public enum InstallerSessionPhase: Equatable, Sendable {
     case inspecting
@@ -727,8 +728,28 @@
 
     public func openStartupDisk() -> Bool { environment.openStartupDisk() }
 
-    public func shutdownAfterAccountSetup() -> Bool {
-      guard recoveryAccount?.record?.phase == "finalized" else { return false }
+    public var powerButtonGuide: MacPowerButtonGuide { lastHost?.powerButtonGuide ?? .generic }
+
+    public func prepareRecoveryHandoffAndShutdown() async throws -> Bool {
+      guard !isBusy else { return false }
+      isBusy = true
+      defer { isBusy = false }
+      let originalTarget = recoveryAccount?.target
+      guard let refreshed = try await environment.inspectRecoveryAccount(),
+        let target = refreshed.target, let ticket = refreshed.ticket
+      else {
+        throw AccountSetupFailure(
+          "No completed installation is present on disk. Run the installation again before shutting down."
+        )
+      }
+      if let originalTarget, originalTarget != target {
+        throw AccountSetupFailure("The Recovery target changed. Inspect the installation again.")
+      }
+      let reply = try await environment.prepareRecoveryHandoff(ticket: ticket)
+      guard reply.target == target, reply.ticket == ticket else {
+        throw AccountSetupFailure("The Recovery target changed. Inspect the installation again.")
+      }
+      recoveryAccount = reply
       return environment.requestShutdown()
     }
 
@@ -736,11 +757,27 @@
       switch completion.nextAction {
       case .enterRecovery, .attachInstallationMedia:
         if let handoff = completion.handoff {
-          phase = .awaitingRecovery(handoff)
+          if isSimulation {
+            phase = .awaitingRecovery(handoff)
+            return
+          }
           do {
-            recoveryAccount = try await environment.inspectRecoveryAccount()
+            guard let found = try await environment.inspectRecoveryAccount(),
+              found.target != nil, found.ticket != nil
+            else {
+              throw AccountSetupFailure(
+                "The completion record does not match an installation on disk. It may belong to a removed installation. Run the installation again."
+              )
+            }
+            recoveryAccount = found
+            phase = .awaitingRecovery(handoff)
           } catch {
             recoveryAccount = nil
+            phase = .failed(
+              FailureDisplay(
+                headline: "Installation could not be verified",
+                plainDetail: error.localizedDescription,
+                remedy: "Check the disk again before continuing."))
           }
         } else {
           phase = .done(completion)

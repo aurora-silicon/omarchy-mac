@@ -53,8 +53,21 @@ helper_identifier="$INSTALLER_HELPER_IDENTIFIER"
 app_name="$INSTALLER_APP_NAME.app"
 app_executable_name="OmarchyAppleInstallerApp"
 daemon_plist_name="$helper_identifier.plist"
-engine_file_name="installer-v0.9.2-omarchy.32.tar.gz"
-engine_digest="12ba2f04ebdf01854cc791d89d5e577763d97453a88cc521f2092b42d30ea82c"
+read -r engine_file_name engine_digest engine_size < <(
+  python3 - "$package_directory/Sources/OmarchyAppleInstaller/ValidationEngineArtifact.swift" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text()
+name = re.search(r'public static let fileName = "(installer-[A-Za-z0-9.-]+\.tar\.gz)"', source)
+digest = re.search(r'public static let expectedDigest\s*=\s*"sha256:([0-9a-f]{64})"', source)
+size = re.search(r'public static let expectedSizeBytes: UInt64 = ([0-9_]+)', source)
+if not all((name, digest, size)):
+    raise SystemExit("Cannot read the runtime validation-engine identity")
+print(name[1], digest[1], int(size[1].replace("_", "")))
+PY
+)
 
 if [[ $signing_identity == "-" ]]; then
   client_requirement="identifier \"$app_identifier\""
@@ -177,6 +190,8 @@ actual_engine_digest="$(/usr/bin/shasum -a 256 "$engine_source" | awk '{print $1
 if [[ $actual_engine_digest != "$engine_digest" ]]; then
   fail "the pinned validation engine digest is incorrect"
 fi
+[[ $(stat -f %z "$engine_source") == "$engine_size" ]] \
+  || fail "the pinned validation engine size is incorrect"
 
 mkdir -p "$output_directory"
 final_app="$output_directory/$app_name"
@@ -264,6 +279,8 @@ install -m 0755 "$app_binary" "$contents/MacOS/$app_executable_name"
 install -m 0755 "$helper_binary" "$helper_path"
 install -m 0444 "$release_descriptor" "$resources/Release/release.json"
 install -m 0444 "$trust_root" "$resources/Release/trust-root.ed25519.pub"
+install -m 0444 "$package_directory/Design/Assets/MacBookPowerButton.png" "$resources/MacBookPowerButton.png"
+install -m 0444 "$package_directory/Design/Assets/MacDesktopPowerButton.png" "$resources/MacDesktopPowerButton.png"
 mkdir -p "$resources/RecoveryTemplate"
 /usr/bin/ditto "$recovery_template" "$resources/RecoveryTemplate/Omarchy Installer.app"
 codesign --force --sign "$signing_identity" "${timestamp_arguments[@]}" \

@@ -59,7 +59,7 @@
         config["prebootUUID"] as? String == target.prebootUUID
       else { throw AccountSetupFailure("The Recovery app does not match this installation.") }
       try RecoveryAccountInstaller.refreshMountedGroup(target)
-      try RecoveryVersionMetadata.showForStartupDisk(system: system)
+      try RecoveryVersionMetadata.hideForInitialRecovery(system: system)
       let executable = "Contents/MacOS/OmarchyRecovery"
       if try Data(contentsOf: destination.appendingPathComponent(executable))
         == Data(contentsOf: source.appendingPathComponent(executable))
@@ -168,6 +168,11 @@
       guard files.count <= 128 else {
         throw AccountSetupFailure("Too many installation records need review.")
       }
+      let diskBytes = try AccountNativeCommand.checked("/usr/sbin/diskutil", ["list", "-plist"])
+      guard
+        let diskList = try PropertyListSerialization.propertyList(
+          from: diskBytes, format: nil) as? [String: Any]
+      else { throw AccountSetupFailure("Couldn’t inspect the installed partitions.") }
       var found = [CompletedRecoveryInstallation]()
       for file in files {
         let bytes = try RecoveryAccountInstaller.protectedRead(file, limit: 4 << 20)
@@ -184,6 +189,9 @@
         }
         let identity = try completedEvidence(transcript: bytes, evidence: evidence)
         if let current = try? liveTarget(group: identity.group, esp: identity.esp) {
+          do {
+            try requireLivePartitions(evidence: evidence, listing: diskList)
+          } catch { continue }
           found.append(
             CompletedRecoveryInstallation(
               binding: file.deletingPathExtension().lastPathComponent, target: current,
@@ -197,6 +205,36 @@
           "Choose which completed installation should receive a recovery account.")
       }
       return found.first
+    }
+
+    static func requireLivePartitions(evidence: [String: Data], listing: [String: Any]) throws {
+      guard let targetBytes = evidence["apfs-target-prepared"],
+        let installedBytes = evidence["stub-and-esp-installed"],
+        let target = try JSONSerialization.jsonObject(with: targetBytes) as? [String: Any],
+        let installed = try JSONSerialization.jsonObject(with: installedBytes) as? [String: Any],
+        let targetID = target["uuid"] as? String, let targetSize = target["size_bytes"] as? UInt64,
+        let parts = installed["populated_partitions"] as? [[String: Any]], parts.count == 3,
+        let disks = listing["AllDisksAndPartitions"] as? [[String: Any]]
+      else { throw AccountSetupFailure("The installation’s partition record is incomplete.") }
+      let live = disks.flatMap { $0["Partitions"] as? [[String: Any]] ?? [] }
+      var required = [(targetID, targetSize)]
+      for part in parts {
+        guard let id = part["partition_uuid"] as? String,
+          let size = part["partition_size_bytes"] as? UInt64
+        else { throw AccountSetupFailure("The installation’s partition record is incomplete.") }
+        required.append((id, size))
+      }
+      guard Set(required.map { $0.0.lowercased() }).count == 4 else {
+        throw AccountSetupFailure("The installation’s partition identities are ambiguous.")
+      }
+      for (id, size) in required {
+        let matches = live.filter { ($0["DiskUUID"] as? String)?.lowercased() == id.lowercased() }
+        guard UUID(uuidString: id) != nil, size > 0, matches.count == 1,
+          matches[0]["Size"] as? UInt64 == size
+        else {
+          throw AccountSetupFailure("The recorded installation partitions are absent or changed.")
+        }
+      }
     }
 
     private static func liveTarget(group: String, esp: String) throws -> RecoveryAccountTarget {

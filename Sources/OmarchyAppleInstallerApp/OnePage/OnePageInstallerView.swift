@@ -45,17 +45,11 @@ struct OnePageInstallerView: View {
   var body: some View {
     Group {
       if let account = session.recoveryAccount, let target = account.target {
-        RecoveryAccountSetupView(volumeName: target.volumeName, session: session)
+        RecoveryHandoffView(volumeName: target.volumeName, session: session)
+      } else if case .awaitingRecovery = session.phase {
+        RecoveryHandoffView(volumeName: "Omarchy", session: session.isSimulation ? nil : session)
       } else {
-        #if DEBUG
-          if session.isSimulation, case .awaitingRecovery = session.phase {
-            RecoveryAccountSetupView(volumeName: "Omarchy")
-          } else {
-            installerPage
-          }
-        #else
-          installerPage
-        #endif
+        installerPage
       }
     }
     .foregroundStyle(OmarchyTheme.text)
@@ -626,7 +620,7 @@ private struct PrefetchStrip: View {
   private var accessory: String? {
     switch state {
     case .downloading(let completed, let total), .paused(let completed, let total):
-      total > 0
+      total > 0 && completed < total
         ? "\(PlainLanguage.bytes(completed)) of \(PlainLanguage.bytes(total))" : nil
     default:
       nil
@@ -672,7 +666,7 @@ private struct DownloadPanel: View {
   @State private var lastTotal: UInt64 = 0
 
   private var package: AssetProgressRow? {
-    update.rows.first { $0.role == "payload" } ?? update.rows.first
+    update.rows.first { $0.role == "payload" }
   }
 
   var body: some View {
@@ -717,12 +711,13 @@ private struct DownloadPanel: View {
   }
 
   private var accessory: String? {
-    let total = (package?.totalBytes ?? 0) > 0 ? package!.totalBytes : lastTotal
-    guard total > 0 else {
+    guard update.stage == .downloading, let package,
+      package.totalBytes > 0, package.bytesCompleted < package.totalBytes
+    else {
       return nil
     }
-    let completed = (package?.totalBytes ?? 0) > 0 ? package!.bytesCompleted : lastCompleted
-    return "\(PlainLanguage.bytes(completed)) of \(PlainLanguage.bytes(total))"
+    return
+      "\(PlainLanguage.bytes(package.bytesCompleted)) of \(PlainLanguage.bytes(package.totalBytes))"
   }
 }
 

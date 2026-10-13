@@ -35,7 +35,9 @@ let package = Package(
   ],
   targets: [
     .target(name: "RecoveryAuthorization", path: "Recovery/Native", publicHeadersPath: "."),
-    .target(name: "RecoveryAccountCore", dependencies: ["RecoveryAuthorization"], path: "Recovery/Sources/Account"),
+    .target(
+      name: "RecoveryAccountCore", dependencies: ["RecoveryAuthorization"],
+      path: "Recovery/Sources/Account"),
     .target(
       name: "OmarchyInstallerSystem",
       path: "Sources/OmarchyInstallerSystem",
@@ -45,6 +47,11 @@ let package = Package(
       name: "RecoveryAccountQualification",
       dependencies: ["RecoveryAccountCore"],
       path: "Development/RecoveryAccountQualification"
+    ),
+    .executableTarget(
+      name: "InstallerReadinessCheck",
+      dependencies: ["OmarchyAppleInstallerTrustCore"],
+      path: "Development/ReadinessCheck"
     ),
     .executableTarget(
       name: "OmarchyInstallerIdentityGenerator",

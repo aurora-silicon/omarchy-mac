@@ -273,7 +273,7 @@ public enum RecoveryAccountInstaller {
     }
     guard ["prepared", "awaiting-ownership", "finalized"].contains(saved.phase) else {
       throw AccountSetupFailure(
-        "Finish creating the recovery account in the macOS installer first.")
+        "Finish creating the recovery account in this Recovery installer first.")
     }
     return saved
   }

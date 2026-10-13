@@ -8,20 +8,39 @@
     func testM3CapableInspectionIdentityIsPinnedExactly() {
       XCTAssertEqual(
         ValidationEngineArtifactLocator.version,
-        "v0.9.2-omarchy.32"
+        "v0.9.2-omarchy.37"
       )
       XCTAssertEqual(
         ValidationEngineArtifactLocator.fileName,
-        "installer-v0.9.2-omarchy.32.tar.gz"
+        "installer-v0.9.2-omarchy.37.tar.gz"
       )
       XCTAssertEqual(
         ValidationEngineArtifactLocator.expectedDigest,
-        "sha256:12ba2f04ebdf01854cc791d89d5e577763d97453a88cc521f2092b42d30ea82c"
+        "sha256:000568ea4a57a9b5b38e9be97b6c6af68eb74b58d4be276eee8f8d80181a5559"
       )
       XCTAssertEqual(
         ValidationEngineArtifactLocator.expectedSizeBytes,
-        17_853_995
+        17_864_321
       )
+    }
+
+    func testAppBundleLookupUsesThePinnedEngineFilename() throws {
+      let root = try makeDirectory()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let app = root.appendingPathComponent("Fixture.app")
+      let contents = app.appendingPathComponent("Contents")
+      let resources = contents.appendingPathComponent("Resources/Engine/artifacts")
+      try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+      let info = try PropertyListSerialization.data(
+        fromPropertyList: ["CFBundleIdentifier": "org.aurorasilicon.engine-fixture"],
+        format: .xml, options: 0)
+      try info.write(to: contents.appendingPathComponent("Info.plist"))
+      let bundle = try XCTUnwrap(Bundle(url: app))
+      XCTAssertThrowsError(try ValidationEngineArtifactLocator().locate(in: bundle))
+      let engine = resources.appendingPathComponent(ValidationEngineArtifactLocator.fileName)
+      try Data("fixture".utf8).write(to: engine)
+      XCTAssertEqual(
+        try ValidationEngineArtifactLocator().locate(in: bundle).fileURL.path, engine.path)
     }
 
     func testEnvironmentOverrideSelectsExactValidationArtifactIdentity()

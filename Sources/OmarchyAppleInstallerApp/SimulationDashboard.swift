@@ -14,7 +14,7 @@
     var environment = InstallerSimulationEnvironment(scenario: launchScenario)
     var canChangeChannel = false
     var session: InstallerSession?
-    var previewsRecoveryAccount = false
+    var previewsRecoveryHandoff = false
     var removalScenario = RemovalPreviewScenario.success
 
     static var launchScenario: InstallerSimulationScenario {
@@ -33,7 +33,7 @@
       generation = UUID()
       canChangeChannel = false
       session = nil
-      previewsRecoveryAccount = false
+      previewsRecoveryHandoff = false
     }
 
     func showGuidance() {
@@ -52,8 +52,8 @@
 
     var body: some View {
       Group {
-        if controls.previewsRecoveryAccount {
-          RecoveryAccountSetupView(volumeName: "Omarchy")
+        if controls.previewsRecoveryHandoff {
+          RecoveryHandoffView(volumeName: "Omarchy")
         } else {
           OnePageInstallerView(
             environment: controls.environment, channel: controls.channel,

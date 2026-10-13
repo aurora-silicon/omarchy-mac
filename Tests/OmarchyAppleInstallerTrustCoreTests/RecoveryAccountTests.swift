@@ -6,6 +6,44 @@
   @testable import OmarchyAppleInstallerTrustCore
 
   final class RecoveryAccountTests: XCTestCase {
+    func testCompletedInstallationRequiresLivePartitionIdentities() throws {
+      let ids = (1...4).map { String(format: "%08d-1111-4111-8111-111111111111", $0) }
+      let evidence = [
+        "apfs-target-prepared": try JSONSerialization.data(withJSONObject: [
+          "uuid": ids[0], "size_bytes": 6000,
+        ]),
+        "stub-and-esp-installed": try JSONSerialization.data(withJSONObject: [
+          "populated_partitions": (1...3).map {
+            ["partition_uuid": ids[$0], "partition_size_bytes": 1000] as [String: Any]
+          }
+        ]),
+      ]
+      let parts: [[String: Any]] = ids.enumerated().map {
+        [
+          "DiskUUID": $0.element, "Size": $0.offset == 0 ? 6000 : 1000,
+          "DeviceIdentifier": "disk9s\($0.offset + 3)",
+        ]
+      }
+      func check(_ partitions: [[String: Any]]) throws {
+        let bytes = try PropertyListSerialization.data(
+          fromPropertyList: ["AllDisksAndPartitions": [["Partitions": partitions]]],
+          format: .xml, options: 0)
+        let listing = try XCTUnwrap(
+          PropertyListSerialization.propertyList(from: bytes, format: nil) as? [String: Any])
+        try RecoveryAccountHandoff.requireLivePartitions(
+          evidence: evidence, listing: listing)
+      }
+      try check(parts)
+      // Device renumbering is harmless; UUID and size carry the identity.
+      try check(parts.map { $0.merging(["DeviceIdentifier": "renumbered"]) { _, new in new } })
+      XCTAssertThrowsError(try check(Array(parts.dropLast())))
+      XCTAssertThrowsError(try check(parts + [parts[0]]))
+      var resized = parts
+      resized[3]["Size"] = 2000
+      XCTAssertThrowsError(try check(resized))
+      XCTAssertThrowsError(try check([]))
+    }
+
     func testNativeStartupDiskRequiresValidStubVersionMetadata() throws {
       let valid = try PropertyListSerialization.data(
         fromPropertyList: [

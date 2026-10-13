@@ -47,6 +47,10 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       action: "prepare", ticket: ticket, username: username, password: password)
   }
 
+  func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply {
+    try await accountClient().recoveryAccount(action: "handoff", ticket: ticket)
+  }
+
   func finalizeRecoveryAccount(ticket: String, password: Data) async throws -> RecoveryAccountReply
   {
     try await accountClient().recoveryAccount(
@@ -627,7 +631,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       blockingReason: blockingReason(host: host, engineFailure: engineFailure),
       existingInstalls: existing,
       spaceShortfall: space?.shortfall,
-      unsupportedModel: unsupportedModel
+      unsupportedModel: unsupportedModel,
+      powerButtonGuide: MacPowerButtonGuide(
+        deviceIdentifier: host.identity.deviceIdentifier, modelIdentifier: host.identity.model)
     )
   }
 
