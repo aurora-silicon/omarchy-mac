@@ -62,6 +62,8 @@ final class InstallerModel: ObservableObject {
     DispatchQueue.global(qos: .userInitiated).async {
       do {
         try RecoveryActions.requireEnrollmentEnvironment()
+        InstallerLog.shared.append(
+          "Recovery environment verified. Resolving the installation owner.")
         let owner = try RecoveryActions.resolveOwner()
         DispatchQueue.main.async {
           self.checkingEnvironment = false
@@ -69,6 +71,7 @@ final class InstallerModel: ObservableObject {
           ready()
         }
       } catch {
+        InstallerLog.shared.append("Recovery preflight failed: " + error.localizedDescription)
         DispatchQueue.main.async {
           self.checkingEnvironment = false
           self.password.removeAll(keepingCapacity: false)
@@ -184,6 +187,7 @@ final class InstallerModel: ObservableObject {
           }
           DispatchQueue.main.async { self.stage = .complete }
         } catch {
+          InstallerLog.shared.append("Setup failed: " + error.localizedDescription)
           DispatchQueue.main.async {
             if let issue = error as? EnrollmentGateIssue {
               self.environmentIssue = issue

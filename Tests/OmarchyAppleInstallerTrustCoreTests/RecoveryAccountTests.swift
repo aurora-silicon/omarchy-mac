@@ -6,6 +6,21 @@
   @testable import OmarchyAppleInstallerTrustCore
 
   final class RecoveryAccountTests: XCTestCase {
+    func testNativeStartupDiskRequiresValidStubVersionMetadata() throws {
+      let valid = try PropertyListSerialization.data(
+        fromPropertyList: [
+          "ProductName": "macOS", "ProductVersion": "26.6.2", "ProductBuildVersion": "25G83",
+        ], format: .xml, options: 0)
+      try RecoveryVersionMetadata.validate(valid)
+      for value in [
+        [String: String](), ["ProductName": "macOS"],
+        ["ProductName": "macOS", "ProductVersion": "26.6.2", "ProductBuildVersion": ""],
+      ] {
+        let data = try PropertyListSerialization.data(
+          fromPropertyList: value, format: .xml, options: 0)
+        XCTAssertThrowsError(try RecoveryVersionMetadata.validate(data))
+      }
+    }
     let target = RecoveryAccountTarget(
       volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
       dataUUID: "22222222-2222-4222-8222-222222222222",

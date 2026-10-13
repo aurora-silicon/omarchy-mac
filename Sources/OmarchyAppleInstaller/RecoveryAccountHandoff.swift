@@ -58,6 +58,8 @@
         config["groupUUID"] as? String == target.groupUUID,
         config["prebootUUID"] as? String == target.prebootUUID
       else { throw AccountSetupFailure("The Recovery app does not match this installation.") }
+      try RecoveryAccountInstaller.refreshMountedGroup(target)
+      try RecoveryVersionMetadata.showForStartupDisk(system: system)
       let executable = "Contents/MacOS/OmarchyRecovery"
       if try Data(contentsOf: destination.appendingPathComponent(executable))
         == Data(contentsOf: source.appendingPathComponent(executable))

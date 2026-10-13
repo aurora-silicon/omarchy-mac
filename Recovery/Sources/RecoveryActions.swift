@@ -65,6 +65,7 @@ enum RecoveryActions {
       isRecovery: true, isRoot: true,
       policy: String(decoding: report, as: UTF8.self))
     {
+      InstallerLog.shared.append("Recovery environment rejected: \(issue.title). \(issue.message)")
       throw issue
     }
   }
@@ -263,10 +264,17 @@ enum RecoveryActions {
   ) throws {
     // Repeat the check here so bypassing the GUI cannot reach any write.
     try requireEnrollmentEnvironment()
+    InstallerLog.shared.append(
+      "Recovery environment verified. Checking the installation’s recovery account.")
     if let selected = try RecoveryAccountInstaller.selectedOwner(system: volume) {
+      InstallerLog.shared.append(
+        "Verifying the recovery account and completing its ownership metadata.")
       let final = try RecoveryAccountInstaller.finalize(
         selected.target, password: Data(password.utf8))
+      InstallerLog.shared.append(
+        "Recovery account phase: " + final.phase + ". Checking volume ownership.")
       try RecoveryAccountInstaller.requireOwnership(final)
+      InstallerLog.shared.append("Recovery account ownership verified.")
     }
     let config = try configuration.get()
     try check(

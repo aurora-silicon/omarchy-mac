@@ -69,6 +69,20 @@ public struct AccountCommandResult: Sendable {
 }
 
 public enum AccountNativeCommand {
+  public static func volumeGroupUUID(device: String) throws -> String? {
+    var buffer = [CChar](repeating: 0, count: 37)
+    let status = buffer.withUnsafeMutableBufferPointer {
+      omarchy_apfs_volume_group_uuid(device, $0.baseAddress, $0.count)
+    }
+    // The native reader returns this when the mounted-volume registry has no
+    // group property yet. diskutil can infer a group and mask this condition.
+    if status == 0xc002 { return nil }
+    guard status == 0 else {
+      throw AccountSetupFailure("Couldn’t read the mounted APFS group metadata.")
+    }
+    return String(cString: buffer)
+  }
+
   public static func run(
     _ executable: String, _ arguments: [String], input: Data = Data(), timeout: UInt32 = 60
   ) throws -> AccountCommandResult {
@@ -93,7 +107,8 @@ public enum AccountNativeCommand {
     defer { omarchy_account_free(output) }
     guard status >= 0, status != 126, status != 127 else {
       throw AccountSetupFailure(
-        "A native account command could not finish. Your installation has been preserved.")
+        "The native \(URL(fileURLWithPath: executable).lastPathComponent) command could not finish (status \(status)). Your installation has been preserved."
+      )
     }
     return AccountCommandResult(
       status: status, output: output.map { Data(bytes: $0, count: size) } ?? Data())
@@ -126,6 +141,42 @@ public enum AccountNativeCommand {
 public enum RecoveryAccountInstaller {
   public static let stateRelativePath = "private/var/db/omarchy-recovery-account/state.json"
   public static let pointerRelativePath = "Aurora/Recovery/account-target.json"
+
+  public static func refreshMountedGroup(_ target: RecoveryAccountTarget) throws {
+    try target.validate()
+    guard geteuid() == 0,
+      (try AccountNativeCommand.disk("/")["APFSVolumeGroupID"] as? String)?.uppercased()
+        != target.groupUUID,
+      (try AccountNativeCommand.disk(target.systemUUID)["APFSVolumeGroupID"] as? String)?
+        .uppercased() == target.groupUUID
+    else {
+      throw AccountSetupFailure("The running system cannot be refreshed as an installation target.")
+    }
+    let before = try AccountNativeCommand.disk(target.dataUUID)
+    guard (before["VolumeUUID"] as? String)?.uppercased() == target.dataUUID,
+      (before["APFSVolumeGroupID"] as? String)?.uppercased() == target.groupUUID,
+      let device = before["DeviceIdentifier"] as? String,
+      device.range(of: "\\Adisk[0-9]+s[0-9]+\\z", options: .regularExpression) != nil
+    else { throw AccountSetupFailure("The account Data volume does not match the installation.") }
+    let mountedGroup = try AccountNativeCommand.volumeGroupUUID(device: "/dev/" + device)
+    if mountedGroup == target.groupUUID { return }
+    guard mountedGroup == nil else {
+      throw AccountSetupFailure("The mounted Data volume belongs to a different group.")
+    }
+    // The Data volume is mounted before Asahi creates its paired System
+    // volume. A normal remount refreshes the group property StorageKit reads.
+    // Never force an unmount or change an on-disk group UUID.
+    _ = try AccountNativeCommand.checked("/usr/sbin/diskutil", ["unmount", device])
+    _ = try AccountNativeCommand.checked("/usr/sbin/diskutil", ["mount", device])
+    let after = try AccountNativeCommand.disk(target.dataUUID)
+    guard (after["VolumeUUID"] as? String)?.uppercased() == target.dataUUID,
+      (after["APFSVolumeGroupID"] as? String)?.uppercased() == target.groupUUID,
+      try AccountNativeCommand.volumeGroupUUID(device: "/dev/" + device) == target.groupUUID
+    else {
+      throw AccountSetupFailure(
+        "The mounted APFS group metadata did not refresh. Your installation was preserved.")
+    }
+  }
 
   public static func validName(_ name: String) -> Bool {
     name.range(of: "\\A[a-z][a-z0-9_-]{0,30}\\z", options: .regularExpression) != nil
@@ -654,7 +705,7 @@ public enum RecoveryAccountInstaller {
         let file = ctx.metadata.appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: file.path) {
           try FileManager.default.copyItem(at: file, to: backup.appendingPathComponent(name))
-          _ = try AccountNativeCommand.checked("/bin/chflags", ["noschg", file.path])
+          _ = try AccountNativeCommand.checked("/usr/bin/chflags", ["noschg", file.path])
         }
       }
       _ = try AccountNativeCommand.checked(
@@ -700,6 +751,7 @@ public enum RecoveryAccountInstaller {
           && $0["VolumeOwner"] as? Bool == true
       })
     else { throw AccountSetupFailure("Recovery ownership changed during finalization.") }
+    try RecoveryVersionMetadata.hideForInitialRecovery(system: ctx.system)
     record.phase = "finalized"
     try save(record, ctx)
     return record

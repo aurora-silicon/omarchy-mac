@@ -17,6 +17,8 @@ import RecoveryAccountCore
       (info["VolumeName"] as? String) == "Omarchy Account Fixture - Data"
     else { throw AccountSetupFailure("Only a disposable external fixture is allowed.") }
     let password = Data("fixture-only".utf8)
+    try RecoveryAccountInstaller.refreshMountedGroup(target)
+    print("Mounted Data volume group matches the paired System volume.")
     let created = try RecoveryAccountInstaller.prepare(
       target, username: "fixture_owner", password: password)
     guard ["prepared", "awaiting-ownership"].contains(created.phase) else {
@@ -38,6 +40,31 @@ import RecoveryAccountCore
       try RecoveryAccountInstaller.requireOwnership(pending)
       fatalError("ungranted ownership accepted")
     } catch is AccountSetupFailure {}
+    let systemInfo = try AccountNativeCommand.disk(target.systemUUID)
+    guard let systemMount = systemInfo["MountPoint"] as? String else {
+      throw AccountSetupFailure("Fixture System is not mounted.")
+    }
+    let system = URL(fileURLWithPath: systemMount)
+    let core = system.appendingPathComponent("System/Library/CoreServices")
+    try FileManager.default.createDirectory(at: core, withIntermediateDirectories: true)
+    let metadata = try PropertyListSerialization.data(
+      fromPropertyList: [
+        "ProductName": "macOS", "ProductVersion": "26.6.2", "ProductBuildVersion": "fixture",
+      ], format: .xml, options: 0)
+    let hidden = core.appendingPathComponent("SystemVersion-disabled.plist")
+    let visible = core.appendingPathComponent("SystemVersion.plist")
+    try metadata.write(to: hidden)
+    try RecoveryVersionMetadata.showForStartupDisk(system: system)
+    guard try Data(contentsOf: visible) == metadata,
+      !FileManager.default.fileExists(atPath: hidden.path)
+    else { fatalError("metadata show failed") }
+    try Data("fixture".utf8).write(to: system.appendingPathComponent(".IAPhysicalMedia"))
+    try RecoveryVersionMetadata.hideForInitialRecovery(system: system)
+    guard try Data(contentsOf: hidden) == metadata,
+      !FileManager.default.fileExists(atPath: visible.path)
+    else { fatalError("metadata hide failed") }
+    try RecoveryVersionMetadata.showForStartupDisk(system: system)
+    print("Startup Disk / Recovery version metadata round trip preserved exact bytes.")
     print("phase=\(pending.phase) conditionalCredentialRepair=\(pending.tokenReconciled)")
     print(
       "Native account create, persisted identity, repeat, wrong-password rejection and ungranted ownership checks passed."
