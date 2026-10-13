@@ -1078,6 +1078,19 @@ class AsahiInPlaceRepairAdapter:
 
 
 class OmarchyOSInstaller(osinstall.OSInstaller):
+    def extract_tree(self, source, destination):
+        # ZIPs need not contain directory entries, and any entries they do
+        # contain can follow the files. Asahi's extractor only creates the
+        # directories it encounters, so prepare parents for the validated
+        # payload tree before delegating its file copying and CRC checks.
+        prefix = self.path(source).rstrip("/") + "/"
+        for member in self.pkg.infolist():
+            if member.filename.startswith(prefix):
+                relative = member.filename[len(prefix):]
+                parent = os.path.dirname(os.path.join(destination, relative))
+                os.makedirs(parent, exist_ok=True)
+        return super().extract_tree(source, destination)
+
     def install_raw_image(self, image, info):
         self.image_receipts[image] = write_image(
             self.pkg, image, info,

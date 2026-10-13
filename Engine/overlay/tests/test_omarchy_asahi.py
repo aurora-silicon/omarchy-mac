@@ -116,6 +116,7 @@ from omarchy_asahi import (  # noqa: E402
     AsahiAdapterError,
     AsahiInPlaceRepairAdapter,
     AsahiStage1Adapter,
+    OmarchyOSInstaller,
     esp_board_layout,
     fill_aurora_stage1,
     install_board_stage1,
@@ -125,6 +126,43 @@ from omarchy_asahi import (  # noqa: E402
 
 
 GIB = 1024**3
+
+
+class ESPTreeExtractionTests(unittest.TestCase):
+    def test_tree_without_directory_entries_or_with_late_directories(self):
+        for explicit_directories in (False, True):
+            with self.subTest(explicit_directories=explicit_directories):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    payload = root / "payload.zip"
+                    files = {
+                        "esp/EFI/BOOT/BOOTAA64.EFI": b"limine",
+                        "esp/aurora/recovery/Omarchy Installer.app/Contents/MacOS/OmarchyRecovery": b"app",
+                        "esp/m1n1/boot.bin": b"stage2",
+                    }
+                    with zipfile.ZipFile(payload, "w") as archive:
+                        for name, data in files.items():
+                            archive.writestr(name, data)
+                        if explicit_directories:
+                            archive.writestr("esp/EFI/BOOT/", b"")
+                    with zipfile.ZipFile(payload) as archive:
+                        installer = OmarchyOSInstaller(None, {}, {})
+                        installer.pkg = archive
+                        installer.path = lambda name: name
+
+                        # Exercise the inherited extractor's file-writing
+                        # contract: it opens files without creating parents.
+                        def inherited_extract(instance, source, destination):
+                            for name, data in files.items():
+                                target = Path(destination) / name.removeprefix(source + "/")
+                                with target.open("wb") as output:
+                                    output.write(instance.pkg.read(name))
+
+                        with patch.object(FakeOSInstaller, "extract_tree", inherited_extract, create=True):
+                            installer.extract_tree("esp", root / "fresh-esp")
+                    for name, data in files.items():
+                        target = root / "fresh-esp" / name.removeprefix("esp/")
+                        self.assertEqual(target.read_bytes(), data)
 
 
 class AsahiStage1AdapterTests(unittest.TestCase):
