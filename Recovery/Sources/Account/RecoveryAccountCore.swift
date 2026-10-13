@@ -36,7 +36,7 @@ public struct RecoveryAccountRecord: Codable, Equatable, Sendable {
   public var schema = 1
   public let target: RecoveryAccountTarget
   public let username: String
-  public let generatedUID: String
+  public var generatedUID: String
   public var phase: String
   public var tokenReconciled: Bool = false
 
@@ -52,7 +52,7 @@ public struct RecoveryAccountRecord: Codable, Equatable, Sendable {
     try target.validate()
     guard schema == 1, RecoveryAccountInstaller.validName(username),
       UUID(uuidString: generatedUID)?.uuidString == generatedUID,
-      ["creating", "prepared", "awaiting-ownership", "finalized"].contains(phase)
+      ["allocating", "creating", "prepared", "awaiting-ownership", "finalized"].contains(phase)
     else { throw AccountSetupFailure("The recovery account resume record is invalid.") }
   }
 }
@@ -220,6 +220,10 @@ public enum RecoveryAccountInstaller {
     else {
       throw AccountSetupFailure("The recovery account record does not match this installation.")
     }
+    guard ["prepared", "awaiting-ownership", "finalized"].contains(saved.phase) else {
+      throw AccountSetupFailure(
+        "Finish creating the recovery account in the macOS installer first.")
+    }
     return saved
   }
 
@@ -287,16 +291,30 @@ public enum RecoveryAccountInstaller {
   }
 
   static func ds(_ ctx: Context, _ args: [String], input: Data = Data()) throws -> String {
-    let result = try AccountNativeCommand.run(
-      "/usr/bin/dscl", ["-f", ctx.database.path, "localonly"] + args, input: input, timeout: 30)
-    let output = String(decoding: result.output, as: UTF8.self)
-    guard result.status == 0, !output.contains("DS Error:"), !output.contains("failed."),
-      !output.contains("Invalid Path")
-    else {
-      throw AccountSetupFailure(
-        "The target account database could not complete \(args.first ?? "authentication").")
+    for attempt in 0..<20 {
+      let result = try AccountNativeCommand.run(
+        "/usr/bin/dscl", ["-f", ctx.database.path, "localonly"] + args, input: input, timeout: 30)
+      let output = String(decoding: result.output, as: UTF8.self)
+      // Opening a new localonly database can race its native node registration.
+      // Retry only this exact transient error and idempotent operations; never
+      // retry a credential command on an ambiguous result.
+      if ["-create", "-merge", "-delete", "-read", "-list"].contains(args.first ?? ""),
+        output.contains("eDSUnknownNodeName"), attempt < 19
+      {
+        Thread.sleep(forTimeInterval: 0.2)
+        continue
+      }
+      guard result.status == 0, !output.contains("DS Error:"), !output.contains("failed."),
+        !output.contains("Invalid Path")
+      else {
+        let detail = args.first == "-passwd" ? "" : " " + String(output.prefix(250))
+        throw AccountSetupFailure(
+          "The target account database could not complete \(args.first ?? "authentication").\(detail)"
+        )
+      }
+      return output
     }
-    return output
+    throw AccountSetupFailure("The native account database did not become ready.")
   }
 
   static func authenticate(_ ctx: Context, _ username: String, _ password: Data) throws -> Bool {
@@ -389,7 +407,7 @@ public enum RecoveryAccountInstaller {
         }
       }
       record = RecoveryAccountRecord(
-        target: target, username: username, generatedUID: UUID().uuidString, phase: "creating")
+        target: target, username: username, generatedUID: UUID().uuidString, phase: "allocating")
       try save(record, ctx)
     }
     let path = ctx.database.appendingPathComponent("users/\(username).plist")
@@ -399,12 +417,12 @@ public enum RecoveryAccountInstaller {
       throw AccountSetupFailure("The target account could not be inspected.")
     }
     let existing = exists ? try user(ctx, username) : nil
-    if let existing {
+    if let existing, record.phase != "allocating" {
       guard existing["generateduid"] as? [String] == [record.generatedUID] else {
         throw AccountSetupFailure("The account UUID changed. Its existing data has been preserved.")
       }
     }
-    if record.phase == "creating" {
+    if ["allocating", "creating"].contains(record.phase) {
       for url in [
         ctx.database.deletingLastPathComponent().deletingLastPathComponent(),
         ctx.database.deletingLastPathComponent(),
@@ -416,9 +434,40 @@ public enum RecoveryAccountInstaller {
           throw AccountSetupFailure("Couldn’t protect the native account database.")
         }
       }
+      _ = try ds(ctx, ["-list", "/Local/Target"])
       let name = "/Local/Target/Users/\(username)"
+      if record.phase == "allocating" {
+        guard (existing?["ShadowHashData"] as? [Data] ?? []).isEmpty,
+          try users(target).isEmpty
+        else {
+          throw AccountSetupFailure(
+            "An unexpected credential appeared while creating the recovery account.")
+        }
+        if existing == nil { _ = try ds(ctx, ["-create", name, "UniqueID", "501"]) }
+        let deadline = Date().addingTimeInterval(10)
+        var nativeIdentity: String?
+        repeat {
+          if let native = try? user(ctx, username),
+            let ids = native["generateduid"] as? [String], ids.count == 1,
+            UUID(uuidString: ids[0])?.uuidString == ids[0],
+            native["name"] as? [String] == [username], native["uid"] as? [String] == ["501"],
+            (native["ShadowHashData"] as? [Data] ?? []).isEmpty
+          {
+            nativeIdentity = ids[0]
+            break
+          }
+          Thread.sleep(forTimeInterval: 0.1)
+        } while Date() < deadline
+        guard let nativeIdentity else {
+          throw AccountSetupFailure(
+            "The native account identity has not finished saving. Continue again to resume.")
+        }
+        record.generatedUID = nativeIdentity
+        record.phase = "creating"
+        try save(record, ctx)
+      }
       for (key, value) in [
-        ("UniqueID", "501"), ("PrimaryGroupID", "20"), ("GeneratedUID", record.generatedUID),
+        ("UniqueID", "501"), ("PrimaryGroupID", "20"),
         ("RealName", "Omarchy Recovery"), ("NFSHomeDirectory", "/Users/\(username)"),
         ("UserShell", "/bin/zsh"),
       ] {

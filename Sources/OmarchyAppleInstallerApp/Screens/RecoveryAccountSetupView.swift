@@ -46,7 +46,7 @@ struct RecoveryAccountSetupView: View {
     .onAppear {
       if let record = session?.recoveryAccount?.record {
         input.username = record.username
-        accountPrepared = record.phase != "creating"
+        accountPrepared = ["prepared", "awaiting-ownership", "finalized"].contains(record.phase)
       }
     }
   }
