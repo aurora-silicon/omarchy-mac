@@ -141,7 +141,7 @@
     }
   },
   "downstream_overlay": {
-    "version": "v0.9.2-omarchy.35",
+    "version": "v0.9.2-omarchy.37",
     "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
     "engine_modes": [
       "inspect",
@@ -171,7 +171,7 @@
       {
         "path": "overlay/src/omarchy_asahi.py",
         "destination": "src/omarchy_asahi.py",
-        "sha256": "ebb2bb019f578d6b4dc293e78e47dbe14136772983c2bba3841e48eaf8bfd701"
+        "sha256": "271b052f2f8dad3d0bc4903446c5f7aa1e49fb52612c59dca39004b0a30cb4ca"
       },
       {
         "path": "overlay/src/omarchy_contract.py",
@@ -231,7 +231,7 @@
       {
         "path": "overlay/tests/test_omarchy_replace.py",
         "destination": "tests/test_omarchy_replace.py",
-        "sha256": "6e7e5aab3a4dff832031f47378db660775d4b81d379273815ecb325e672ae504"
+        "sha256": "dcf72cd8c76643c5604fcbf6d855b59a99423d14430f5040745a47f6aeb49723"
       },
       {
         "path": "overlay/tests/test_omarchy_runtime.py",
@@ -315,13 +315,13 @@
     },
     {
       "path": "rebuild-python-overlay.py",
-      "sha256": "535c7dbe1b99e1cbdb8eeb542d294477c8ee91b842f42c151e3d8274a20d0fb8"
+      "sha256": "d8cbf49b6af2bb6bb663ea3a6c1d2e8241a1fc12e837185594e87c7589cce291"
     }
   ],
   "validation_artifact": {
-    "filename": "installer-v0.9.2-omarchy.36.tar.gz",
-    "size_bytes": 17864085,
-    "sha256": "1f788ceaf004e86ed601b7308de727104548f6ba67ae5a35f3b5f85026143738",
+    "filename": "installer-v0.9.2-omarchy.37.tar.gz",
+    "size_bytes": 17864321,
+    "sha256": "000568ea4a57a9b5b38e9be97b6c6af68eb74b58d4be276eee8f8d80181a5559",
     "reproducibility_scope": "two-identical-python-overlay-repacks-authenticated-base",
     "signature": "absent",
     "metadata_sha256": "2e6181ce6b6e17c11039e04bfadade8d10ae0e11889885ad8c9960b68f179a5d"

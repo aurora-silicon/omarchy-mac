@@ -1247,12 +1247,29 @@ class AsahiStage1Adapter:
         reference = container.get("ContainerReference")
         if not isinstance(reference, str) or not reference:
             raise AsahiAdapterError("existing stub container is unreadable")
+        # Keep the APFS store alive until its neighbouring partitions have
+        # been removed. deleteContainer may free that store outright or
+        # replace it with a new HFS partition identity.
+        for member in reversed(members[1:]):
+            self.installer.dutil.action(
+                "eraseVolume", "free", "none", member.uuid, verbose=True
+            )
         self.installer.dutil.action(
             "apfs", "deleteContainer", reference, verbose=True
         )
-        for member in members:
+        self._refresh_parts()
+        stub = members[0]
+        remaining = [part for part in self.installer.parts
+                     if not part.free and part.offset < stub.offset + stub.size
+                     and part.offset + part.size > stub.offset]
+        if remaining:
+            if (len(remaining) != 1 or remaining[0].offset != stub.offset
+                    or remaining[0].size != stub.size
+                    or remaining[0].type not in ("Apple_HFS", "Apple_HFSX")
+                    or remaining[0].os or not remaining[0].uuid):
+                raise AsahiAdapterError("deleted stub left an unexpected partition")
             self.installer.dutil.action(
-                "eraseVolume", "free", "none", member.uuid, verbose=True
+                "eraseVolume", "free", "none", remaining[0].uuid, verbose=True
             )
         self._refresh_parts()
         freed = self._find_free_extent(plan)
