@@ -35,6 +35,9 @@ final class InstallerModel: ObservableObject {
   @Published var accountConfirmation = ""
   @Published var accountAlreadyStarted = false
   @Published var creatingAccount = false
+  @Published var accountNeedsAuthorization = false
+  private var checkingAccount = false
+  private var awaitingStartupDiskReturn = false
 
   var canCreateAccount: Bool {
     !creatingAccount && RecoveryAccountInstaller.validName(accountUsername)
@@ -45,27 +48,41 @@ final class InstallerModel: ObservableObject {
   private func showAccountStep(_ record: RecoveryAccountRecord?, required: Bool = true) {
     accountUsername = record?.username ?? ""
     accountAlreadyStarted = record != nil
+    accountNeedsAuthorization = required && record?.phase != "finalized"
     accountPassword = ""
     accountConfirmation = ""
     stage =
       !required
-        || record.map { ["prepared", "awaiting-ownership", "finalized"].contains($0.phase) } == true
+        || record?.phase == "finalized"
       ? .complete : .account
   }
 
   func resumeAccountSetup() {
-    guard RecoveryActions.inRecovery, RecoveryActions.recovering else { return }
+    guard RecoveryActions.inRecovery, RecoveryActions.recovering,
+      !creatingAccount, !checkingAccount
+    else { return }
+    checkingAccount = true
     DispatchQueue.global(qos: .userInitiated).async {
       do {
-        guard try RecoveryActions.accountCreationRequired() else { return }
-        let record = try RecoveryActions.recoveryAccount()
-        if record == nil || ["allocating", "creating"].contains(record!.phase) {
-          DispatchQueue.main.async { self.showAccountStep(record) }
+        let required = try RecoveryActions.accountCreationRequired()
+        let record = required ? try RecoveryActions.recoveryAccount() : nil
+        DispatchQueue.main.async {
+          self.checkingAccount = false
+          if required { self.showAccountStep(record) }
         }
       } catch {
-        DispatchQueue.main.async { self.failure = error.localizedDescription }
+        DispatchQueue.main.async {
+          self.checkingAccount = false
+          self.failure = error.localizedDescription
+        }
       }
     }
+  }
+
+  func returnedFromStartupDisk() {
+    guard awaitingStartupDiskReturn else { return }
+    awaitingStartupDiskReturn = false
+    resumeAccountSetup()
   }
 
   func createRecoveryAccount() {
@@ -82,10 +99,15 @@ final class InstallerModel: ObservableObject {
     }
     DispatchQueue.global(qos: .userInitiated).async {
       do {
-        try RecoveryActions.createRecoveryAccount(username: name, password: secret)
+        let record = try RecoveryActions.createRecoveryAccount(username: name, password: secret)
+        InstallerLog.shared.append(
+          record.phase == "finalized"
+            ? "Recovery account ownership and metadata verified."
+            : "Recovery account prepared. Startup Disk authorization is still required.")
         DispatchQueue.main.async {
           self.creatingAccount = false
           self.accountAlreadyStarted = true
+          self.accountNeedsAuthorization = record.phase != "finalized"
           self.stage = .complete
         }
       } catch {
@@ -311,9 +333,13 @@ final class InstallerModel: ObservableObject {
     }
     do {
       let application = try RecoveryActions.prepareStartupDiskHandoff()
+      awaitingStartupDiskReturn = true
       NSWorkspace.shared.openApplication(at: application, configuration: .init()) { _, error in
         if let error {
-          DispatchQueue.main.async { self.failure = error.localizedDescription }
+          DispatchQueue.main.async {
+            self.awaitingStartupDiskReturn = false
+            self.failure = error.localizedDescription
+          }
         }
       }
     } catch { failure = error.localizedDescription }
@@ -400,8 +426,11 @@ struct InstallerView: View {
     case .welcome: return model.recoveryInterface ? "Repair startup" : "Finish setup"
     case .installing:
       return model.recoveryInterface ? "Restoring startup software" : "Setting up Omarchy"
-    case .account: return "Create a recovery account"
-    case .complete: return model.recoveryInterface ? "Recovery complete" : "Installation complete"
+    case .account:
+      return model.accountAlreadyStarted ? "Resume recovery setup" : "Create a recovery account"
+    case .complete:
+      if model.accountNeedsAuthorization { return "Authorize recovery account" }
+      return model.recoveryInterface ? "Recovery complete" : "Installation complete"
     }
   }
 
@@ -414,6 +443,7 @@ struct InstallerView: View {
       Text(title)
         .font(OmarchyTheme.title)
         .foregroundColor(OmarchyTheme.text)
+        .frame(width: model.stage == .account ? 380 : nil, alignment: .leading)
         .padding(.bottom, 24)
         .accessibilityAddTraits(.isHeader)
 
@@ -659,14 +689,19 @@ struct InstallerView: View {
 
   private var complete: some View {
     VStack(spacing: 16) {
-      Text("\(DestinationVolume.name) is ready to start.")
-        .font(OmarchyTheme.mono(15))
-        .foregroundColor(OmarchyTheme.secondaryText)
+      Text(
+        model.accountNeedsAuthorization
+          ? "\(DestinationVolume.name) is ready for authorization."
+          : "\(DestinationVolume.name) is ready to start."
+      )
+      .font(OmarchyTheme.mono(15))
+      .foregroundColor(OmarchyTheme.secondaryText)
       Image(nsImage: DestinationVolume.icon)
         .resizable()
         .interpolation(.high)
         .scaledToFit()
         .frame(width: 96, height: 96)
+        .padding(.vertical, 12)
         .accessibilityHidden(true)
       VStack(spacing: 8) {
         Text("Select “\(DestinationVolume.name)”, click “Restart…”, then “Authorize Users…”.")
@@ -683,7 +718,9 @@ struct InstallerView: View {
   private var account: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text(
-        "Create a separate recovery account for your Linux volume. Next, authorize it as a volume owner to manage Linux boot settings independently of your macOS account.\nYour Linux login is separate."
+        model.accountAlreadyStarted
+          ? "Verify your recovery account’s password to resume authorization.\n\nYour Linux login is separate."
+          : "Create a separate recovery account for your Linux volume. Next, authorize it as a volume owner to manage Linux boot settings independently of your macOS account.\n\nYour Linux login is separate."
       )
       .font(OmarchyTheme.mono(12)).foregroundColor(OmarchyTheme.secondaryText)
       VStack(alignment: .leading, spacing: 5) {
@@ -708,7 +745,6 @@ struct InstallerView: View {
           .focused($accountField, equals: .confirmation)
           .onSubmit { model.createRecoveryAccount() }
       }
-      if model.creatingAccount { ProgressView("Creating account…").controlSize(.small) }
     }
     .frame(width: 380)
     .textFieldStyle(.roundedBorder)
@@ -748,9 +784,19 @@ struct InstallerView: View {
     case .installing:
       EmptyView()
     case .account:
-      Button("Create Account") { model.createRecoveryAccount() }
+      HStack(spacing: 12) {
+        ProgressView().controlSize(.small)
+          .frame(width: 16, height: 16)
+          .opacity(model.creatingAccount ? 1 : 0)
+          .accessibilityLabel("Preparing account")
+          .accessibilityHidden(!model.creatingAccount)
+        Button(model.accountAlreadyStarted ? "Continue" : "Create Account") {
+          model.createRecoveryAccount()
+        }
         .buttonStyle(RecoveryPrimaryButtonStyle()).controlSize(.large)
         .disabled(!model.canCreateAccount)
+        Color.clear.frame(width: 16, height: 16).accessibilityHidden(true)
+      }
     case .complete:
       Button("Restart") { model.openStartupDisk() }
         .buttonStyle(RecoveryPrimaryButtonStyle()).controlSize(.large)
@@ -821,6 +867,10 @@ final class InstallerWindow: NSWindow {
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var window: NSWindow?
   private lazy var model = InstallerModel()
+
+  func applicationDidBecomeActive(_ notification: Notification) {
+    model.returnedFromStartupDisk()
+  }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     LaunchTrace.mark("delegate.didFinishLaunching")

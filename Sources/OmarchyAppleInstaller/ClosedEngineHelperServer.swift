@@ -214,6 +214,7 @@
       }
       let record: RecoveryAccountRecord? = try await Task.detached {
         if action == "handoff" {
+          try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
           try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
           return try RecoveryAccountInstaller.inspect(observed.target)
         }

@@ -655,6 +655,9 @@ public enum RecoveryAccountInstaller {
     let account = try user(ctx, record.username)
     let authorities = account["authentication_authority"] as? [String] ?? []
     if !authorities.contains(";SecureToken;") {
+      guard let hashes = account["ShadowHashData"] as? [Data], !hashes.isEmpty else {
+        throw AccountSetupFailure("The native account password record is unavailable.")
+      }
       var secret = password
       secret.append(10)
       let args = [
@@ -682,10 +685,9 @@ public enum RecoveryAccountInstaller {
           "-merge", "/Local/Target/Users/\(record.username)", "AuthenticationAuthority",
           ";SecureToken;",
         ])
-      let updated = try user(ctx, record.username)
-      guard (updated["authentication_authority"] as? [String] ?? []).contains(";SecureToken;"),
-        updated["ShadowHashData"] as? [Data] == account["ShadowHashData"] as? [Data]
-      else { throw AccountSetupFailure("The conditional credential repair did not verify.") }
+      try waitForTokenAuthority(
+        generatedUID: record.generatedUID, passwordHashes: hashes,
+        read: { try user(ctx, record.username) })
       record.tokenReconciled = true
       try save(record, ctx)
     }
@@ -755,6 +757,26 @@ public enum RecoveryAccountInstaller {
     record.phase = "finalized"
     try save(record, ctx)
     return record
+  }
+
+  static func waitForTokenAuthority(
+    generatedUID: String, passwordHashes: [Data], timeout: TimeInterval = 10,
+    read: () throws -> [String: Any], pause: () -> Void = { Thread.sleep(forTimeInterval: 0.1) }
+  ) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      let updated = try read()
+      guard updated["generateduid"] as? [String] == [generatedUID],
+        updated["ShadowHashData"] as? [Data] == passwordHashes
+      else { throw AccountSetupFailure("The account changed while its metadata was being saved.") }
+      if (updated["authentication_authority"] as? [String] ?? []).contains(";SecureToken;") {
+        return
+      }
+      if Date() >= deadline { break }
+      pause()
+    } while Date() < deadline
+    throw AccountSetupFailure(
+      "The native account metadata has not finished saving. Continue again to resume.")
   }
 
   public static func requireOwnership(_ record: RecoveryAccountRecord) throws {

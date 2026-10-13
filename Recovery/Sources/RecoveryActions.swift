@@ -423,7 +423,7 @@ enum RecoveryActions {
       throw RecoveryFailure(
         message: "Couldn’t read the default startup volume. The Mac has not been shut down.")
     }
-    return (try disk(boot)["VolumeUUID"] as? String)?.uppercased() == systemUUID
+    return (try disk(boot)["APFSVolumeGroupID"] as? String)?.uppercased() == groupUUID
   }
 
   // Returns false when owner authorization is needed. This repair deliberately
@@ -517,17 +517,27 @@ enum RecoveryActions {
   }
 
   static func recoveryAccount() throws -> RecoveryAccountRecord? {
-    try RecoveryAccountInstaller.inspect(accountTarget())
+    let record = try RecoveryAccountInstaller.inspect(accountTarget())
+    if let record, record.phase == "finalized" {
+      try RecoveryAccountInstaller.requireOwnership(record)
+    }
+    return record
   }
 
   static func accountCreationRequired() throws -> Bool {
     try installed()["recoveryAccountRequired"] as? Bool == true
   }
 
-  static func createRecoveryAccount(username: String, password: Data) throws {
+  static func createRecoveryAccount(username: String, password: Data) throws
+    -> RecoveryAccountRecord
+  {
     let target = try accountTarget()
     try RecoveryAccountInstaller.refreshMountedGroup(target)
     _ = try RecoveryAccountInstaller.prepare(target, username: username, password: password)
+    // Startup Disk can leave a matching APFS credential before ownership is
+    // granted. Reconcile that proven credential before sending the user back.
+    // With no credential yet, finalize leaves the prepared account unchanged.
+    return try RecoveryAccountInstaller.finalize(target, password: password)
   }
 }
 

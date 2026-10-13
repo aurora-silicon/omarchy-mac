@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import plistlib
 import re
 import stat
 import shutil
@@ -53,6 +54,26 @@ HOST_ROOT = "/"
 
 class AsahiAdapterError(RuntimeError):
     pass
+
+
+def verify_default_boot(dutil, group_uuid):
+    """Read back the selected APFS group; bless exit status is insufficient."""
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/bless", "--getBoot", "--plist"], check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        selected = plistlib.loads(result.stdout).get("Boot Volume")
+        if not isinstance(selected, str) or not selected:
+            raise ValueError("missing startup volume")
+        info = dutil.get("info", "-plist", selected)
+        actual = info.get("APFSVolumeGroupID", "")
+        if not isinstance(actual, str) or actual.upper() != group_uuid.upper():
+            raise ValueError("another startup volume is selected")
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.CalledProcessError) as error:
+        raise AsahiAdapterError(
+            "Omarchy was not confirmed as the startup disk. Retry Recovery authorization."
+        ) from error
 
 
 # The Recovery setup that the stub's "Finish Installation" app opens in
@@ -1070,6 +1091,7 @@ class AsahiInPlaceRepairAdapter:
             raise AsahiAdapterError(
                 "Recovery handoff authorization failed"
             ) from error
+        verify_default_boot(self.installer.dutil, existing.osi.vgid)
         existing.prepare_for_step2()
         return self._canonical_evidence(
             plan,
@@ -1537,6 +1559,7 @@ class AsahiStage1Adapter:
                 "Recovery handoff authorization failed"
             ) from error
 
+        verify_default_boot(self.installer.dutil, self.installer.ins.osi.vgid)
         self.installer.ins.prepare_for_step2()
         return json.dumps(
             {

@@ -27,6 +27,25 @@
   }
 
   enum RecoveryAccountHandoff {
+    static func requireStartupSelection(for target: RecoveryAccountTarget) throws {
+      let bytes = try AccountNativeCommand.checked(
+        "/usr/sbin/bless", ["--getBoot", "--plist"])
+      guard
+        let selected = try PropertyListSerialization.propertyList(from: bytes, format: nil)
+          as? [String: Any], let volume = selected["Boot Volume"] as? String, !volume.isEmpty
+      else { throw AccountSetupFailure("Couldn’t verify the selected startup disk.") }
+      try requireStartupSelection(target, info: AccountNativeCommand.disk(volume))
+    }
+
+    static func requireStartupSelection(_ target: RecoveryAccountTarget, info: [String: Any]) throws
+    {
+      guard (info["APFSVolumeGroupID"] as? String)?.uppercased() == target.groupUUID else {
+        throw AccountSetupFailure(
+          "Omarchy is not the selected startup disk. Select Omarchy in Startup Disk, then try Shut Down again."
+        )
+      }
+    }
+
     static func updateRecoveryApp(for target: RecoveryAccountTarget) throws {
       let source = URL(
         fileURLWithPath:

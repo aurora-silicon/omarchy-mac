@@ -43,6 +43,10 @@ Step 2 enrolls startup software using the explicitly bound existing macOS owner,
 
 The final Restart button opens Apple’s Recovery Startup Disk application. The user selects the new OS and completes Apple’s authorization prompt there. Once APFS reports the recorded account as a volume owner, subsequent enrollment uses that account and can complete its existing metadata finalization. The full new ordering and subsequent paired-Recovery login still require a fresh hardware test; creating an ordinary account is not proof of native ownership or a working Recovery login.
 
+Account preparation now invokes the existing conditional finalizer before the Startup Disk handoff. A matching APFS credential must pass password verification before missing SecureToken metadata can be reconciled; the native record must finish saving without changing its UUID or password hash. Returning from Startup Disk or reopening Recovery resumes prepared and awaiting-ownership accounts. The UI reports authorization as pending until finalization and current ownership readback succeed.
+
+The first-stage engine reads back the selected APFS volume group after `bless`. The macOS shutdown handoff also verifies that the target group remains selected. A successful process exit without the expected selection cannot complete the handoff.
+
 The welcome screen retains a small text attribution without an Aurora logo. The Omarchy banner and Kanagawa volume artwork are independent. AppKit owns the outer rounding with hidden title bar and standard window controls; Command-Q quits.
 
 ## Per-install firmware recovery baseline

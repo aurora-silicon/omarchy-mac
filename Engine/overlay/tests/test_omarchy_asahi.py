@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -122,10 +123,33 @@ from omarchy_asahi import (  # noqa: E402
     install_board_stage1,
     install_esp_board_layout,
     stub_installer,
+    verify_default_boot,
 )
 
 
 GIB = 1024**3
+
+
+class DefaultBootVerificationTests(unittest.TestCase):
+    group = "11111111-2222-3333-4444-555555555555"
+
+    def verify(self, selected_group, output=None):
+        payload = plistlib.dumps({"Boot Volume": "/dev/disk8s1"}) if output is None else output
+        dutil = SimpleNamespace(get=lambda *args: {"APFSVolumeGroupID": selected_group})
+        with patch("omarchy_asahi.subprocess.run", return_value=SimpleNamespace(stdout=payload)):
+            verify_default_boot(dutil, self.group)
+
+    def test_selected_group_is_verified(self):
+        self.verify(self.group)
+
+    def test_successful_command_with_other_group_is_rejected(self):
+        with self.assertRaisesRegex(AsahiAdapterError, "not confirmed"):
+            self.verify("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+
+    def test_missing_or_malformed_selection_is_rejected(self):
+        for output in (b"not a plist", plistlib.dumps({})):
+            with self.subTest(output=output), self.assertRaisesRegex(AsahiAdapterError, "not confirmed"):
+                self.verify(self.group, output)
 
 
 class ESPTreeExtractionTests(unittest.TestCase):
@@ -428,6 +452,7 @@ class AsahiStage1AdapterTests(unittest.TestCase):
 
     def test_free_extent_runs_exact_upstream_stage_one_primitives(self):
         dutil = FakeDiskUtil([[self.free]])
+        dutil.get = lambda *args: {"APFSVolumeGroupID": "11111111-2222-3333-4444-555555555555"}
         installer = FakeInstaller(dutil)
         adapter = self._adapter(installer)
 
@@ -445,6 +470,7 @@ class AsahiStage1AdapterTests(unittest.TestCase):
         ), patch(
             "omarchy_asahi.subprocess.run",
         ) as run:
+            run.return_value.stdout = plistlib.dumps({"Boot Volume": "/dev/disk0s4"})
             recovery_evidence = json.loads(
                 adapter.prepare_recovery_handoff(self.plan)
             )
@@ -497,7 +523,7 @@ class AsahiStage1AdapterTests(unittest.TestCase):
             installer.ins.calls.index(("prepare_for_bless",)),
             installer.ins.calls.index(("prepare_for_step2",)),
         )
-        run.assert_called_once_with(
+        run.assert_any_call(
             [
                 "/usr/sbin/bless",
                 "--setBoot",
@@ -512,6 +538,8 @@ class AsahiStage1AdapterTests(unittest.TestCase):
             stdout=-3,
             stderr=-3,
         )
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0], ["/usr/sbin/bless", "--getBoot", "--plist"])
 
     def test_recovery_handoff_rejects_missing_owner_before_bless(self):
         adapter = self._adapter(FakeInstaller(FakeDiskUtil([[self.free]])))

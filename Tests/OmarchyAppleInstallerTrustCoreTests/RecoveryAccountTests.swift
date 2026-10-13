@@ -1,11 +1,66 @@
 #if os(macOS)
   import CryptoKit
   import Foundation
-  import RecoveryAccountCore
+  @testable import RecoveryAccountCore
   import XCTest
   @testable import OmarchyAppleInstallerTrustCore
 
   final class RecoveryAccountTests: XCTestCase {
+    func testTokenAuthorityWaitsForNativePersistence() throws {
+      let id = UUID().uuidString
+      let hashes = [Data("fixture-hash".utf8)]
+      var reads = 0
+      try RecoveryAccountInstaller.waitForTokenAuthority(
+        generatedUID: id, passwordHashes: hashes,
+        read: {
+          reads += 1
+          return [
+            "generateduid": [id], "ShadowHashData": hashes,
+            "authentication_authority": reads < 3 ? [] : [";SecureToken;"],
+          ]
+        }, pause: {})
+      XCTAssertEqual(reads, 3)
+    }
+
+    func testTokenAuthorityRejectsChangedIdentityOrPasswordHash() {
+      let id = UUID().uuidString
+      let hashes = [Data("fixture-hash".utf8)]
+      let changes: [[String: Any]] = [
+        ["generateduid": [UUID().uuidString], "ShadowHashData": hashes],
+        ["generateduid": [id], "ShadowHashData": [Data("changed".utf8)]],
+      ]
+      for changed in changes {
+        XCTAssertThrowsError(
+          try RecoveryAccountInstaller.waitForTokenAuthority(
+            generatedUID: id, passwordHashes: hashes,
+            read: {
+              changed.merging(["authentication_authority": [";SecureToken;"]]) { _, new in new }
+            },
+            pause: {}))
+      }
+    }
+
+    func testTokenAuthorityDoesNotAcceptAnUnpersistedMarker() {
+      let id = UUID().uuidString
+      let hashes = [Data("fixture-hash".utf8)]
+      XCTAssertThrowsError(
+        try RecoveryAccountInstaller.waitForTokenAuthority(
+          generatedUID: id, passwordHashes: hashes, timeout: 0,
+          read: { ["generateduid": [id], "ShadowHashData": hashes] }, pause: {}))
+    }
+
+    func testShutdownRequiresSelectedTargetVolumeGroup() throws {
+      try RecoveryAccountHandoff.requireStartupSelection(
+        target, info: ["APFSVolumeGroupID": target.groupUUID])
+      // bless may identify either member of the same APFS volume group.
+      try RecoveryAccountHandoff.requireStartupSelection(
+        target, info: ["APFSVolumeGroupID": target.groupUUID, "VolumeUUID": target.dataUUID])
+      XCTAssertThrowsError(
+        try RecoveryAccountHandoff.requireStartupSelection(
+          target, info: ["APFSVolumeGroupID": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"]))
+      XCTAssertThrowsError(try RecoveryAccountHandoff.requireStartupSelection(target, info: [:]))
+    }
+
     func testCompletedInstallationRequiresLivePartitionIdentities() throws {
       let ids = (1...4).map { String(format: "%08d-1111-4111-8111-111111111111", $0) }
       let evidence = [

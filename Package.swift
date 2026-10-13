@@ -99,7 +99,7 @@ let package = Package(
     ),
     .testTarget(
       name: "OmarchyAppleInstallerTrustCoreTests",
-      dependencies: ["OmarchyAppleInstallerTrustCore"],
+      dependencies: ["OmarchyAppleInstallerTrustCore", "RecoveryAccountCore"],
       path: "Tests/OmarchyAppleInstallerTrustCoreTests",
       resources: [.copy("Fixtures")]
     ),
