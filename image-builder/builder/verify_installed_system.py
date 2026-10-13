@@ -15,7 +15,7 @@ first use:
 - without vulkan-asahi the deferred Vulkan step tried to install it on a
   first boot with no package databases, often offline, and stopped every
   hardware step after it;
-- without asahi-bless the startup volume cannot be picked from Linux;
+- asahi-bless older than 0.4.4 cannot handle Neo's 29-bank NVRAM;
 - bluetooth.service left disabled leaves Bluetooth off;
 - NetworkManager without the iwd backend leaves Apple Wi-Fi unmanaged.
 
@@ -257,6 +257,20 @@ def check_packages(verification: Verification, root: Path) -> None:
                      "omarchy-settings-dev"} & installed)
     verification.record("packages-no-legacy", not legacy,
                         "no legacy or development package" if not legacy else "installed: " + ", ".join(legacy))
+    versions = []
+    for desc in (root / "var/lib/pacman/local").glob("*/desc"):
+        fields = desc.read_text().splitlines()
+        if "%NAME%" in fields and fields[fields.index("%NAME%") + 1] == "asahi-bless":
+            if "%VERSION%" in fields:
+                versions.append(fields[fields.index("%VERSION%") + 1])
+    match = re.match(r"^(?:\d+:)?(\d+)\.(\d+)(?:\.(\d+))?", versions[0]) if len(versions) == 1 else None
+    version = tuple(int(part or "0") for part in match.groups()) if match else (0, 0, 0)
+    verification.record(
+        "asahi-bless-neo-nvram",
+        version >= (0, 4, 4),
+        "asahi-bless 0.4.4 or newer is required for Neo's 29-bank NVRAM; installed: "
+        + (", ".join(versions) or "missing"),
+    )
 
 
 def check_identity(verification: Verification, root: Path) -> None:
