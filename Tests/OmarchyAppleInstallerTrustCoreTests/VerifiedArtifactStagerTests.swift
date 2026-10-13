@@ -110,6 +110,55 @@ final class VerifiedArtifactStagerTests: XCTestCase {
     XCTAssertEqual(downloadCount, 1)
   }
 
+  func testOfflineBundleStagesEveryRoleWithoutDownload() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bundle = root.appendingPathComponent("Artifacts")
+    try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+    let downloader = FixtureArtifactDownloader(data: Data("must not download".utf8))
+    let stager = VerifiedArtifactStager(
+      downloader: downloader, bundledArtifactDirectory: bundle, requiresBundledArtifacts: true)
+    for role in ["engine", "metadata", "payload"] {
+      let data = Data("bundled \(role)".utf8)
+      let artifact = try PinnedInstallerArtifact(
+        role: role, sourceURL: URL(string: "https://example.invalid/\(role)")!,
+        fileName: role, expectedDigest: digest(data), expectedSizeBytes: UInt64(data.count))
+      try data.write(to: bundle.appendingPathComponent(role))
+      let result = try await stager.stage(artifact, in: root.appendingPathComponent("staging"))
+      XCTAssertEqual(try Data(contentsOf: result.fileURL), data)
+      XCTAssertEqual(try Data(contentsOf: bundle.appendingPathComponent(role)), data)
+    }
+    let count = await downloader.downloadCount
+    XCTAssertEqual(count, 0)
+  }
+
+  func testOfflineBundleFailsClosedWithoutNetworkFallback() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bundle = root.appendingPathComponent("Artifacts")
+    try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+    let downloader = FixtureArtifactDownloader(data: Data("must not download".utf8))
+    let stager = VerifiedArtifactStager(
+      downloader: downloader, bundledArtifactDirectory: bundle, requiresBundledArtifacts: true)
+    let data = Data("expected payload".utf8)
+    let artifact = try PinnedInstallerArtifact(
+      role: "payload", sourceURL: URL(string: "https://example.invalid/os.zip")!,
+      fileName: "os.zip", expectedDigest: digest(data), expectedSizeBytes: UInt64(data.count))
+    await assertThrows(try await stager.stage(artifact, in: root.appendingPathComponent("missing")))
+    {
+      XCTAssertEqual($0 as? ArtifactStageError, .bundledArtifactMissing("os.zip"))
+    }
+    try Data(repeating: 0, count: data.count).write(to: bundle.appendingPathComponent("os.zip"))
+    await assertThrows(try await stager.stage(artifact, in: root.appendingPathComponent("corrupt")))
+    {
+      guard case .digestMismatch = $0 as? ArtifactStageError else {
+        return XCTFail("Expected digest mismatch, got \($0)")
+      }
+    }
+    let count = await downloader.downloadCount
+    XCTAssertEqual(count, 0)
+  }
+
   func testDigestMismatchLeavesNoAcceptedOrPendingFile() async throws {
     let expected = Data("expected".utf8)
     let delivered = Data("tampered".utf8)

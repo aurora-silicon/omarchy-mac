@@ -82,6 +82,11 @@ internal display. Higher refresh rates, other monitors, reversed cable
 orientation and suspend need separate qualification. Keep the firmware's mode
 and bandwidth validation intact.
 
+Neo's external-display bandwidth ceiling is equivalent to 3840×2160 at 60 Hz.
+2560×1440 at 120 Hz and 1920×1080 at 240 Hz fit that budget; modes exceeding
+the 4K60 budget must remain filtered. These lower-resolution refresh rates
+have not yet been qualified by this installer's hardware tests.
+
 ## Build identity
 
 A booted Mac names the build it came from in `/var/lib/omarchy/image/target` (`target.booted` after its first boot; `@factory` carries the same bytes, so a factory reset keeps it). After the provenance lines above, the builder appends, once the package set is recorded and before `@factory` is sealed:

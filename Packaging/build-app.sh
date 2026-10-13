@@ -137,6 +137,9 @@ fi
 if [[ ${OMARCHY_DEVELOPER_BUILD:-0} == "1" && $sealed_catalog_available != "true" ]]; then
   fail "developer builds require a sealed developer catalog"
 fi
+if [[ ${OMARCHY_OFFLINE_BUILD:-0} == "1" && $sealed_catalog_available != "true" ]]; then
+  fail "offline builds require a sealed catalog"
+fi
 
 if [[ ${OMARCHY_PRIVATE_LIMINE_TEST:-0} == "1" ]]; then
   python3 "$script_directory/private-test/prepare-limine-assets.py" --verify-release "$release_directory" >/dev/null
@@ -348,6 +351,11 @@ if [[ ${OMARCHY_PRIVATE_LIMINE_TEST:-0} == "1" ]]; then
 fi
 if [[ ${OMARCHY_DEVELOPER_BUILD:-0} == "1" ]]; then
   plutil -insert OmarchyDeveloperBuild -bool true "$contents/Info.plist"
+fi
+if [[ ${OMARCHY_OFFLINE_BUILD:-0} == "1" ]]; then
+  python3 "$script_directory/bundle-offline-artifacts.py" \
+    "$sealed_catalog" "$release_directory/offline-artifacts" "$resources/Artifacts"
+  plutil -insert OmarchyOfflineBundle -bool true "$contents/Info.plist"
 fi
 plutil -replace CFBundleVersion \
   -string "$build_number" "$contents/Info.plist"

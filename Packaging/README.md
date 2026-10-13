@@ -43,6 +43,16 @@ the signature is exactly 64 bytes. The app verifies this sealed catalog with
 the same bundled Ed25519 trust root; when the pair is absent, it fetches the
 configured HTTPS catalog as normal.
 
+For a single-download offline preview, place every enabled model's engine,
+metadata and complete OS payload in `offline-artifacts/` beside that sealed
+catalog, using the catalog's exact filenames, sizes and SHA-256 digests. Then
+build with `OMARCHY_OFFLINE_BUILD=1` (and `OMARCHY_DEVELOPER_BUILD=1` for the
+developer preview). The packager verifies and embeds those files in the app.
+The normal package builder includes them in the resulting single `.pkg`.
+At runtime the app verifies the embedded files before staging them; a missing
+or damaged embedded file fails locally instead of falling back to a download.
+Firmware that the engine needs from Apple can still be downloaded separately.
+
 Build concurrency defaults to 10 workers so a 14-core Mac retains four cores for
 responsiveness. Override it with `OMARCHY_BUILD_JOBS`; the same value is exported
 as `CARGO_BUILD_JOBS` for nested Rust builds.
