@@ -183,6 +183,19 @@ final_app="$output_directory/$app_name"
 [[ ! -e $final_app ]] \
   || fail "refusing to overwrite existing app: $final_app"
 
+recovery_template="${OMARCHY_RECOVERY_TEMPLATE:-}"
+if [[ -z $recovery_template ]]; then
+  "$package_directory/Recovery/build-recovery.sh" "$output_directory/recovery-template"
+  recovery_template="$output_directory/recovery-template/Omarchy Installer.app"
+fi
+[[ -d $recovery_template && ! -L $recovery_template ]] || fail "native Recovery template is missing"
+[[ $(/usr/bin/plutil -extract OmarchyRecoveryBuildMode raw -o - "$recovery_template/Contents/Info.plist") == recovery ]] \
+  || fail "Recovery template is not a real Recovery build"
+[[ ! -e "$recovery_template/Contents/Resources/install-config.json" \
+  && ! -e "$recovery_template/Contents/Resources/AuraPayloads" ]] \
+  || fail "Recovery template contains another installation's data"
+codesign --verify --deep --strict "$recovery_template"
+
 swift_tool="$(xcrun --find swift)"
 (
   cd "$package_directory"
@@ -251,6 +264,10 @@ install -m 0755 "$app_binary" "$contents/MacOS/$app_executable_name"
 install -m 0755 "$helper_binary" "$helper_path"
 install -m 0444 "$release_descriptor" "$resources/Release/release.json"
 install -m 0444 "$trust_root" "$resources/Release/trust-root.ed25519.pub"
+mkdir -p "$resources/RecoveryTemplate"
+/usr/bin/ditto "$recovery_template" "$resources/RecoveryTemplate/Omarchy Installer.app"
+codesign --force --sign "$signing_identity" "${timestamp_arguments[@]}" \
+  "$resources/RecoveryTemplate/Omarchy Installer.app"
 if [[ ${OMARCHY_PRIVATE_LIMINE_TEST:-0} == "1" ]]; then
   install -m 0444 "$release_directory/limine-inputs.json" "$resources/Release/limine-inputs.json"
 fi

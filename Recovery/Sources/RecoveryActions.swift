@@ -123,6 +123,12 @@ enum RecoveryActions {
   }
   static func resolveOwner() throws -> RecoveryOwner {
     try verifyVolume()
+    if let selected = try RecoveryAccountInstaller.selectedOwner(system: volume) {
+      guard let uuid = UUID(uuidString: selected.generatedUID) else {
+        throw RecoveryOwnerError.noOwner
+      }
+      return RecoveryOwner(username: selected.username, uuid: uuid)
+    }
     let userData = try run("/usr/sbin/diskutil", ["apfs", "listUsers", systemUUID, "-plist"])
     guard
       let cryptoUsers = try PropertyListSerialization.propertyList(from: userData, format: nil)
@@ -257,6 +263,11 @@ enum RecoveryActions {
   ) throws {
     // Repeat the check here so bypassing the GUI cannot reach any write.
     try requireEnrollmentEnvironment()
+    if let selected = try RecoveryAccountInstaller.selectedOwner(system: volume) {
+      let final = try RecoveryAccountInstaller.finalize(
+        selected.target, password: Data(password.utf8))
+      try RecoveryAccountInstaller.requireOwnership(final)
+    }
     let config = try configuration.get()
     try check(
       selection.mode == .raw && !selection.nestedVirtualization,

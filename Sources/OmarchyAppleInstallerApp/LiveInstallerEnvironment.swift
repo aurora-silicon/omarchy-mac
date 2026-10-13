@@ -27,6 +27,37 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
   private let prefetch = PayloadPrefetchOrchestrator()
   private var plannedPayload: StagedInstallerArtifact?
 
+  private func accountClient() throws -> AuthenticatedEngineXPCSubmitter {
+    let configuration = try InstallerReleaseConfigurationLocator().loadFromMainBundle()
+    return try AuthenticatedEngineXPCSubmitter(
+      machServiceName: configuration.helperMachServiceName,
+      helperCodeSigningRequirement: configuration.helperCodeSigningRequirement)
+  }
+
+  func inspectRecoveryAccount() async throws -> RecoveryAccountReply? {
+    guard refreshHelperStatus().isReady else { return nil }
+    let reply = try await accountClient().recoveryAccount(action: "inspect")
+    return reply.target == nil ? nil : reply
+  }
+
+  func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
+    -> RecoveryAccountReply
+  {
+    try await accountClient().recoveryAccount(
+      action: "prepare", ticket: ticket, username: username, password: password)
+  }
+
+  func finalizeRecoveryAccount(ticket: String, password: Data) async throws -> RecoveryAccountReply
+  {
+    try await accountClient().recoveryAccount(
+      action: "finalize", ticket: ticket, password: password)
+  }
+
+  func openStartupDisk() -> Bool {
+    NSWorkspace.shared.open(
+      URL(fileURLWithPath: "/System/Library/PreferencePanes/StartupDisk.prefPane"))
+  }
+
   var payloadPrefetchRequired: Bool { true }
 
   var payloadPrefetchState: PayloadPrefetchState {

@@ -30,7 +30,12 @@ chmod 0644 "$plist"
 /usr/bin/ditto "$directory/pkg/scripts" "$work/scripts"
 install -m 0644 "$directory/identity.conf" "$work/scripts/identity.conf"
 /usr/bin/pkgbuild --analyze --root "$work/root" "$work/components.plist"
-/usr/bin/plutil -replace 0.BundleIsRelocatable -bool false "$work/components.plist"
+component_index=0
+while /usr/bin/plutil -extract "$component_index.RootRelativeBundlePath" raw -o - "$work/components.plist" >/dev/null 2>&1; do
+  /usr/bin/plutil -replace "$component_index.BundleIsRelocatable" -bool false "$work/components.plist"
+  component_index=$((component_index + 1))
+done
+(( component_index > 0 )) || fail "package contains no application bundles"
 mkdir -p "$(dirname "$output")"
 /usr/bin/pkgbuild \
   --root "$work/root" --component-plist "$work/components.plist" \

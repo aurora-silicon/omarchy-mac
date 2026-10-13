@@ -1,12 +1,37 @@
 #if os(macOS)
   import Foundation
   import OmarchyAppleInstallerTrustCore
+  import RecoveryAccountCore
   import XCTest
 
   @testable import OmarchyInstallerUXCore
 
   @MainActor
   final class InstallerSessionTests: XCTestCase {
+    func testCompletedInstallResumesOnlyAccountSetupWithoutExecutingAgain() async throws {
+      let environment = MockInstallerEnvironment()
+      environment.host = HostDisplay(
+        chipAndSpace: "Apple A18 Pro", supported: true,
+        existingInstalls: [
+          ExistingInstallDisplay(sourceIdentifier: "disk0s3", sizeDescription: "89 GB")
+        ])
+      let target = RecoveryAccountTarget(
+        volumeName: "Omarchy",
+        systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444")
+      environment.accountReply = RecoveryAccountReply(ticket: "bound-ticket", target: target)
+      let session = InstallerSession(environment: environment)
+      await session.inspect()
+      XCTAssertEqual(session.recoveryAccount?.target, target)
+      XCTAssertFalse(session.canChangeChannel)
+      try await session.prepareRecoveryAccount(username: "owner", password: Data("short".utf8))
+      XCTAssertEqual(environment.accountCalls, ["inspect", "prepare:bound-ticket:owner"])
+      XCTAssertEqual(environment.executeCount, 0)
+      XCTAssertEqual(environment.prepareCount, 0)
+      XCTAssertEqual(environment.prefetchStartCount, 0)
+    }
     func testChannelAvailabilityKeepsTheLatestCheck() async {
       let environment = MockInstallerEnvironment()
       let slow = OperationGate()
@@ -1396,6 +1421,18 @@
   }
 
   final class MockInstallerEnvironment: InstallerEnvironment, @unchecked Sendable {
+    var accountReply: RecoveryAccountReply?
+    var accountCalls = [String]()
+    func inspectRecoveryAccount() async throws -> RecoveryAccountReply? {
+      accountCalls.append("inspect")
+      return accountReply
+    }
+    func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
+      -> RecoveryAccountReply
+    {
+      accountCalls.append("prepare:\(ticket):\(username)")
+      return accountReply!
+    }
     var host = MockInstallerEnvironment.supportedHost
     var plan = MockInstallerEnvironment.samplePlan
     var helper = HelperDisplay(status: .current)

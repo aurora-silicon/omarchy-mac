@@ -1,0 +1,109 @@
+#if os(macOS)
+  import CryptoKit
+  import Foundation
+  import RecoveryAccountCore
+  import XCTest
+  @testable import OmarchyAppleInstallerTrustCore
+
+  final class RecoveryAccountTests: XCTestCase {
+    let target = RecoveryAccountTarget(
+      volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
+      dataUUID: "22222222-2222-4222-8222-222222222222",
+      groupUUID: "33333333-3333-4333-8333-333333333333",
+      prebootUUID: "44444444-4444-4444-8444-444444444444")
+
+    func testRecoveryAccountInputAndIdentityValidation() throws {
+      try target.validate()
+      XCTAssertTrue(RecoveryAccountInstaller.validName("omarchy-owner"))
+      for name in ["root", "daemon", "nobody", "../owner", "name\nquit", "OWNER", "-owner"] {
+        XCTAssertFalse(RecoveryAccountInstaller.validName(name))
+      }
+      try RecoveryAccountInstaller.validatePassword(Data("short".utf8))
+      for value in [Data(), Data([0]), Data("line\nbreak".utf8), Data(repeating: 65, count: 4097)] {
+        XCTAssertThrowsError(try RecoveryAccountInstaller.validatePassword(value))
+      }
+      let record = RecoveryAccountRecord(
+        target: target, username: "owner", generatedUID: UUID().uuidString, phase: "prepared")
+      try record.validate()
+      XCTAssertEqual(
+        try JSONDecoder().decode(RecoveryAccountRecord.self, from: JSONEncoder().encode(record)),
+        record)
+    }
+
+    func testRelativeAccountLookupHandlesDifferentMountSuffixes() {
+      XCTAssertEqual(
+        RecoveryAccountInstaller.relativePath(
+          from: URL(fileURLWithPath: "/Volumes/Omarchy 1/private"),
+          to: URL(fileURLWithPath: "/Volumes/Omarchy - Data 2/private/var")),
+        "../../Omarchy - Data 2/private/var")
+      XCTAssertEqual(
+        RecoveryAccountInstaller.relativePath(
+          from: URL(fileURLWithPath: "/Volumes/Omarchy 1"),
+          to: URL(fileURLWithPath: "/Volumes/Omarchy - Data 2/private/var")),
+        "../Omarchy - Data 2/private/var")
+    }
+
+    func testCommandUsesStdinAndBoundsOutputAndTime() throws {
+      let secret = Data("unit-test-only\n".utf8)
+      let echoed = try AccountNativeCommand.run("/bin/cat", [], input: secret)
+      XCTAssertEqual(echoed.status, 0)
+      XCTAssertEqual(echoed.output, secret)
+      let earlyExit = try AccountNativeCommand.run(
+        "/usr/bin/true", [], input: Data(repeating: 65, count: 8192))
+      XCTAssertEqual(earlyExit.status, 0)
+      XCTAssertThrowsError(try AccountNativeCommand.run("/bin/sleep", ["5"], timeout: 1))
+      XCTAssertThrowsError(try AccountNativeCommand.run("/usr/bin/yes", [], timeout: 3))
+    }
+
+    func testCompletedCheckpointBindsTargetAndRejectsDamage() throws {
+      let digest = String(repeating: "a", count: 64)
+      let ids = ["apfs-target-prepared", "stub-and-esp-installed", "recovery-handoff-prepared"]
+      let esp = "55555555-5555-4555-8555-555555555555"
+      var evidence = [String: Data]()
+      for id in ids {
+        var value: [String: Any] = ["plan_digest": digest]
+        if id == "stub-and-esp-installed" {
+          value["apfs_vgid"] = target.groupUUID
+          value["efi_partition"] = esp
+          value["populated_partitions"] = [
+            ["name": "EFI", "partition_uuid": esp], ["name": "Boot"], ["name": "Root"],
+          ]
+        }
+        evidence[id] = try JSONSerialization.data(withJSONObject: value)
+      }
+      var rows: [[String: Any]] = []
+      func add(_ type: String, _ payload: [String: Any]) {
+        rows.append([
+          "schema_version": 1, "sequence": rows.count + 1, "type": type, "payload": payload,
+        ])
+      }
+      add("inspection", ["device_identifier": "apple,j700", "support": "supported"])
+      add("inventory", [:])
+      add("plan", ["plan_digest": digest])
+      for id in ids {
+        add("event", ["name": id, "plan_digest": digest])
+        let hash = SHA256.hash(data: evidence[id]!).map { String(format: "%02x", $0) }.joined()
+        add(
+          "checkpoint",
+          ["identifier": id, "plan_digest": digest, "evidence_digest": "sha256:" + hash])
+      }
+      add("completion", ["plan_digest": digest, "outcome": "awaiting_recovery"])
+      var transcript = Data()
+      for row in rows {
+        transcript.append(try JSONSerialization.data(withJSONObject: row))
+        transcript.append(10)
+      }
+      let result = try RecoveryAccountHandoff.completedEvidence(
+        transcript: transcript, evidence: evidence)
+      XCTAssertEqual(result.group, target.groupUUID)
+      XCTAssertEqual(result.esp, esp)
+      var damaged = evidence
+      damaged[ids[1]]!.append(32)
+      XCTAssertThrowsError(
+        try RecoveryAccountHandoff.completedEvidence(transcript: transcript, evidence: damaged))
+      XCTAssertThrowsError(
+        try RecoveryAccountHandoff.completedEvidence(
+          transcript: transcript.dropLast(), evidence: evidence))
+    }
+  }
+#endif

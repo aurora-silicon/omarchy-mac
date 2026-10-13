@@ -44,15 +44,19 @@ struct OnePageInstallerView: View {
 
   var body: some View {
     Group {
-      #if DEBUG
-        if session.isSimulation, case .awaitingRecovery = session.phase {
-          RecoveryAccountSetupView(volumeName: "Omarchy")
-        } else {
+      if let account = session.recoveryAccount, let target = account.target {
+        RecoveryAccountSetupView(volumeName: target.volumeName, session: session)
+      } else {
+        #if DEBUG
+          if session.isSimulation, case .awaitingRecovery = session.phase {
+            RecoveryAccountSetupView(volumeName: "Omarchy")
+          } else {
+            installerPage
+          }
+        #else
           installerPage
-        }
-      #else
-        installerPage
-      #endif
+        #endif
+      }
     }
     .foregroundStyle(OmarchyTheme.text)
     .background(OmarchyTheme.window)

@@ -37,6 +37,7 @@
   @Observable
   public final class InstallerSession {
     public private(set) var phase: InstallerSessionPhase = .inspecting
+    public private(set) var recoveryAccount: RecoveryAccountReply?
 
     /// Live per-artifact download progress keyed by role, published from the
     /// stager's handler after a main-actor hop.
@@ -77,7 +78,7 @@
     public var isSimulation: Bool { environment.isSimulation }
     public var canInspect: Bool { !isBusy && !isExecuting && !hasExecutionStarted }
     public var canChangeChannel: Bool {
-      canInspect && !isEditingSize && credentialSheet.context == nil
+      recoveryAccount == nil && canInspect && !isEditingSize && credentialSheet.context == nil
     }
     public var canEditPlan: Bool {
       guard case .awaitingInstall = phase else { return false }
@@ -198,10 +199,14 @@
 
       do {
         let host = try await environment.inspect()
+        recoveryAccount = nil
         if !host.existingInstalls.isEmpty {
           // Refuse before anything is fetched: no catalog, no download.
           lastHost = host
           phase = .existingInstallRefused(host: host)
+          if host.supported, !environment.installationBlocked {
+            recoveryAccount = try await environment.inspectRecoveryAccount()
+          }
         } else if host.supported, !environment.installationBlocked,
           let shortfall = host.spaceShortfall
         {
@@ -587,7 +592,7 @@
         operationID = UUID()
         recoveryRetryAvailable = false
         beginInstallingIfNeeded()
-        route(completion)
+        await route(completion)
       } catch {
         drainJournal(receivedJournal)
         operationID = UUID()
@@ -704,11 +709,39 @@
       return accepted
     }
 
-    private func route(_ completion: CompletionDisplay) {
+    public func prepareRecoveryAccount(username: String, password: Data) async throws {
+      guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
+      isBusy = true
+      defer { isBusy = false }
+      recoveryAccount = try await environment.prepareRecoveryAccount(
+        ticket: ticket, username: username, password: password)
+    }
+
+    public func finalizeRecoveryAccount(password: Data) async throws {
+      guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
+      isBusy = true
+      defer { isBusy = false }
+      recoveryAccount = try await environment.finalizeRecoveryAccount(
+        ticket: ticket, password: password)
+    }
+
+    public func openStartupDisk() -> Bool { environment.openStartupDisk() }
+
+    public func shutdownAfterAccountSetup() -> Bool {
+      guard recoveryAccount?.record?.phase == "finalized" else { return false }
+      return environment.requestShutdown()
+    }
+
+    private func route(_ completion: CompletionDisplay) async {
       switch completion.nextAction {
       case .enterRecovery, .attachInstallationMedia:
         if let handoff = completion.handoff {
           phase = .awaitingRecovery(handoff)
+          do {
+            recoveryAccount = try await environment.inspectRecoveryAccount()
+          } catch {
+            recoveryAccount = nil
+          }
         } else {
           phase = .done(completion)
         }
