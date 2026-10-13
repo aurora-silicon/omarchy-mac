@@ -53,6 +53,9 @@ class RecoveryTests(unittest.TestCase):
         self.step2.write_text("old launcher")
         (self.esp / "m1n1").mkdir()
         (self.esp / recovery.STAGE2_PATH).write_bytes(b"actual-installed-stage2")
+        (self.esp / "vendorfw").mkdir()
+        for name in recovery.VENDOR_FIRMWARE:
+            (self.esp / name).write_bytes(("device-specific " + name).encode())
         self.marker = self.system / ".IAPhysicalMedia"
         self.marker.write_bytes(plistlib.dumps({
             "AppName": "Finish Installation.app", "ProductVersion": "12.1",
@@ -117,6 +120,10 @@ class RecoveryTests(unittest.TestCase):
         manifest = json.loads((payloads / "manifest.json").read_text())
         self.assertEqual(set(manifest["modes"]), {"raw"})
         self.assertFalse(manifest["nestedVirtualization"])
+        self.assertEqual(set(manifest["vendorFirmware"]), set(recovery.VENDOR_FIRMWARE))
+        for name in recovery.VENDOR_FIRMWARE:
+            self.assertEqual((payloads / name).read_bytes(), (self.esp / name).read_bytes())
+            self.assertEqual(manifest["files"][name]["sha256"], recovery.digest((self.esp / name).read_bytes()))
         marker = plistlib.loads(self.marker.read_bytes())
         self.assertEqual(marker["AppName"], recovery.APP_NAME)
         self.assertEqual(marker["ProductBuildVersion"], "00A191")
@@ -172,6 +179,45 @@ class RecoveryTests(unittest.TestCase):
         (self.resources / "link").symlink_to(self.info)
         with self.assertRaisesRegex(recovery.RecoveryError, "non-regular"):
             recovery.app_inventory(self.app)
+
+    def test_required_firmware_missing_empty_or_oversized_is_rejected(self):
+        for name in recovery.VENDOR_FIRMWARE:
+            path = self.esp / name
+            original = path.read_bytes()
+            for missing in (False, True):
+                if missing:
+                    path.unlink()
+                else:
+                    path.write_bytes(b"")
+                with self.subTest(name=name, missing=missing), self.assertRaises(recovery.RecoveryError):
+                    self.stage()
+                self.assertFalse((self.system / recovery.APP_NAME).exists())
+                path.write_bytes(original)
+        path = self.esp / "vendorfw/manifest.txt"
+        with path.open("wb") as stream:
+            stream.truncate((1 << 20) + 1)
+        with self.assertRaises(recovery.RecoveryError):
+            self.stage()
+
+    def test_optional_uboot_firmware_is_preserved_only_when_present(self):
+        name = recovery.OPTIONAL_VENDOR_FIRMWARE
+        path = self.esp / name
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"this-unit-usb-controller-firmware")
+        (self.esp / "vendorfw/unrelated.bin").write_bytes(b"do not include")
+        self.stage()
+        root = self.system / recovery.APP_NAME / "Contents/Resources/AuraPayloads"
+        manifest = json.loads((root / "manifest.json").read_text())
+        self.assertIn(name, manifest["vendorFirmware"])
+        self.assertEqual((root / name).read_bytes(), path.read_bytes())
+        self.assertNotIn("vendorfw/unrelated.bin", manifest["files"])
+
+    def test_required_firmware_symlink_is_not_copied(self):
+        path = self.esp / "vendorfw/firmware.tar"
+        path.unlink()
+        path.symlink_to(self.boot)
+        with self.assertRaises(recovery.RecoveryError):
+            self.stage()
 
     def test_bootstrap_is_bound_to_live_source_volume_and_owners(self):
         source_uuid = "55555555-5555-4555-8555-555555555555"

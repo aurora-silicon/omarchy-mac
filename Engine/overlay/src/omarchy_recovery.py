@@ -22,6 +22,8 @@ APP_NAME = "Omarchy Installer.app"
 PAYLOAD_DIRECTORY = "aurora/recovery"
 MANIFEST_NAME = "omarchy-recovery-app.json"
 STAGE2_PATH = "m1n1/boot.bin"
+VENDOR_FIRMWARE = ("vendorfw/firmware.tar", "vendorfw/firmware.cpio", "vendorfw/manifest.txt")
+OPTIONAL_VENDOR_FIRMWARE = "vendorfw/u-boot/asmedia/asm2214a-apple.bin"
 UUID_PATTERN = re.compile(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}\Z")
 
 
@@ -173,12 +175,12 @@ def _json(path, value):
     path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
 
 
-def _payload(path):
+def _payload(path, maximum=256 << 20):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise RecoveryError("finalized startup payload is missing")
     size = path.stat().st_size
-    if not 0 < size <= 256 << 20:
+    if not 0 < size <= maximum:
         raise RecoveryError("finalized startup payload has an invalid size")
     return path.read_bytes()
 
@@ -200,6 +202,16 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
     esp_root = Path(esp_root)
     stage1 = _payload(installer.boot_obj_path)
     stage2 = _payload(esp_root / STAGE2_PATH)
+    # Copy only this installation's finalized package. Never put these
+    # per-device inputs in the distributable application template.
+    firmware = {
+        name: _payload(esp_root / name, (1 << 20) if name.endswith(".txt") else (256 << 20))
+        for name in VENDOR_FIRMWARE
+    }
+    if not firmware["vendorfw/manifest.txt"].strip():
+        raise RecoveryError("finalized device firmware manifest is empty")
+    if os.path.lexists(esp_root / OPTIONAL_VENDOR_FIRMWARE):
+        firmware[OPTIONAL_VENDOR_FIRMWARE] = _payload(esp_root / OPTIONAL_VENDOR_FIRMWARE, 16 << 20)
     marker = Path(installer.iapm_path)
     if marker.parent != system or marker.name != ".IAPhysicalMedia":
         raise RecoveryError("unexpected Recovery launch marker path")
@@ -230,12 +242,15 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
         if payloads.exists():
             raise RecoveryError("Recovery template must not carry another installation's payloads")
         (payloads / "raw").mkdir(parents=True)
-        files = {"raw/aura-raw.bin": stage1, "raw/boot.bin": stage2}
+        (payloads / "vendorfw").mkdir()
+        files = {"raw/aura-raw.bin": stage1, "raw/boot.bin": stage2, **firmware}
         for name, data in files.items():
+            (payloads / name).parent.mkdir(parents=True, exist_ok=True)
             (payloads / name).write_bytes(data)
         _json(payloads / "manifest.json", {
             "schema": 2, "defaultMode": "raw", "nestedVirtualization": False,
             "modes": {"raw": {"espPath": STAGE2_PATH}},
+            "vendorFirmware": sorted(firmware),
             "files": {name: {"sha256": digest(data), "bytes": len(data)} for name, data in files.items()},
         })
         run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], check=True)

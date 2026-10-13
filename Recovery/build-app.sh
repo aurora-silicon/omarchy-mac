@@ -32,6 +32,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 xcrun swiftc Sources/RecoveryOwner.swift Sources/InstallConfiguration.swift Tests/InstallConfigurationCheck.swift -o "$OUT/configuration-check"
 "$OUT/configuration-check"
+xcrun swiftc Sources/RecoveryBaseline.swift Tests/RecoveryBaselineCheck.swift -o "$OUT/baseline-check"
+"$OUT/baseline-check"
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation Tests/BundleLookupCheck.m -o "$OUT/bundle-lookup-check"

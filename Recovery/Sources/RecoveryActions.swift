@@ -203,15 +203,8 @@ enum RecoveryActions {
     return m
   }
   static func asset(_ name: String, manifest: [String: Any]) throws -> Data {
-    try check(relative(name), "Invalid recovery asset path.")
-    guard let files = manifest["files"] as? [String: [String: Any]], let file = files[name],
-      let expected = file["sha256"] as? String
-    else {
-      throw RecoveryFailure(message: "A required recovery file is missing.")
-    }
-    let data = try Data(contentsOf: resources.appendingPathComponent("AuraPayloads/" + name))
-    try check(hash(data) == expected, "A recovery file failed its checksum: \(name)")
-    return data
+    try RecoveryBaseline.asset(
+      name, manifest: manifest, root: resources.appendingPathComponent("AuraPayloads"))
   }
   static func atomic(_ bytes: Data, to target: URL) throws {
     let fm = FileManager.default
@@ -273,6 +266,9 @@ enum RecoveryActions {
     let m = try manifest()
     let stage1 = try asset(selection.mode.stage1Path, manifest: m)
     let stage2 = try asset(selection.mode.stage2Path, manifest: m)
+    // A successful setup must retain a usable per-device repair baseline.
+    _ = try RecoveryBaseline.firmware(
+      manifest: m, root: resources.appendingPathComponent("AuraPayloads"))
     let modes = m["modes"] as? [String: [String: Any]]
     guard let entry = modes?[selection.mode.rawValue],
       let destination = entry["espPath"] as? String, destination == config.stage2Path
@@ -441,7 +437,8 @@ extension RecoveryActions {
     case ["recover"]:
       let record = try installed()
       guard let name = record["mode"] as? String, let mode = AuraBootMode(rawValue: name),
-        let path = record["stage2Path"] as? String, relative(path)
+        let path = record["stage2Path"] as? String,
+        path == RecoveryBaseline.stage2Path, path == (try configuration.get()).stage2Path
       else {
         throw RecoveryFailure(message: "The installed boot mode is not recorded.")
       }
@@ -450,15 +447,15 @@ extension RecoveryActions {
         hash(try asset(mode.stage1Path, manifest: m)) == record["stage1SHA256"] as? String,
         "The recovery baseline does not match the enrolled stage 1.")
       let bytes = try asset(mode.stage2Path, manifest: m)
-      let destination = try esp().appendingPathComponent(path)
+      var files = try RecoveryBaseline.firmware(
+        manifest: m, root: resources.appendingPathComponent("AuraPayloads"))
+      files[path] = bytes
+      let destination = try esp()
       let backup = state.appendingPathComponent("recover-" + UUID().uuidString + ".before")
-      let old = try Data(contentsOf: destination)
-      try atomic(old, to: backup)
-      do { try atomic(bytes, to: destination) } catch {
-        try atomic(old, to: destination)
-        throw error
+      try RecoveryBaseline.restore(files: files, root: destination, backup: backup) {
+        try atomic($0, to: $1)
       }
-      print("Stage 2 restored.")
+      print("Stage 2 and device firmware restored.")
     case ["nv", "on"], ["nv", "off"]:
       let record = try installed()
       try check(
