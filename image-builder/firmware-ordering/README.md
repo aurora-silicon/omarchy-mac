@@ -1,0 +1,11 @@
+# Per-machine firmware before peripheral probe
+
+The image's existing `omarchy-vendorfw-initrd.service` copies the target Mac's ESP `vendorfw/firmware.cpio` into `/vendorfw`, reached by the kernel through `/lib/firmware/vendor`. Its late counterpart preserves that directory across switch-root. The installer supplies the CPIO during installation; the image contains no device-specific calibration.
+
+AOP and MT7932 must not probe before that copy: AOP can bind successfully with its ALS left disabled, and a later udev trigger does not re-run its calibration setup. The blacklist here prevents automatic modalias loading. The added initrd service runs after extraction, checks J700's required files, then explicitly loads AOP and (only on J700) Wi-Fi. Explicit modprobe is unaffected by blacklist directives. On other Macs it loads AOP after their ordinary vendor extraction without requiring J700 files.
+
+Bluetooth retains its existing explicit, gated admission service, ordered after root firmware extraction. The root service drop-in also invokes the idempotent helper before desktop/network startup. Nothing unloads, resets or reprobes a running driver. The built-in dockchannel driver requests trackpad firmware when opening the interface, after the ordered disk-unlock or desktop startup.
+
+Install `aurora-vendor-order.install` as `/usr/lib/initcpio/install/aurora-vendor-order`, the numbered hook configuration under `/etc/mkinitcpio.conf.d`, blacklist under `/usr/lib/modprobe.d`, and service under `/usr/lib/systemd/system`. The helper and cryptsetup drop-in source live in `/usr/lib/omarchy/initcpio`; the install hook copies the latter into the generated initrd. Install `20-aurora-vendor-order.conf` under `/usr/lib/systemd/system/omarchy-vendor-firmware.service.d`.
+
+Image qualification exercises the installed helper with isolated firmware fixtures and a recording modprobe, verifies both regulatory policies and the helper/service in the generated initrd, and validates the initrd's systemd dependency graph. Physical first-boot peripheral operation still requires the installation test.

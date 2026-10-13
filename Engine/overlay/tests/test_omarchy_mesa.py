@@ -1,12 +1,14 @@
 import os
+import plistlib
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from omarchy_mesa import MesaError, calibration, collect  # noqa: E402
+from omarchy_mesa import MesaError, calibration, collect, has_builtin_sensor  # noqa: E402
 
 
 def der(tag, body):
@@ -23,6 +25,13 @@ def ia5(text):
 def img4(kind=b"FSC2", payload=b"CALB" + b"\x5a" * 300, manifest=b"IM4M"):
     im4p = der(0x30, ia5("IM4P") + der(0x16, kind) + ia5("mesa") + der(0x04, payload))
     return der(0x30, ia5("IMG4") + im4p + der(0xA0, der(0x30, der(0x16, manifest))))
+
+
+def comb(image=None):
+    if image is None:
+        image = img4(kind=b"FSCl", manifest=b"IM4M FSCl")
+    return der(0x30, ia5("comb") + der(0x30, ia5("fdrd") + der(0x04, image))
+               + der(0x30, ia5("secb")))
 
 
 class Fsc2CalibrationTests(unittest.TestCase):
@@ -57,6 +66,57 @@ class Fsc2CalibrationTests(unittest.TestCase):
             Path(device).write_bytes(b"")
             with self.assertRaisesRegex(MesaError, "not an iBoot System Container"):
                 collect(device)
+
+    def test_fscl_comb_wrapper_is_preserved(self):
+        blob = comb()
+        self.assertEqual(calibration(b"\0" * 4096 + blob + blob), blob)
+
+    def test_fscl_requires_complete_signed_comb(self):
+        for blob in (comb()[:-1], comb(img4(kind=b"FSCl", manifest=b"IM4M")),
+                     comb(img4(kind=b"FSCl", payload=b"no calibration", manifest=b"IM4M FSCl")),
+                     comb().replace(b"secb", b"nope")):
+            with self.subTest(blob=blob[:20]), self.assertRaisesRegex(MesaError, "found 0"):
+                calibration(blob)
+
+    def test_different_supported_formats_are_ambiguous(self):
+        with self.assertRaisesRegex(MesaError, "found 2"):
+            calibration(comb() + img4())
+
+    def test_nested_der_cannot_run_beyond_parent(self):
+        blob = comb()
+        # Delimit the outer sequence early while leaving trailing bytes in
+        # the scan window: parent bounds must still reject the record.
+        header = 2 + (blob[1] & 0x7f)
+        length = len(blob) - header - 1
+        damaged = bytes([0x30, blob[1]]) + length.to_bytes(header - 2, "big") + blob[header:]
+        with self.assertRaisesRegex(MesaError, "found 0"):
+            calibration(damaged)
+
+
+class SensorPresenceTests(unittest.TestCase):
+    def query(self, nodes):
+        def run(command, **kwargs):
+            self.assertIn("IODeviceTree", command)
+            self.assertIn("arm-io", command)
+            return SimpleNamespace(stdout=plistlib.dumps(nodes))
+        return has_builtin_sensor(run=run)
+
+    def test_builtin_spi2_is_present(self):
+        self.assertTrue(self.query([{"IORegistryEntryName": "arm-io", "IORegistryEntryChildren": [
+            {"IORegistryEntryName": "spi2@385108000"}, {"IORegistryEntryName": "spi3@7510C000"}
+        ]}]))
+
+    def test_other_spi_and_external_touch_id_do_not_count(self):
+        self.assertFalse(self.query([{"IORegistryEntryName": "arm-io", "IORegistryEntryChildren": [
+            {"IORegistryEntryName": "spi3@7510C000"}, {"IORegistryEntryName": "qspi@75110000"},
+            {"IORegistryEntryName": "AppleMesaAccessory"},
+        ]}]))
+
+    def test_missing_or_malformed_query_is_not_absent_hardware(self):
+        for nodes in ([], [{"IORegistryEntryName": "arm-io"}],
+                      [{"IORegistryEntryName": "wrong", "IORegistryEntryChildren": []}]):
+            with self.subTest(nodes=nodes), self.assertRaises(MesaError):
+                self.query(nodes)
 
 
 if __name__ == "__main__":

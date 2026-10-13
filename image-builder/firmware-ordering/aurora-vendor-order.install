@@ -1,0 +1,22 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+build() {
+  add_binary bash
+  add_binary modprobe
+  add_binary grep
+  add_module aop
+  add_module aop_als
+  add_module mt7932-fullmac
+  add_file /usr/lib/firmware/mediatek/mt7932/policy/US.bin
+  add_file /usr/lib/firmware/mediatek/mt7932/policy/world-XZ.bin
+  add_file /usr/lib/modprobe.d/aurora-firmware-order.conf
+  add_file /usr/lib/omarchy/initcpio/aurora-peripheral-firmware.sh
+  add_file /usr/lib/systemd/system/aurora-peripheral-firmware.service
+  add_symlink /usr/lib/systemd/system/sysinit.target.wants/aurora-peripheral-firmware.service ../aurora-peripheral-firmware.service
+  add_symlink /usr/lib/systemd/system/initrd-root-device.target.wants/aurora-peripheral-firmware.service ../aurora-peripheral-firmware.service
+  add_file /usr/lib/omarchy/initcpio/aurora-vendor-order-cryptsetup.conf \
+    /usr/lib/systemd/system/systemd-cryptsetup@.service.d/aurora-vendor-order.conf
+}
+help() {
+  echo 'Load AOP and Neo Wi-Fi only after the ESP vendor firmware is extracted.'
+}

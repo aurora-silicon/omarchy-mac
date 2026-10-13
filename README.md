@@ -11,6 +11,7 @@ This first extraction preserves the installer behavior and Git attribution. The 
 | `Sources/`, `Tests/`, `Package.swift` | Swift macOS app, trust core, helper, simulation and tests |
 | `Engine/` | Pinned Asahi source lock, Python overlay, build tooling and tests |
 | `Packaging/` | App and macOS package assembly |
+| [`Recovery/`](Recovery/README.md) | Omarchy Step 2 GUI preview, standalone macOS 13 target and app packaging |
 | `Release/` | Inherited public trust root and release descriptor |
 | `scripts/` | Catalog and release tools, with fixture tests |
 | `test/` | Portable aggregate runner and extracted packaging tests |

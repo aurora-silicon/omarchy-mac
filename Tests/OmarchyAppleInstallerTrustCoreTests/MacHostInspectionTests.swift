@@ -36,6 +36,14 @@
       XCTAssertEqual(result.storage.shrinkableBytes, 400)
     }
 
+    func testNeoInspectionRemainsCatalogGated() throws {
+      let result = try makeInspector(model: "Mac17,5", chip: "Apple A18 Pro", target: "J700")
+        .inspect()
+      XCTAssertEqual(result.identity.deviceIdentifier, "apple,j700")
+      XCTAssertEqual(result.identity.chip, "Apple A18 Pro")
+      XCTAssertEqual(result.eligibility, .requiresSignedCatalog)
+    }
+
     func testM4InspectionIsBlockedBeforeCatalogOrAuthorization() throws {
       let inspector = makeInspector(
         model: "Mac16,8",
@@ -100,7 +108,11 @@
       let result = try AppleSiliconHostInspector().inspect()
 
       XCTAssertTrue(result.identity.model.hasPrefix("Mac"))
-      XCTAssertTrue(result.identity.chip.hasPrefix("Apple M"))
+      if result.identity.deviceIdentifier == "apple,j700" {
+        XCTAssertEqual(result.identity.chip, "Apple A18 Pro")
+      } else {
+        XCTAssertTrue(result.identity.chip.hasPrefix("Apple M"))
+      }
       XCTAssertTrue(result.identity.deviceIdentifier.hasPrefix("apple,j"))
       XCTAssertFalse(result.macOSVersion.isEmpty)
       XCTAssertTrue(result.storage.isInternal)

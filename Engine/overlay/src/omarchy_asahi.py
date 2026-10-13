@@ -14,6 +14,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import zipfile
 import zlib
 from pathlib import PurePosixPath
@@ -24,6 +25,9 @@ import stub
 
 import omarchy_mesa
 import omarchy_mt7932
+import omarchy_als
+import omarchy_isp
+import omarchy_recovery
 import omarchy_planner
 from omarchy_image import (
     WRITE_VERIFICATION, flush_device, hash_target, open_target, timing, write_image,
@@ -398,6 +402,7 @@ CANONICAL_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 PLACEHOLDER_UUID = "00000000-0000-0000-0000-000000000000"
 
 BoardStage1 = collections.namedtuple("BoardStage1", "member window_ms os_firmware macs")
+COMMON_STAGE1 = BoardStage1("esp/aurora/stage1.bin", 0, None, "all admitted Apple Silicon Macs")
 
 # Boards that boot through Aurora's own Stage 1 instead of asahi's. os_firmware
 # is the only OS firmware the image boots, or None for any.
@@ -441,8 +446,10 @@ def fill_aurora_stage1(image, uuid, path, window_ms):
     return image[:offset] + block + image[offset + STAGE1_BLOCK:]
 
 
-def board_stage1(device_class, os_firmware):
+def board_stage1(device_class, os_firmware, members=()):
     """The Aurora Stage 1 this Mac and OS firmware boot through, or None."""
+    if COMMON_STAGE1.member in members:
+        return COMMON_STAGE1
     board = BOARD_STAGE1.get(device_class)
     if board is None or board.os_firmware not in (None, os_firmware):
         return None
@@ -462,11 +469,15 @@ def read_board_stage1(board, read_member, next_object="m1n1/boot.bin"):
 def install_board_stage1(
     device_class, os_firmware, read_member, esp_uuid, boot_object, next_object="m1n1/boot.bin"
 ):
-    """Replace asahi's Stage 1 on boards that need Aurora's own."""
-    board = board_stage1(device_class, os_firmware)
+    """Use the common image when supplied, with legacy image compatibility."""
+    try:
+        common_image = read_member(COMMON_STAGE1.member)
+    except KeyError:
+        common_image = None
+    board = COMMON_STAGE1 if common_image is not None else board_stage1(device_class, os_firmware)
     if board is None:
         return
-    image = read_board_stage1(board, read_member, next_object)
+    image = common_image if common_image is not None else read_board_stage1(board, read_member, next_object)
     filled = fill_aurora_stage1(image, esp_uuid.lower(), next_object, board.window_ms)
     with open(boot_object, "wb") as fd:
         fd.write(filled)
@@ -485,7 +496,10 @@ BOARD_STAGE2 = {"j700ap": "esp/m1n1/boot-j700.bin"}
 def esp_board_layout(device_class, members):
     """Each payload ESP member's path on this board's ESP; absent ones are not installed."""
     members = set(members)
-    own = BOARD_STAGE2.get(device_class)
+    common = COMMON_STAGE1.member in members
+    if common and ESP_STAGE2 not in members:
+        raise AsahiAdapterError(f"this common image has no {ESP_STAGE2}")
+    own = None if common else BOARD_STAGE2.get(device_class)
     if own is not None and own not in members:
         board = BOARD_STAGE1.get(device_class)
         macs = board.macs if board is not None else device_class
@@ -497,7 +511,9 @@ def esp_board_layout(device_class, members):
             raise AsahiAdapterError("ESP member is outside the ESP source")
         if member == own:
             layout[member] = ESP_STAGE2[len(prefix):]
-        elif member in BOARD_STAGE2.values() or (own is not None and member == ESP_STAGE2):
+        elif (member in BOARD_STAGE2.values()
+              or (common and member in {board.member for board in BOARD_STAGE1.values()})
+              or (own is not None and member == ESP_STAGE2)):
             continue
         else:
             layout[member] = member[len(prefix):]
@@ -536,6 +552,70 @@ class _WithoutRecoveryMount:
         return self._module.run(command, *args, **kwargs)
 
 
+class _WithNeoFirmwareArchive(_WithoutRecoveryMount):
+    """Preserve the newer camera daemon and raw ALS input in fallback data."""
+
+    def __init__(self, module, raw_directory):
+        super().__init__(module)
+        self.raw_directory = raw_directory
+
+    def run(self, command, *args, **kwargs):
+        if command[:3] == ["tar", "czf", "all_firmware.tar.gz"]:
+            command = list(command)
+            camera_directory = os.path.abspath("recovery/usr/sbin")
+            if os.path.isfile(os.path.join(camera_directory, "appleh16camerad")):
+                command += ["-C", camera_directory, "appleh16camerad"]
+            command += ["-C", self.raw_directory, "j700-exbright-LSCI.bin"]
+        # Mount handling remains delegated to the original stub module (or
+        # the encrypted-Recovery wrapper), not suppressed by this wrapper.
+        return self._module.run(command, *args, **kwargs)
+
+
+@contextlib.contextmanager
+def _neo_peripheral_collectors(installer):
+    """Patch only the Neo's collectors; retain the inherited legacy paths."""
+    if getattr(getattr(installer, "sysinfo", None), "device_class", "") != "j700ap":
+        yield
+        return
+    try:
+        raw = omarchy_als.read_lsci()
+        als = omarchy_als.calibration(raw)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        raise AsahiAdapterError(f"MacBook Neo ALS calibration collection failed: {error}") from error
+
+    class NeoAlsCollection:
+        def files(self):
+            name = omarchy_als.FIRMWARE_NAME
+            return [(name, asahi_firmware.core.FWFile(name, als))]
+
+    upgraded_isp = omarchy_isp.collection_class(asahi_firmware.isp)
+
+    class NeoIspCollection(upgraded_isp):
+        def __init__(self, source_path):
+            super().__init__(source_path)
+            names = {name for name, _ in self.files()}
+            required = {"apple/isp_" + sensor + ".dat" for sensor in (
+                "1921_01XX", "1922_02XX", "1925_03XX",
+            )}
+            missing = required - names
+            if missing:
+                raise AsahiAdapterError("MacBook Neo camera firmware is missing: " + ", ".join(sorted(missing)))
+
+    old_als, old_isp, old_process = stub.AlsFWCollection, stub.ISPFWCollection, stub.subprocess
+    with tempfile.TemporaryDirectory(prefix="omarchy-neo-firmware-") as directory:
+        with open(os.path.join(directory, "j700-exbright-LSCI.bin"), "wb") as output:
+            output.write(raw)
+        try:
+            stub.AlsFWCollection = NeoAlsCollection
+            stub.ISPFWCollection = NeoIspCollection
+            stub.subprocess = _WithNeoFirmwareArchive(old_process, directory)
+            yield
+        except omarchy_isp.IspError as error:
+            raise AsahiAdapterError(f"MacBook Neo camera firmware collection failed: {error}") from error
+        finally:
+            stub.AlsFWCollection, stub.ISPFWCollection, stub.subprocess = old_als, old_isp, old_process
+
+
 def stub_installer(sysinfo, dutil, osinfo):
     """A StubInstaller that reads macOS 26 firmware's bootcaches.plist and
     writes Omarchy's own step2.sh as its Recovery setup."""
@@ -554,10 +634,12 @@ def stub_installer(sysinfo, dutil, osinfo):
     collect_firmware = installer.collect_firmware
 
     def collect_firmware_from_an_encrypted_recovery(pkg):
-        with _newer_trackpad_keys():
+        with _newer_trackpad_keys(), _neo_peripheral_collectors(installer):
             result = _collect_firmware(pkg)
         _collect_neo_radios(installer, pkg)
         _collect_neo_touch_id(installer, pkg)
+        if getattr(getattr(installer, "sysinfo", None), "device_class", "") == "j700ap":
+            _validate_neo_firmware_package(pkg)
         return result
 
     def _collect_firmware(pkg):
@@ -607,19 +689,39 @@ def stub_installer(sysinfo, dutil, osinfo):
     return installer
 
 
-def _collect_neo_radios(installer, pkg, collect=omarchy_mt7932.collect):
-    """Add a MacBook Neo's MT7932 Wi-Fi and Bluetooth inputs to its firmware.
+def _validate_neo_firmware_package(pkg):
+    """Verify legacy collection did not silently omit Neo's trackpad."""
+    names = {entry.split()[1] for entry in pkg.manifest if len(entry.split()) >= 2}
+    required = {"apple/tpmtfw-j700.bin", omarchy_als.FIRMWARE_NAME} | {
+        "apple/isp_" + sensor + ".dat" for sensor in (
+            "1921_01XX", "1922_02XX", "1925_03XX",
+        )
+    }
+    missing = required - names
+    if missing:
+        raise AsahiAdapterError("MacBook Neo firmware package is incomplete: " + ", ".join(sorted(missing)))
 
-    The radios are experimental: without these files the Neo still installs
-    and boots, so a failure is logged and the install goes on.
-    """
+
+def _collect_neo_radios(installer, pkg, collect=omarchy_mt7932.collect):
+    """Require the Neo's complete MT7932 Wi-Fi and Bluetooth input set."""
     if getattr(getattr(installer, "sysinfo", None), "device_class", "") != "j700ap":
         return
     try:
         files = collect()
+        required = {
+            "mediatek/mt7932/" + name for name in (
+                omarchy_mt7932.WIFI_PATCH, omarchy_mt7932.WIFI_RAM,
+                "ppr.bin", "oca2.bin", "wcal.bin", "config-original.bin",
+            )
+        } | {"mediatek/" + name for name in omarchy_mt7932.BT_FIRMWARE} | {
+            "mediatek/" + omarchy_mt7932.BT_PTX,
+            "mediatek/j700-mt7932-btcal.bin", "mediatek/j700-mt7932-bdaddr.bin",
+        }
+        missing = sorted(name for name in required if not files.get(name))
+        if missing:
+            raise omarchy_mt7932.Mt7932Error("missing required files: " + ", ".join(missing))
     except (OSError, ValueError, subprocess.CalledProcessError, omarchy_mt7932.Mt7932Error) as error:
-        logging.warning("MacBook Neo radio firmware was not collected: %s", error)
-        return
+        raise AsahiAdapterError(f"MacBook Neo radio firmware collection failed: {error}") from error
     for name, data in sorted(files.items()):
         pkg.add_file(name, asahi_firmware.core.FWFile(name, data))
     logging.info("MacBook Neo radio firmware: %d files", len(files))
@@ -634,19 +736,20 @@ def _iboot_system_container(dutil):
     return "/dev/r" + partition["DeviceIdentifier"]
 
 
-def _collect_neo_touch_id(installer, pkg, collect=omarchy_mesa.collect):
-    """Add a MacBook Neo's Touch ID calibration to its firmware.
-
-    Touch ID on the Neo is experimental too: without the calibration the Neo
-    installs and boots, so a failure is logged and the install goes on.
-    """
+def _collect_neo_touch_id(installer, pkg, collect=omarchy_mesa.collect,
+                          sensor_present=omarchy_mesa.has_builtin_sensor):
+    """Require calibration on sensor-equipped Neos; skip absent hardware."""
     if getattr(getattr(installer, "sysinfo", None), "device_class", "") != "j700ap":
         return
     try:
+        if not sensor_present():
+            logging.info("MacBook Neo has no built-in Touch ID sensor; skipping calibration")
+            return
         files = collect(_iboot_system_container(installer.dutil))
-    except (OSError, KeyError, IndexError, omarchy_mesa.MesaError) as error:
-        logging.warning("MacBook Neo Touch ID calibration was not collected: %s", error)
-        return
+        if not files.get(omarchy_mesa.FIRMWARE_NAME):
+            raise omarchy_mesa.MesaError("sensor is present but calibration is missing")
+    except (OSError, KeyError, IndexError, subprocess.CalledProcessError, omarchy_mesa.MesaError) as error:
+        raise AsahiAdapterError(f"MacBook Neo Touch ID collection failed: {error}") from error
     for name, data in sorted(files.items()):
         pkg.add_file(name, asahi_firmware.core.FWFile(name, data))
     logging.info("MacBook Neo Touch ID calibration: %d bytes", sum(map(len, files.values())))
@@ -1061,12 +1164,13 @@ class AsahiStage1Adapter:
         )
         self.installer.ins.load_ipsw(ipsw)
         self.os_firmware = ipsw.version.split(maxsplit=1)[0]
-        board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware)
+        esp_members = self._esp_members()
+        board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware, esp_members)
         if board is not None:
             read_board_stage1(board, self.osins.pkg.read, self.template["next_object"])
         device_class = self.installer.sysinfo.device_class
-        esp_board_layout(device_class, self._esp_members())
-        stage2 = BOARD_STAGE2.get(device_class)
+        esp_board_layout(device_class, esp_members)
+        stage2 = ESP_STAGE2 if COMMON_STAGE1.member in esp_members else BOARD_STAGE2.get(device_class)
         if stage2 is not None and self.osins.pkg.getinfo(stage2).file_size <= 0:
             raise AsahiAdapterError(f"this image has an empty {stage2}")
         self.installer.osins = self.osins
@@ -1222,6 +1326,12 @@ class AsahiStage1Adapter:
             self._esp_members(),
             self.installer.dutil.mount(self.osins.efi_part.name),
         )
+        if self.native_recovery_gui:
+            omarchy_recovery.stage(
+                self.installer.ins, self.osins.efi_part.uuid,
+                self.installer.dutil.mount(self.osins.efi_part.name),
+                source_os=self.installer.cur_os,
+            )
         for target in self.osins.idata_targets:
             self.installer.ins.collect_installer_data(target)
             shutil.copy(
@@ -1803,6 +1913,18 @@ class AsahiStage1Adapter:
             members[member.filename] = member
         if not required.issubset(members):
             raise AsahiAdapterError("incomplete Omarchy full-OS payload")
+        recovery_manifest = (
+            "esp/" + omarchy_recovery.PAYLOAD_DIRECTORY + "/" + omarchy_recovery.MANIFEST_NAME
+        )
+        recovery_mode = self.template.get("recovery_gui")
+        if recovery_mode not in (None, "omarchy-native-v1"):
+            raise AsahiAdapterError("unknown Recovery GUI contract")
+        self.native_recovery_gui = recovery_mode is not None or recovery_manifest in members
+        if self.native_recovery_gui:
+            try:
+                omarchy_recovery.validate_payload(self.osins.pkg)
+            except omarchy_recovery.RecoveryError as error:
+                raise AsahiAdapterError(str(error)) from error
         for name in required:
             if members[name].file_size <= 0:
                 raise AsahiAdapterError("empty Omarchy full-OS payload member")

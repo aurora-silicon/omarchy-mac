@@ -8,6 +8,7 @@ struct OmarchyRemovalSheet: View {
   let onBusyChanged: (Bool) -> Void
   let onClose: () -> Void
   let onRequiresReview: () -> Void
+  let simulationScenario: String?
 
   @State private var ticket: OmarchyRemovalTicket?
   @State private var phrase = ""
@@ -35,9 +36,17 @@ struct OmarchyRemovalSheet: View {
 
   init(
     isSimulation: Bool, onBusyChanged: @escaping (Bool) -> Void,
-    onClose: @escaping () -> Void, onRequiresReview: @escaping () -> Void
+    onClose: @escaping () -> Void, onRequiresReview: @escaping () -> Void,
+    simulationScenario: String? = nil
   ) {
     self.isSimulation = isSimulation
+    self.simulationScenario = simulationScenario
+    #if DEBUG
+      if let simulationScenario, let selected = RemovalPreviewScenario(rawValue: simulationScenario)
+      {
+        _scenario = State(initialValue: selected)
+      }
+    #endif
     self.onBusyChanged = onBusyChanged
     self.onClose = onClose
     self.onRequiresReview = onRequiresReview
@@ -104,6 +113,14 @@ struct OmarchyRemovalSheet: View {
     .task { if !preloaded { await prepare() } }
     .onDisappear { password = "" }
     .onChange(of: busy) { _, value in onBusyChanged(value) }
+    .onChange(of: simulationScenario) { _, value in
+      #if DEBUG
+        if !busy, let value, let selected = RemovalPreviewScenario(rawValue: value) {
+          scenario = selected
+          Task { await prepare() }
+        }
+      #endif
+    }
   }
 
   private var heightCap: CGFloat {
@@ -122,20 +139,7 @@ struct OmarchyRemovalSheet: View {
       Text(heading)
         .font(OmarchyTheme.title)
         .foregroundStyle(OmarchyTheme.accent)
-      #if DEBUG
-        if isSimulation {
-          Picker("Removal test", selection: $scenario) {
-            ForEach(RemovalPreviewScenario.allCases, id: \.self) { item in
-              Text(item.rawValue).tag(item)
-            }
-          }
-          .disabled(busy)
-          .onChange(of: scenario) { _, _ in Task { await prepare() } }
-          Text("SIMULATION · No disks will be changed")
-            .font(OmarchyTheme.detail)
-            .foregroundStyle(OmarchyTheme.secondaryText)
-        }
-      #endif
+
       if reenablingHelper && needsAccountFirst && !busy {
         // The same caution callout as the authorize sheet, so a switched-off
         // helper is not mistaken for the ordinary first-time account step.

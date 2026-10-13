@@ -58,7 +58,14 @@ done
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../Packaging" && pwd)/identity.conf"
 helper_identifier="$INSTALLER_HELPER_IDENTIFIER"
 team_id="${OMARCHY_TEAM_ID:-$INSTALLER_TEAM_ID}"
-fingerprint="sha256:$(/usr/bin/shasum -a 256 "$public_key" | awk '{print $1}')"
+fingerprint="$(python3 - "$public_key" <<'PYHASH'
+import hashlib
+from pathlib import Path
+import sys
+
+print("sha256:" + hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PYHASH
+)"
 if (( adhoc )); then
   requirement="identifier \"$helper_identifier\""
 else

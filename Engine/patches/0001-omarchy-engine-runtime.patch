@@ -78,14 +78,14 @@ index 88dd2ab..47aad7c 100644
 +         False,
 +         ["j700ap"],
 +         "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-65618/10445B26-DE2C-43EC-9149-0A831602E74B/UniversalMac_26.6_25G72_Restore.ipsw"),
-+    # Optional for the M3 MacBook Airs: listed first, it is chosen only when
++    # Optional for the M3 Airs and Neo: it is chosen only when
 +    # the payload's supported_fw names no other version they can use.
 +    IPSW("26.6.2",
 +         "26.0",
 +         "mBoot-18000.161.10",
 +         "25.7.83.0.0,0",
 +         False,
-+         ["j613ap", "j615ap"],
++         ["j613ap", "j615ap", "j700ap"],
 +         "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"),
      IPSW("12.3.1",
           "12.1",

@@ -96,7 +96,7 @@ class PatchedFirmwareTableTests(unittest.TestCase):
         self.assertEqual((neo.version, neo.devices), ("26.6", ["j700ap"]))
         self.assertEqual(air, IPSW(
             "26.6.2", "26.0", "mBoot-18000.161.10", "25.7.83.0.0,0", False,
-            ["j613ap", "j615ap"],
+            ["j613ap", "j615ap", "j700ap"],
             "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/"
             "A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"))
 
@@ -143,6 +143,18 @@ class DefaultFirmwareTests(unittest.TestCase):
         # Its chip alone sizes the stub, as with the bundled 13.5/14.8.3 list.
         self.assertEqual(choose(sysinfo, device, ["13.5", "14.8.3"]),
                          (None, STUB_SIZE_MACOS26))
+
+    def test_neo_26_6_2_selects_verified_25g83_and_keeps_legacy_available(self):
+        sysinfo, device = mac("j700ap", 0x8140)
+        selected = default_ipsw(
+            IPSW_VERSIONS, CHIP_MIN_VER, sysinfo, device,
+            metadata(["26.6", "26.6.2"]), split_ver)
+        self.assertEqual(selected.version, "26.6.2")
+        self.assertTrue(selected.url.endswith("UniversalMac_26.6.2_25G83_Restore.ipsw"))
+        self.assertEqual(choose(sysinfo, device, ["26.6.2"]),
+                         ("26.6.2", STUB_SIZE_MACOS26))
+        self.assertEqual(choose(sysinfo, device, ["26.6"]),
+                         ("26.6", STUB_SIZE_MACOS26))
 
     def test_an_unreadable_sfr_version_keeps_the_size_the_mac_had(self):
         sysinfo, device = mac("j613ap", 0x8122, sfr_full_ver=None)
