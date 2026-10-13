@@ -79,7 +79,7 @@ enum RecoveryOwnerResolver {
   static func resolve(
     admins: [String: Any], targetUsers: [String: Any], bootstrap: BootstrapAuthorization?,
     pendingAccount: RecoveryOwner? = nil,
-    source: () throws -> (info: [String: Any], users: [String: Any])
+    source: () throws -> (info: [String: Any], users: [String: Any], snapshots: Set<String>)
   ) throws -> RecoveryOwner {
     if let pendingAccount, isOwner(pendingAccount, users: targetUsers) {
       return pendingAccount
@@ -94,7 +94,10 @@ enum RecoveryOwnerResolver {
       guard let bootstrap else { throw RecoveryOwnerError.noOwner }
       try bootstrap.validate()
       let observed = try source()
-      guard (observed.info["VolumeUUID"] as? String)?.uppercased() == bootstrap.sourceSystemUUID,
+      guard let actual = (observed.info["VolumeUUID"] as? String)?.uppercased(),
+        UUID(uuidString: actual) != nil,
+        actual == bootstrap.sourceSystemUUID
+          || observed.snapshots.contains(bootstrap.sourceSystemUUID),
         (observed.info["APFSVolumeGroupID"] as? String)?.uppercased() == bootstrap.sourceGroupUUID
       else { throw RecoveryOwnerError.noOwner }
       let allowed = Set(bootstrap.ownerUUIDs)
@@ -104,5 +107,26 @@ enum RecoveryOwnerResolver {
       }
       return try resolve(admins: admins, cryptoUsers: ["Users": users])
     }
+  }
+
+  static func sourceSystem(
+    group: String, candidates: [[String: Any]]
+  ) throws -> [String: Any] {
+    let matches = candidates.filter {
+      ($0["APFSVolumeGroupID"] as? String)?.uppercased() == group
+        && ($0["Roles"] as? [String] ?? []).contains("System")
+    }
+    guard matches.count == 1 else { throw RecoveryOwnerError.noOwner }
+    return matches[0]
+  }
+
+  static func snapshotUUIDs(_ listing: [String: Any]) -> Set<String> {
+    Set(
+      (listing["Snapshots"] as? [[String: Any]] ?? []).compactMap {
+        guard let raw = ($0["SnapshotUUID"] ?? $0["APFSSnapshotUUID"]) as? String,
+          let uuid = UUID(uuidString: raw)
+        else { return nil }
+        return uuid.uuidString
+      })
   }
 }

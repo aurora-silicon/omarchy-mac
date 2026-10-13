@@ -16,12 +16,12 @@ import Foundation
     }
     let result = try RecoveryOwnerResolver.resolve(
       admins: admins, targetUsers: users([]), bootstrap: bootstrap,
-      source: { (sourceInfo, users([first])) })
+      source: { (sourceInfo, users([first]), []) })
     precondition(result.username == "source-owner" && result.uuid == UUID(uuidString: first))
     let pending = RecoveryOwner(username: "new-owner", uuid: UUID(uuidString: second)!)
     let firstBoot = try RecoveryOwnerResolver.resolve(
       admins: admins, targetUsers: users([]), bootstrap: bootstrap, pendingAccount: pending,
-      source: { (sourceInfo, users([first])) })
+      source: { (sourceInfo, users([first]), []) })
     precondition(firstBoot == result)
     let authorized = try RecoveryOwnerResolver.resolve(
       admins: admins, targetUsers: users([second]), bootstrap: bootstrap, pendingAccount: pending,
@@ -45,7 +45,7 @@ import Foundation
     refused {
       try RecoveryOwnerResolver.resolve(
         admins: ["forged": ["GeneratedUID": second]], targetUsers: users([]), bootstrap: bootstrap,
-        source: { (sourceInfo, users([first])) })
+        source: { (sourceInfo, users([first]), []) })
     }
     refused {
       try RecoveryOwnerResolver.resolve(
@@ -55,18 +55,18 @@ import Foundation
     refused {
       try RecoveryOwnerResolver.resolve(
         admins: admins, targetUsers: users([]), bootstrap: bootstrap,
-        source: { (["VolumeUUID": second, "APFSVolumeGroupID": sourceGroup], users([first])) })
+        source: { (["VolumeUUID": second, "APFSVolumeGroupID": sourceGroup], users([first]), []) })
     }
     refused {
       try RecoveryOwnerResolver.resolve(
         admins: admins, targetUsers: users([]), bootstrap: bootstrap,
-        source: { (["VolumeUUID": sourceID, "APFSVolumeGroupID": second], users([first])) })
+        source: { (["VolumeUUID": sourceID, "APFSVolumeGroupID": second], users([first]), []) })
     }
     refused {
       try RecoveryOwnerResolver.resolve(
         admins: ["one": ["GeneratedUID": first], "two": ["GeneratedUID": second]],
         targetUsers: users([]), bootstrap: bootstrap,
-        source: { (sourceInfo, users([first, second])) })
+        source: { (sourceInfo, users([first, second]), []) })
     }
     refused {
       try RecoveryOwnerResolver.resolve(
@@ -79,8 +79,41 @@ import Foundation
     refused {
       try RecoveryOwnerResolver.resolve(
         admins: admins, targetUsers: users([]), bootstrap: unregistered,
-        source: { (sourceInfo, users([first])) })
+        source: { (sourceInfo, users([first]), []) })
     }
+    let snapshot = "55555555-5555-4555-8555-555555555555"
+    let legacy = BootstrapAuthorization(
+      mode: "source-volume-owner", sourceSystemUUID: snapshot,
+      sourceGroupUUID: sourceGroup, ownerUUIDs: [first])
+    let migrated = try RecoveryOwnerResolver.resolve(
+      admins: admins, targetUsers: users([]), bootstrap: legacy,
+      source: { (sourceInfo, users([first]), [snapshot]) })
+    precondition(migrated == result)
+    refused {
+      try RecoveryOwnerResolver.resolve(
+        admins: admins, targetUsers: users([]), bootstrap: legacy,
+        source: { (sourceInfo, users([first]), []) })
+    }
+    refused {
+      try RecoveryOwnerResolver.resolve(
+        admins: admins, targetUsers: users([]), bootstrap: legacy,
+        source: {
+          (["VolumeUUID": sourceID, "APFSVolumeGroupID": second], users([first]), [snapshot])
+        })
+    }
+    let system = sourceInfo.merging(["Roles": ["System"]]) { _, new in new }
+    let data = sourceInfo.merging(["Roles": ["Data"]]) { _, new in new }
+    let selectedSystem = try RecoveryOwnerResolver.sourceSystem(
+      group: sourceGroup, candidates: [data, system])
+    precondition(selectedSystem["VolumeUUID"] as? String == sourceID)
+    do {
+      _ = try RecoveryOwnerResolver.sourceSystem(group: sourceGroup, candidates: [system, system])
+      fatalError("duplicate System volumes must be rejected")
+    } catch {}
+    precondition(
+      RecoveryOwnerResolver.snapshotUUIDs([
+        "Snapshots": [["SnapshotUUID": snapshot], ["SnapshotUUID": "invalid"]]
+      ]) == [snapshot])
     print(
       "PASS explicit bootstrap, target precedence, forged/missing/changed/ambiguous source rejection"
     )

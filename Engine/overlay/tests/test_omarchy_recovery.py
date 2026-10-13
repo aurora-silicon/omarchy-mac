@@ -237,11 +237,14 @@ class RecoveryTests(unittest.TestCase):
                                     preboot=str(preboot), preboot_vgid=preboot_uuid)
 
         def get(*args):
+            if args == ("apfs", "list", "-plist"):
+                return {"Containers": [{"Volumes": [{"APFSVolumeUUID": source_uuid,
+                                                       "Roles": ["System"]}]}]}
             if args[0] == "apfs":
                 self.assertEqual(args, ("apfs", "listUsers", source_uuid, "-plist"))
                 return {"Users": [{"APFSCryptoUserUUID": value, "VolumeOwner": True}
                                   for value in (owner_uuid, other_owner)]}
-            if args[-1] == "source-system":
+            if args[-1] in ("source-system", source_uuid):
                 return {"VolumeUUID": source_uuid, "APFSVolumeGroupID": source_group}
             if args[-1] == str(preboot):
                 return {"VolumeUUID": preboot_uuid}
@@ -261,6 +264,56 @@ class RecoveryTests(unittest.TestCase):
         source_os.vgid = SYSTEM
         with self.assertRaisesRegex(recovery.RecoveryError, "source volume identity changed"):
             recovery.target_config(self.installer, ESP, str(self.esp), source_os, "source-user")
+
+
+class SourceSystemTests(unittest.TestCase):
+    def setUp(self):
+        self.system = "11111111-1111-4111-8111-111111111111"
+        self.snapshot = "22222222-2222-4222-8222-222222222222"
+        self.group = "33333333-3333-4333-8333-333333333333"
+        self.observed_group = self.group
+        self.volumes = [{"APFSVolumeUUID": self.system, "Roles": ["System"]}]
+        self.info = {"VolumeUUID": self.system, "APFSVolumeGroupID": self.group}
+        self.calls = []
+
+    def get(self, *args):
+        self.calls.append(args)
+        if args == ("apfs", "list", "-plist"):
+            return {"Containers": [{"Volumes": self.volumes}]}
+        if args == ("info", "-plist", "/"):
+            return {"VolumeUUID": self.snapshot, "APFSSnapshotUUID": self.snapshot,
+                    "APFSVolumeGroupID": self.observed_group}
+        if args == ("info", "-plist", self.system):
+            return self.info
+        raise AssertionError(args)
+
+    def resolve(self):
+        return recovery.source_system_volume(
+            SimpleNamespace(get=self.get), SimpleNamespace(sys_volume="/", vgid=self.group))
+
+    def test_boot_snapshot_resolves_to_underlying_system_volume(self):
+        self.assertEqual(self.resolve()["VolumeUUID"], self.system)
+        self.assertNotIn(("info", "-plist", self.snapshot), self.calls)
+
+    def test_data_role_is_not_a_system_volume(self):
+        self.volumes[0]["Roles"] = ["Data"]
+        with self.assertRaisesRegex(recovery.RecoveryError, "missing or ambiguous"):
+            self.resolve()
+
+    def test_ambiguous_system_volumes_are_rejected(self):
+        self.volumes *= 2
+        with self.assertRaisesRegex(recovery.RecoveryError, "missing or ambiguous"):
+            self.resolve()
+
+    def test_source_group_change_is_rejected(self):
+        self.observed_group = self.system
+        with self.assertRaisesRegex(recovery.RecoveryError, "identity changed"):
+            self.resolve()
+
+    def test_enumerated_volume_identity_change_is_rejected(self):
+        self.info["VolumeUUID"] = self.snapshot
+        with self.assertRaisesRegex(recovery.RecoveryError, "identity changed"):
+            self.resolve()
 
 
 if __name__ == "__main__":

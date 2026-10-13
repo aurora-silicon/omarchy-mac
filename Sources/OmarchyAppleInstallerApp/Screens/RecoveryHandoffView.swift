@@ -8,6 +8,8 @@ struct RecoveryHandoffView: View {
   @State private var busy = false
   @State private var failure: String?
   @State private var showingShutdownPreview = false
+  @State private var showingFailure = false
+  @State private var showingDetails = false
   @State private var shutdownConfirmed = false
   private var guide: MacPowerButtonGuide { session?.powerButtonGuide ?? .notebook }
 
@@ -43,20 +45,41 @@ struct RecoveryHandoffView: View {
           .font(OmarchyTheme.detail).foregroundStyle(OmarchyTheme.caution)
         Text("Have your macOS owner’s password ready. You’ll create your recovery account there.")
           .font(OmarchyTheme.detail).foregroundStyle(OmarchyTheme.secondaryText)
-        if busy { ProgressView("Preparing Recovery…").controlSize(.small) }
-        if let failure {
-          Text(failure).font(OmarchyTheme.detail).foregroundStyle(OmarchyTheme.caution)
-        }
       }.font(OmarchyTheme.body)
     } actions: {
-      Button(shutdownConfirmed ? "YES, I HAVE READ, SHUT DOWN" : "Shut Down", action: shutDown)
-        .omarchyPrimaryButton().disabled(busy)
+      HStack(spacing: 12) {
+        ProgressView().controlSize(.small)
+          .frame(width: 16, height: 16).opacity(busy ? 1 : 0)
+          .accessibilityHidden(!busy).accessibilityLabel("Preparing shutdown")
+        Button(shutdownConfirmed ? "YES, I HAVE READ, SHUT DOWN" : "Shut Down", action: shutDown)
+          .omarchyPrimaryButton().disabled(busy)
+        Color.clear.frame(width: 16, height: 16).accessibilityHidden(true)
+      }
     }
     .foregroundStyle(OmarchyTheme.text)
     .alert("Shut Down", isPresented: $showingShutdownPreview) {
       Button("OK", role: .cancel) {}
     } message: {
       Text("The installed flow shuts down here. This simulation keeps your Mac running.")
+    }
+    .alert("Couldn’t prepare shutdown", isPresented: $showingFailure) {
+      Button("Show details") { showingDetails = true }
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text("The startup setup needs attention before you shut down.")
+    }
+    .sheet(isPresented: $showingDetails) {
+      VStack(alignment: .leading, spacing: 16) {
+        Text("Shutdown details").font(.headline)
+        ScrollView {
+          Text(failure ?? "").textSelection(.enabled).frame(
+            maxWidth: .infinity, alignment: .leading)
+        }
+        HStack {
+          Spacer()
+          Button("Done") { showingDetails = false }
+        }
+      }.padding(24).frame(width: 520, height: 280)
     }
   }
 
@@ -85,8 +108,12 @@ struct RecoveryHandoffView: View {
         let accepted = try await session.prepareRecoveryHandoffAndShutdown()
         if !accepted {
           failure = "Choose Apple menu → Shut Down after saving your work."
+          showingFailure = true
         }
-      } catch { failure = error.localizedDescription }
+      } catch {
+        failure = error.localizedDescription
+        showingFailure = true
+      }
     }
   }
 }

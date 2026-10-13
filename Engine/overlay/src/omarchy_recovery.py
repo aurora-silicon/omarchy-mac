@@ -40,6 +40,30 @@ def identifier(value):
     return value
 
 
+def source_system_volume(dutil, source_os):
+    """Resolve the System volume, never the mounted macOS boot snapshot."""
+    group = identifier(source_os.vgid)
+    observed = dutil.get("info", "-plist", source_os.sys_volume)
+    if identifier(observed.get("APFSVolumeGroupID")) != group:
+        raise RecoveryError("bootstrap source volume identity changed")
+    matches = []
+    tree = dutil.get("apfs", "list", "-plist")
+    for container in tree.get("Containers", []):
+        for volume in container.get("Volumes", []):
+            if "System" not in volume.get("Roles", []):
+                continue
+            uuid = identifier(volume.get("APFSVolumeUUID"))
+            info = dutil.get("info", "-plist", uuid)
+            if info.get("APFSVolumeGroupID", "").upper() != group:
+                continue
+            if identifier(info.get("VolumeUUID")) != uuid:
+                raise RecoveryError("bootstrap source volume identity changed")
+            matches.append(info)
+    if len(matches) != 1:
+        raise RecoveryError("bootstrap source System volume is missing or ambiguous")
+    return matches[0]
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -139,7 +163,7 @@ def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owne
         raise RecoveryError("invalid target volume name")
     bootstrap = None
     if source_os is not None:
-        source = installer.dutil.get("info", "-plist", source_os.sys_volume)
+        source = source_system_volume(installer.dutil, source_os)
         source_uuid = identifier(source.get("VolumeUUID"))
         source_group = identifier(source.get("APFSVolumeGroupID"))
         if source_group != identifier(source_os.vgid) or source_group == group:

@@ -169,14 +169,51 @@ enum RecoveryActions {
       pendingAccount: pendingAccount,
       source: {
         guard let bootstrap else { throw RecoveryOwnerError.noOwner }
-        let info = try disk(bootstrap.sourceSystemUUID)
+        let bytes = try run("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
+        guard
+          let tree = try PropertyListSerialization.propertyList(from: bytes, format: nil)
+            as? [String: Any]
+        else { throw RecoveryOwnerError.noOwner }
+        var candidates = [[String: Any]]()
+        for container in tree["Containers"] as? [[String: Any]] ?? [] {
+          for volume in container["Volumes"] as? [[String: Any]] ?? [] {
+            let roles = volume["Roles"] as? [String] ?? []
+            guard roles.contains("System"), let id = volume["APFSVolumeUUID"] as? String else {
+              continue
+            }
+            var info = try disk(id)
+            guard (info["VolumeUUID"] as? String)?.uppercased() == id.uppercased() else {
+              throw RecoveryOwnerError.noOwner
+            }
+            info["Roles"] = roles
+            candidates.append(info)
+          }
+        }
+        let info = try RecoveryOwnerResolver.sourceSystem(
+          group: bootstrap.sourceGroupUUID, candidates: candidates)
+        guard let id = info["VolumeUUID"] as? String else { throw RecoveryOwnerError.noOwner }
+        var snapshots = Set<String>()
+        if id.uppercased() != bootstrap.sourceSystemUUID {
+          if (info["MountPoint"] as? String)?.isEmpty != false {
+            try run("/usr/sbin/diskutil", ["mount", "readOnly", id])
+          }
+          let bytes = try run("/usr/sbin/diskutil", ["apfs", "listSnapshots", id, "-plist"])
+          guard
+            let listing = try PropertyListSerialization.propertyList(from: bytes, format: nil)
+              as? [String: Any]
+          else { throw RecoveryOwnerError.noOwner }
+          snapshots = RecoveryOwnerResolver.snapshotUUIDs(listing)
+          guard snapshots.contains(bootstrap.sourceSystemUUID) else {
+            throw RecoveryOwnerError.noOwner
+          }
+        }
         let data = try run(
-          "/usr/sbin/diskutil", ["apfs", "listUsers", bootstrap.sourceSystemUUID, "-plist"])
+          "/usr/sbin/diskutil", ["apfs", "listUsers", id, "-plist"])
         guard
           let users = try PropertyListSerialization.propertyList(from: data, format: nil)
             as? [String: Any]
         else { throw RecoveryOwnerError.noOwner }
-        return (info, users)
+        return (info, users, snapshots)
       })
     InstallerLog.shared.append("Authorizing owner: \(owner.username) (\(owner.uuid.uuidString))")
     return owner
