@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Inspection fails an image whose boot components are missing or differ from the set."""
+import contextlib
 import hashlib
+import io
+import gzip
+import json
+import tarfile
+from unittest.mock import patch, MagicMock
 import os
 import re
 from pathlib import Path
@@ -25,6 +31,137 @@ CHECKS = ("candidate-versions", "runtime-sources", "minimum-versions", "refused-
 SUBVOLUMES: set[Path] = set()
 real_is_subvolume = inspection.is_subvolume
 inspection.is_subvolume = lambda path: path in SUBVOLUMES
+
+
+class ArchiveCacheTest(unittest.TestCase):
+    def make_set(self, directory, packages):
+        directory.mkdir()
+        entries = []
+        for name, members in packages.items():
+            archive = directory / (name + '.pkg.tar.xz')
+            with tarfile.open(archive, 'w:xz') as stream:
+                for path, value in members.items():
+                    info = tarfile.TarInfo(path)
+                    info.mode = 0o644
+                    if isinstance(value, tarfile.TarInfo):
+                        stream.addfile(value)
+                    else:
+                        info.size = len(value)
+                        stream.addfile(info, io.BytesIO(value))
+            entries.append({'name': name, 'filename': archive.name, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()})
+        (directory / 'import.json').write_text(json.dumps({'packages': entries}))
+        return inspection.Candidates(directory)
+
+    def test_one_pass_shared_payload_stage2_and_full_file_checks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            release = 'fixture'
+            image = f'usr/lib/modules/{release}/vmlinuz'
+            dtbs = {f'usr/lib/modules/{release}/dtbs/{n}.dtb': n.encode() for n in ['a', 'b', 'c']}
+            candidates = self.make_set(base / 'set', {
+                'linux-aurora': {image: b'image', **dtbs, '.PKGINFO': b'ignored metadata'},
+                'm1n1-aurora': {'usr/lib/asahi-boot/m1n1.bin': b'm1n1'},
+                'uboot-asahi': {'usr/lib/asahi-boot/u-boot-nodtb.bin': b'uboot'},
+            })
+            with candidates, patch.object(inspection, '_unpack_archive', wraps=inspection._unpack_archive) as unpack:
+                root = base / 'root'
+                root.mkdir()
+                for name in candidates.packages:
+                    shutil.copytree(candidates.unpacked(name), root, dirs_exist_ok=True, symlinks=True)
+                boot = root / 'boot/efi/m1n1/boot.bin'
+                boot.parent.mkdir(parents=True)
+                boot.write_bytes(b'm1n1' + b''.join(dtbs.values()) + gzip.compress(b'uboot') + b'')
+                inspection.check_installed_payloads(root, candidates)
+                inspection.check_candidate_files(root, candidates, {})
+                inspection.m1n1_stage2(root, candidates, {})
+                self.assertEqual(candidates.member('linux-aurora', image), b'image')
+                self.assertEqual(unpack.call_count, 3)
+                (root / next(iter(dtbs))).write_bytes(b'wrong')
+                with self.assertRaises(inspection.InspectionError):
+                    inspection.check_installed_payloads(root, candidates)
+                boot.write_bytes(b'm1n1' + b'wrong-order' + gzip.compress(b'uboot'))
+                with self.assertRaises(inspection.InspectionError):
+                    inspection.m1n1_stage2(root, candidates, {})
+                cache = Path(candidates._cache.name)
+            self.assertFalse(cache.exists())
+
+    def test_hash_mutation_and_failure_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidates = self.make_set(base / 'set', {'pkg': {'usr/file': b'good'}})
+            with candidates:
+                candidates.member('pkg', 'usr/file')
+                candidates.archive('pkg').write_bytes(b'changed')
+                with self.assertRaisesRegex(inspection.InspectionError, 'changed'):
+                    candidates.member('pkg', 'usr/file')
+            candidates = self.make_set(base / 'bad-hash', {'pkg': {'usr/file': b'good'}})
+            candidates.packages['pkg']['sha256'] = '0' * 64
+            cache = Path(candidates._cache.name)
+            with self.assertRaisesRegex(inspection.InspectionError, 'hash'), candidates:
+                candidates.member('pkg', 'usr/file')
+            self.assertFalse(cache.exists())
+
+    def test_bounds_negative_sizes_and_failed_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            candidates = self.make_set(base / 'set', {'pkg': {'usr/file': b'good'}})
+            with candidates:
+                archive = candidates.archive('pkg')
+                original = archive.read_bytes()
+                for size in [0, 8 * 1024**3 + 1]:
+                    with archive.open('wb') as stream:
+                        stream.truncate(size)
+                    with patch.object(inspection.shutil, 'copyfileobj', side_effect=AssertionError('copy before size gate')):
+                        with self.assertRaisesRegex(inspection.InspectionError, 'compressed'):
+                            candidates.unpacked('pkg')
+                archive.write_bytes(original)
+                candidates.packages['pkg']['sha256'] = '0' * 64
+                for _ in range(2):
+                    with self.assertRaisesRegex(inspection.InspectionError, 'hash'):
+                        candidates.unpacked('pkg')
+                    self.assertFalse((Path(candidates._cache.name) / 'pkg').exists())
+                    self.assertNotIn('pkg', candidates._identities)
+            bad = tarfile.TarInfo('bad')
+            bad.size = -1
+            process = MagicMock()
+            process.stdout = io.BytesIO()
+            process.poll.return_value = 0
+            destination = base / 'negative'
+            destination.mkdir()
+            with patch.object(inspection.subprocess, 'Popen', return_value=process), \
+                    patch.object(inspection.tarfile, 'open', return_value=contextlib.nullcontext(iter([bad]))):
+                with self.assertRaisesRegex(inspection.InspectionError, 'negative'):
+                    inspection._unpack_archive(base / 'unused', destination)
+            self.assertFalse((destination / 'bad').exists())
+
+    def test_paths_links_and_hardlinks_cannot_escape(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            link = tarfile.TarInfo('link')
+            link.type, link.linkname = tarfile.SYMTYPE, '../../outside'
+            hard = tarfile.TarInfo('hard')
+            hard.type, hard.linkname = tarfile.LNKTYPE, '../../outside'
+            for index, members in enumerate([
+                    {'../outside': b'bad'}, {'/outside': b'bad'},
+                    {'link': link, 'link/child': b'bad'}, {'hard': hard}]):
+                candidates = self.make_set(base / str(index), {'pkg': members})
+                with candidates, self.assertRaises((inspection.InspectionError, subprocess.CalledProcessError, tarfile.TarError)):
+                    candidates.unpacked('pkg')
+            self.assertFalse((base / 'outside').exists())
+            safe = tarfile.TarInfo('usr/link')
+            safe.type, safe.linkname = tarfile.SYMTYPE, 'file'
+            hard = tarfile.TarInfo('usr/hard')
+            hard.type, hard.linkname = tarfile.LNKTYPE, 'usr/file'
+            forward = tarfile.TarInfo('usr/forward')
+            forward.type, forward.linkname = tarfile.LNKTYPE, 'usr/hard'
+            candidates = self.make_set(base / 'safe', {'pkg': {'usr/forward': forward, 'usr/hard': hard, 'usr/file': b'good', 'usr/link': safe}})
+            with candidates:
+                cache = candidates.unpacked('pkg')
+                self.assertEqual(os.readlink(cache / 'usr/link'), 'file')
+                self.assertEqual(candidates.member('pkg', 'usr/hard'), b'good')
+                self.assertEqual(candidates.member('pkg', 'usr/forward'), b'good')
+                with self.assertRaisesRegex(inspection.InspectionError, 'regular'):
+                    candidates.member('pkg', 'usr/link')
 
 
 class InspectionTest(unittest.TestCase):

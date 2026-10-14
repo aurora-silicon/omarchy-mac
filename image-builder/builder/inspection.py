@@ -19,6 +19,8 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import shutil
+import tarfile
 import subprocess
 import tempfile
 import zlib
@@ -93,17 +95,73 @@ class Candidates:
         self.summary = json.loads((directory / "import.json").read_text())
         self.packages = {p["name"]: p for p in self.summary["packages"]}
         self._listings: dict[str, list[str]] = {}
+        self._cache = tempfile.TemporaryDirectory(prefix="inspect-archives-")
+        self._unpacked: dict[str, Path] = {}
+        self._identities: dict[str, tuple] = {}
+
+    def close(self) -> None:
+        self._cache.cleanup()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def unpacked(self, name: str) -> Path:
+        archive = self.archive(name)
+        info = archive.lstat()
+        require(stat.S_ISREG(info.st_mode), "candidate archive is not regular")
+        require(0 < info.st_size <= 8 * 1024**3, "candidate compressed archive exceeds inspection budget")
+        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if name in self._unpacked:
+            require(identity == self._identities[name], "candidate archive changed during inspection")
+            return self._unpacked[name]
+        require(PurePosixPath(name).name == name and name not in (".", ".."), "unsafe package name")
+        destination = Path(self._cache.name) / name
+        destination.mkdir()
+        snapshot = Path(self._cache.name) / (name + ".archive")
+        try:
+            with archive.open('rb') as source, snapshot.open('xb') as output:
+                opened = os.fstat(source.fileno())
+                require((opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) == identity,
+                        "candidate archive changed before snapshot")
+                shutil.copyfileobj(source, output)
+            require(candidate_set.digest(snapshot) == self.packages[name]['sha256'], "candidate archive hash differs from import")
+            after = archive.lstat()
+            require((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) == identity,
+                    "candidate archive changed during snapshot")
+            self._identities[name] = identity
+            try:
+                self._listings[name] = _unpack_archive(snapshot, destination)
+            finally:
+                snapshot.unlink()
+            self._unpacked[name] = destination
+            return destination
+        except BaseException:
+            shutil.rmtree(destination, ignore_errors=True)
+            snapshot.unlink(missing_ok=True)
+            self._identities.pop(name, None)
+            self._listings.pop(name, None)
+            self._unpacked.pop(name, None)
+            raise
 
     def archive(self, name: str) -> Path:
-        return self.directory / self.packages[name]["filename"]
+        filename = self.packages[name]["filename"]
+        require(PurePosixPath(filename).name == filename and filename not in (".", ".."), "unsafe candidate archive filename")
+        return self.directory / filename
 
     def member(self, name: str, path: str) -> bytes:
-        return subprocess.check_output(["bsdtar", "-xOf", str(self.archive(name)), path])
+        root = self.unpacked(name)
+        relative = _archive_path(path)
+        target = root / relative
+        require(all(not parent.is_symlink() for parent in target.parents if parent == root or root in parent.parents),
+                "candidate member follows a symlink")
+        require(target.is_file() and not target.is_symlink(), "candidate member is not regular: " + path)
+        return target.read_bytes()
 
     def listing(self, name: str) -> list[str]:
-        if name not in self._listings:
-            output = subprocess.check_output(["bsdtar", "-tf", str(self.archive(name))], text=True)
-            self._listings[name] = [p.removeprefix("./") for p in output.splitlines() if not p.endswith("/")]
+        self.unpacked(name)
         return self._listings[name]
 
     def kernel_release(self) -> str:
@@ -273,13 +331,87 @@ def m1n1_options(root: Path) -> bytes:
     return "".join(kept).encode()
 
 
-def extract(candidates: Candidates, name: str, into: Path) -> Path:
-    destination = into / name
-    destination.mkdir()
-    subprocess.run(["bsdtar", "-xpf", str(candidates.archive(name)), "-C", str(destination),
-                    "--exclude", ".PKGINFO", "--exclude", ".BUILDINFO", "--exclude", ".MTREE",
-                    "--exclude", ".INSTALL", "--exclude", ".CHANGELOG"], check=True)
-    return destination
+def _archive_path(path: str) -> str:
+    path = path.removeprefix("./").rstrip("/")
+    require(bool(path) and not path.startswith("/") and all(part not in ("", ".", "..") for part in path.split("/"))
+            and "\\" not in path and "\x00" not in path, "unsafe candidate archive path")
+    return path
+
+
+def _unpack_archive(archive: Path, destination: Path) -> list[str]:
+    # libarchive handles package compression once; tarfile only reads its plain
+    # tar stream. Write regular bytes first, then links, never follow a link.
+    names, link_paths, links, listing = set(), set(), [], []
+    total = 0
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(["bsdtar", "-cPf", "-", "@" + str(archive)], stdout=subprocess.PIPE, stderr=errors)
+        try:
+            with tarfile.open(fileobj=process.stdout, mode="r|") as stream:
+                for member in stream:
+                    if member.name in (".", "./"):
+                        continue
+                    name = _archive_path(member.name)
+                    require(name not in names, "duplicate candidate archive path")
+                    names.add(name)
+                    if not member.isdir():
+                        listing.append(name)
+                    require(member.size >= 0, "negative candidate archive member size")
+                    total += member.size
+                    require(len(names) <= 250000 and total <= 8 * 1024**3, "candidate archive exceeds inspection budget")
+                    target = destination / name
+                    require(not any(parent in link_paths for parent in target.parents),
+                            "candidate path has a link parent")
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        target.chmod(member.mode)
+                    elif member.isfile():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with target.open('xb') as output:
+                            shutil.copyfileobj(stream.extractfile(member), output)
+                        target.chmod(member.mode)
+                    elif member.issym() or member.islnk():
+                        links.append((name, member.linkname, member.islnk()))
+                        link_paths.add(target)
+                    else:
+                        raise InspectionError("unsupported candidate archive member type")
+            require(process.wait() == 0, "could not read candidate archive")
+            hardlinks = {name: link for name, link, hard in links if hard}
+            active, resolved = set(), set()
+
+            def resolve_hardlink(name, depth=0):
+                if name in resolved:
+                    return
+                require(depth <= 256 and name not in active, "cyclic or excessive candidate hardlink chain")
+                active.add(name)
+                source_name = _archive_path(hardlinks[name])
+                if source_name in hardlinks:
+                    resolve_hardlink(source_name, depth + 1)
+                source, target = destination / source_name, destination / name
+                require(not any(parent in link_paths for parent in (*source.parents, *target.parents)),
+                        "candidate hardlink has a link parent")
+                require(source.is_file() and not source.is_symlink(), "unsafe candidate hardlink")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                require(not target.exists(), "candidate link collides with another path")
+                shutil.copy2(source, target)
+                active.remove(name)
+                resolved.add(name)
+
+            for name in hardlinks:
+                resolve_hardlink(name)
+            for name, link, hard in links:
+                if hard:
+                    continue
+                target = destination / name
+                require(not any(parent in link_paths for parent in target.parents), "candidate link has a link parent")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                require(not target.exists(), "candidate link collides with another path")
+                target.symlink_to(link)
+            return listing
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
 
 
 def check_candidate_files(root: Path, candidates: Candidates, report: dict) -> str:
@@ -291,27 +423,27 @@ def check_candidate_files(root: Path, candidates: Candidates, report: dict) -> s
     planned = sorted(name for name, p in candidates.packages.items()
                      if p.get("group", "runtime") != "closure"
                      or name in ('aurora-sep', 'omarchy-apple-firmware-order'))
-    with tempfile.TemporaryDirectory(prefix="inspect-") as scratch:
-        for name in planned:
-            unpacked = extract(candidates, name, Path(scratch))
-            for directory, subdirectories, files in os.walk(unpacked):
-                # os.walk lists a link to a directory with the directories and never follows it.
-                links = [name for name in subdirectories if Path(directory, name).is_symlink()]
-                for file in (*files, *links):
-                    source = Path(directory, file)
-                    relative = source.relative_to(unpacked)
-                    installed = root / relative
-                    counts += 1
-                    if source.is_symlink():
-                        if not installed.is_symlink() or os.readlink(installed) != os.readlink(source):
-                            changed.append(f"/{relative} ({name}, link)")
-                    elif (installed.is_symlink() or not installed.is_file()
-                            or installed.stat().st_size != source.stat().st_size
-                            or installed.read_bytes() != source.read_bytes()):
-                        changed.append(f"/{relative} ({name})")
-                    elif stat.S_IMODE(installed.stat().st_mode) & 0o7555 != stat.S_IMODE(source.stat().st_mode) & 0o7555:
-                        changed.append(f"/{relative} ({name}, mode)")
-            subprocess.run(["rm", "-rf", str(unpacked)], check=True)
+    for name in planned:
+        unpacked = candidates.unpacked(name)
+        for directory, subdirectories, files in os.walk(unpacked):
+            # os.walk lists a link to a directory with the directories and never follows it.
+            links = [name for name in subdirectories if Path(directory, name).is_symlink()]
+            for file in (*files, *links):
+                source = Path(directory, file)
+                relative = source.relative_to(unpacked)
+                if relative.parts[0] in (".PKGINFO", ".BUILDINFO", ".MTREE", ".INSTALL", ".CHANGELOG"):
+                    continue
+                installed = root / relative
+                counts += 1
+                if source.is_symlink():
+                    if not installed.is_symlink() or os.readlink(installed) != os.readlink(source):
+                        changed.append(f"/{relative} ({name}, link)")
+                elif (installed.is_symlink() or not installed.is_file()
+                        or installed.stat().st_size != source.stat().st_size
+                        or installed.read_bytes() != source.read_bytes()):
+                    changed.append(f"/{relative} ({name})")
+                elif stat.S_IMODE(installed.stat().st_mode) & 0o7555 != stat.S_IMODE(source.stat().st_mode) & 0o7555:
+                    changed.append(f"/{relative} ({name}, mode)")
     report["candidate_files"] = counts
     require(not changed, f"{len(changed)} files differ from the set: " + ", ".join(sorted(changed)[:12]))
     family = 'runtime and boot'
@@ -648,7 +780,11 @@ def check_factory(factory: Path, root: Path, candidates: Candidates) -> str:
 def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None = None,
             trust: Path = candidate_set.TRUST, profile: str = "release") -> dict:
     policy = candidate_set.load_policy(trust)
-    candidates = Candidates(candidates_dir)
+    with Candidates(candidates_dir) as candidates:
+        return _inspect(root, candidates, channel, factory, trust, profile, policy)
+
+
+def _inspect(root, candidates, channel, factory, trust, profile, policy):
     target_profile = candidate_set.image_target_profile(policy)
     require(candidates.summary.get("image_target_profile", "generic") == target_profile,
             "candidate import image target differs from operator policy")
@@ -701,7 +837,7 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
             detail = check()
             report["checks"][identifier] = {"result": "passed", "detail": detail}
         except (InspectionError, limine.ContractError, OSError, ValueError, KeyError, IndexError, TypeError,
-                zlib.error, subprocess.CalledProcessError) as error:
+                zlib.error, tarfile.TarError, subprocess.CalledProcessError) as error:
             report["checks"][identifier] = {"result": "failed", "detail": str(error)}
     report["failed_checks"] = sorted(k for k, v in report["checks"].items() if v["result"] != "passed")
     report["result"] = "failed" if report["failed_checks"] else "passed"
