@@ -21,6 +21,7 @@ prepare() {
 }
 package_alsa-ucm-conf-asahi() {
   pkgdesc='Public Apple Silicon ALSA UCM profiles'
+  license=(BSD-3-Clause)
   depends=(alsa-ucm-conf)
   install -d "$pkgdir/usr/share/alsa"
   cp -a ucm/ucm2 "$pkgdir/usr/share/alsa/ucm2"
@@ -28,7 +29,9 @@ package_alsa-ucm-conf-asahi() {
 }
 package_asahi-audio() {
   pkgdesc='Public Apple Silicon PipeWire DSP profiles'
-  depends=(alsa-ucm-conf-asahi pipewire-audio wireplumber bankstown lsp-plugins-lv2 speakersafetyd speakerguardd)
+  license=(MIT)
+  depends=('alsa-ucm-conf-asahi>=10.aurora1' 'pipewire-audio>=1.0' 'wireplumber>=0.5.2'
+           'bankstown>=1.1.0' 'lsp-plugins-lv2>=1.2.15' speakersafetyd speakerguardd 'triforce-lv2>=0.2.0')
   make -C audio install DESTDIR="$pkgdir" PREFIX=/usr || return
   install -Dm644 "$srcdir/10-pipewire-user.conf" \
     "$pkgdir/usr/lib/systemd/user/wireplumber.service.d/10-pipewire-user.conf" || return

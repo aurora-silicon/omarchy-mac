@@ -27,6 +27,7 @@ printf 'ok - source pins and drop-in checksum\n'
 pkgname=alsa-ucm-conf-asahi
 pkgdir="$work/ucm-package"
 package_alsa-ucm-conf-asahi
+[[ ${license[*]} == BSD-3-Clause ]]
 cmp ucm/ucm2/fixture.conf "$pkgdir/usr/share/alsa/ucm2/fixture.conf"
 cmp ucm/LICENSE.asahi "$pkgdir/usr/share/licenses/$pkgname/LICENSE.asahi"
 [[ ! -e $pkgdir/usr/lib/systemd ]]
@@ -34,6 +35,8 @@ printf 'ok - UCM split payload and license preserved\n'
 pkgname=asahi-audio
 pkgdir="$work/audio-package"
 package_asahi-audio
+[[ ${license[*]} == MIT ]]
+[[ ${depends[*]} == 'alsa-ucm-conf-asahi>=10.aurora1 pipewire-audio>=1.0 wireplumber>=0.5.2 bankstown>=1.1.0 lsp-plugins-lv2>=1.2.15 speakersafetyd speakerguardd triforce-lv2>=0.2.0' ]]
 dropin="$pkgdir/usr/lib/systemd/user/wireplumber.service.d/10-pipewire-user.conf"
 cmp "$srcdir/10-pipewire-user.conf" "$dropin"
 [[ $(stat -c '%a' "$dropin") == 644 ]]

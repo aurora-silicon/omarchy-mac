@@ -53,13 +53,13 @@
     },
     {
       "path": "recipes/audio/PKGBUILD",
-      "sha256": "48a39ad88ff6c51a1bc64be57379af137c3eede612f08cc207bef23b790e963b",
-      "bytes": 1786
+      "sha256": "8ebdb9bd0b7f9e7140ce82a2ac3694ce11db9be91fdf8f6ec799425155244408",
+      "bytes": 1909
     },
     {
       "path": "recipes/audio/test-package.sh",
-      "sha256": "ffedd5ab88708f4b1db9b19f2ed1ce01030fb8733c6de970d1de28ed5a422159",
-      "bytes": 2784
+      "sha256": "df6e7b057d3f14ee51b48a6b28ebe6a079745b3d2e520fed891cdc6f215d142f",
+      "bytes": 3033
     },
     {
       "path": "recipes/aura/10-aurora-neo-boot-remove.hook",

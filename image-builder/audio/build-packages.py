@@ -57,8 +57,8 @@ def main():
         info = [f'pkgname = {name}', f'pkgbase = {name}', f'pkgver = {version}',
                 f'pkgdesc = Aurora Apple Silicon audio: {name}',
                 f'url = https://github.com/aurora-silicon/{name}', f'builddate = {stamp}',
-                'packager = Aurora Silicon', 'arch = aarch64',
-                'license = BSD' if name == 'alsa-ucm-conf-asahi' else 'license = MIT',
+                'packager = Ryan Murray <ryan@aurorasilicon.org>', 'arch = aarch64',
+                'license = BSD-3-Clause' if name == 'alsa-ucm-conf-asahi' else 'license = MIT',
                 f'size = {sum(p.stat().st_size for p in root.rglob("*") if p.is_file())}',
                 *['depend = ' + dep for dep in dependencies]]
         (root / '.PKGINFO').write_text('\n'.join(info) + '\n')
@@ -117,8 +117,9 @@ def main():
     install(Path(__file__).resolve().parents[1] / 'packages/neo/recipes/audio/10-pipewire-user.conf',
             root, 'usr/lib/systemd/user/wireplumber.service.d/10-pipewire-user.conf')
     package('asahi-audio', '4.1.aurora2-' + PINS['asahi-audio'][:12], root,
-            ['alsa-ucm-conf-asahi', 'pipewire-audio', 'wireplumber', 'bankstown',
-             'lsp-plugins-lv2', 'speakersafetyd', 'speakerguardd'])
+            ['alsa-ucm-conf-asahi>=10.aurora1', 'pipewire-audio>=1.0', 'wireplumber>=0.5.2',
+             'bankstown>=1.1.0', 'lsp-plugins-lv2>=1.2.15', 'speakersafetyd',
+             'speakerguardd', 'triforce-lv2>=0.2.0'])
     (output / 'manifest.json').write_text(json.dumps(records, indent=2) + '\n')
     print(json.dumps(records, indent=2))
 
