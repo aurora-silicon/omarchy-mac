@@ -82,8 +82,6 @@ partition alignment. Selecting 180 GB must keep 180 GB displayed without a
 capacity-limit warning. The acknowledgement still resets. Actual whole-GB changes
 use “Space for Omarchy changed from … to …” without assuming why it changed.
 
-## Recovery account preview
+## Recovery handoff preview
 
-**Simulation → Preview Recovery Account…** opens the proposed final account step directly. The successful simulated installation also ends at this form. It asks for a new short username, password and confirmation; validation follows the documented native account creator's username format and requires a nonempty, matching password. The GUI imposes no additional minimum length; live creation must report native password-policy errors. Continuing clears both password fields and shows the Startup Disk authorization instructions. **Open Startup Disk** displays a simulation notice; it does not open Settings or reboot. **Reset Simulation** returns to the ordinary installer start.
-
-This is a presentation prototype. It does not create an account or grant ownership, and the live installer keeps its existing Recovery handoff. Production integration requires the resumable target-account creation and Preboot finalization described in Aurora's `work/sep-stub-account-20261011/README.md`; the original script is not a complete resume/finalization backend.
+**Simulation → Preview Recovery Handoff…** opens the final Start in Recovery page directly. **Shut Down** shows a simulation notice; it does not shut down. Recovery's Finish Installation enrolls with the macOS owner and creates no additional account.

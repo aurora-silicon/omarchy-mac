@@ -536,11 +536,6 @@
     var isSimulation: Bool { get }
     func inspectRecoveryAccount() async throws -> RecoveryAccountReply?
     func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply
-    func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
-      -> RecoveryAccountReply
-    func finalizeRecoveryAccount(ticket: String, password: Data) async throws
-      -> RecoveryAccountReply
-    func openStartupDisk() -> Bool
     func inspect() async throws -> HostDisplay
     /// `omarchyBytes` asks the planner for that much space for Omarchy; nil
     /// keeps the balanced default. The engine still clamps the request to the
@@ -604,17 +599,6 @@
     public func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply {
       throw AccountSetupFailure("Recovery handoff is unavailable in this environment.")
     }
-    public func prepareRecoveryAccount(ticket: String, username: String, password: Data)
-      async throws -> RecoveryAccountReply
-    {
-      throw AccountSetupFailure("Recovery account setup is unavailable in this environment.")
-    }
-    public func finalizeRecoveryAccount(ticket: String, password: Data) async throws
-      -> RecoveryAccountReply
-    {
-      throw AccountSetupFailure("Recovery account setup is unavailable in this environment.")
-    }
-    public func openStartupDisk() -> Bool { false }
     public var isSimulation: Bool { false }
     public func requestShutdown() -> Bool { false }
     public var payloadPrefetchRequired: Bool { false }

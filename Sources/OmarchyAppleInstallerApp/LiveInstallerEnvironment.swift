@@ -40,26 +40,8 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
     return reply.target == nil ? nil : reply
   }
 
-  func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
-    -> RecoveryAccountReply
-  {
-    try await accountClient().recoveryAccount(
-      action: "prepare", ticket: ticket, username: username, password: password)
-  }
-
   func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply {
     try await accountClient().recoveryAccount(action: "handoff", ticket: ticket)
-  }
-
-  func finalizeRecoveryAccount(ticket: String, password: Data) async throws -> RecoveryAccountReply
-  {
-    try await accountClient().recoveryAccount(
-      action: "finalize", ticket: ticket, password: password)
-  }
-
-  func openStartupDisk() -> Bool {
-    NSWorkspace.shared.open(
-      URL(fileURLWithPath: "/System/Library/PreferencePanes/StartupDisk.prefPane"))
   }
 
   var payloadPrefetchRequired: Bool { true }
