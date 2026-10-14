@@ -19,7 +19,8 @@ version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$app/Co
 work="$(mktemp -d "${TMPDIR:-/tmp}/omarchy-developer-pkg.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/root/Applications" "$work/root/Library/LaunchDaemons"
-/usr/bin/ditto "$app" "$work/root/Applications/$INSTALLER_APP_NAME.app"
+/usr/bin/ditto --clone "$app" "$work/root/Applications/$INSTALLER_APP_NAME.app"
+/usr/bin/codesign --verify --deep --strict "$work/root/Applications/$INSTALLER_APP_NAME.app"
 plist="$work/root/Library/LaunchDaemons/$INSTALLER_HELPER_IDENTIFIER.plist"
 "$directory/pkg/derive-daemon-plist" "$app" "$plist" /Applications >/dev/null
 requirement="$(/usr/bin/plutil -extract EnvironmentVariables.OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT raw -o - "$plist")"
