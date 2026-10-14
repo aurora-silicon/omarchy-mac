@@ -253,8 +253,13 @@
     },
     {
       "path": "recipes/vendor-cache/PKGBUILD",
-      "sha256": "0425d3e12fb463b05e60b985165690de9396f78c7749d07ffd2c56a3fd0786cd",
-      "bytes": 20645
+      "sha256": "58c1575a76d361c888e68ba11ae0adcd1f4fd3db64d4266ab9393d221520ffaf",
+      "bytes": 20571
+    },
+    {
+      "path": "recipes/vendor-cache/steam_client_publicbeta_linuxarm64",
+      "sha256": "65079d08bbcc0e7fdc3d9b153aadc4c9befc62913c3e4ee0b02425690366f15f",
+      "bytes": 12582
     },
     {
       "path": "recipes/vendor-cache/vendor-receipt.json",
