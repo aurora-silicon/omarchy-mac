@@ -47,9 +47,19 @@
       "bytes": 691
     },
     {
+      "path": "recipes/audio/10-pipewire-user.conf",
+      "sha256": "c1b2e8f17be8a6a64996a300354599b348e0a65db4a313c239fbf177ca358a25",
+      "bytes": 27
+    },
+    {
       "path": "recipes/audio/PKGBUILD",
-      "sha256": "a96ddb6af80038baacd991fc60b3dad1f571bba804c8f7853bef3cc865d6fdc0",
-      "bytes": 1539
+      "sha256": "48a39ad88ff6c51a1bc64be57379af137c3eede612f08cc207bef23b790e963b",
+      "bytes": 1786
+    },
+    {
+      "path": "recipes/audio/test-package.sh",
+      "sha256": "ffedd5ab88708f4b1db9b19f2ed1ce01030fb8733c6de970d1de28ed5a422159",
+      "bytes": 2784
     },
     {
       "path": "recipes/aura/10-aurora-neo-boot-remove.hook",

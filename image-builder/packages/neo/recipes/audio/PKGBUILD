@@ -4,13 +4,14 @@
 pkgbase=aurora-neo-audio
 pkgname=(alsa-ucm-conf-asahi asahi-audio)
 pkgver=20261014
-pkgrel=1
+pkgrel=2
 arch=(aarch64)
 license=(MIT BSD-3-Clause)
 makedepends=(git make python)
 source=('ucm::git+https://github.com/aurora-silicon/alsa-ucm-conf-asahi.git#commit=e55107ad9ba220a2772dbe4d55438cd1ec669288'
-        'audio::git+https://github.com/aurora-silicon/asahi-audio.git#commit=b2da7512e9bfcd5837355d2393f3c43219acf6b9')
-sha256sums=(SKIP SKIP)
+        'audio::git+https://github.com/aurora-silicon/asahi-audio.git#commit=b2da7512e9bfcd5837355d2393f3c43219acf6b9'
+        '10-pipewire-user.conf')
+sha256sums=(SKIP SKIP c1b2e8f17be8a6a64996a300354599b348e0a65db4a313c239fbf177ca358a25)
 prepare() {
   [[ $(git -C ucm rev-parse HEAD) == e55107ad9ba220a2772dbe4d55438cd1ec669288 ]]
   [[ $(git -C audio rev-parse HEAD) == b2da7512e9bfcd5837355d2393f3c43219acf6b9 ]]
@@ -28,6 +29,8 @@ package_alsa-ucm-conf-asahi() {
 package_asahi-audio() {
   pkgdesc='Public Apple Silicon PipeWire DSP profiles'
   depends=(alsa-ucm-conf-asahi pipewire-audio wireplumber bankstown lsp-plugins-lv2 speakersafetyd speakerguardd)
-  make -C audio install DESTDIR="$pkgdir" PREFIX=/usr
+  make -C audio install DESTDIR="$pkgdir" PREFIX=/usr || return
+  install -Dm644 "$srcdir/10-pipewire-user.conf" \
+    "$pkgdir/usr/lib/systemd/user/wireplumber.service.d/10-pipewire-user.conf" || return
   install -Dm644 audio/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

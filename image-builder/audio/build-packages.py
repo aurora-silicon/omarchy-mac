@@ -114,7 +114,9 @@ def main():
     subprocess.run(['make', '-C', str(sources['asahi-audio']), 'install',
                     'DESTDIR=' + str(root), 'PREFIX=/usr'], check=True)
     install(sources['asahi-audio'] / 'LICENSE', root, 'usr/share/licenses/asahi-audio/LICENSE')
-    package('asahi-audio', '4.1.aurora1-' + PINS['asahi-audio'][:12], root,
+    install(Path(__file__).resolve().parents[1] / 'packages/neo/recipes/audio/10-pipewire-user.conf',
+            root, 'usr/lib/systemd/user/wireplumber.service.d/10-pipewire-user.conf')
+    package('asahi-audio', '4.1.aurora2-' + PINS['asahi-audio'][:12], root,
             ['alsa-ucm-conf-asahi', 'pipewire-audio', 'wireplumber', 'bankstown',
              'lsp-plugins-lv2', 'speakersafetyd', 'speakerguardd'])
     (output / 'manifest.json').write_text(json.dumps(records, indent=2) + '\n')
