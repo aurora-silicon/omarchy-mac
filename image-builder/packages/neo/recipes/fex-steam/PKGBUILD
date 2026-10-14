@@ -1,0 +1,68 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+pkgname=aurora-fex-steam
+pkgver=2610.aurora1
+pkgrel=3
+pkgdesc='Pinned public FEX engine with native host and 32/64-bit guest thunks'
+arch=(aarch64)
+url=https://github.com/aurora-silicon/fex
+license=(MIT BSD-2-Clause BSD-3-Clause)
+depends=('glibc>=2.43' libgcc libstdc++ alsa-lib libepoxy
+  libglvnd libdrm vulkan-icd-loader wayland sdl2-compat passt squashfuse squashfs-tools erofs-utils)
+makedepends=(git python libarchive clang22 llvm22 lld cmake ninja nasm openssl)
+options=(!lto !debug !strip)
+source=('FEX::git+https://github.com/aurora-silicon/fex.git#commit=14c92681f4d62cf84d901460e0358de09c8847a7'
+  sources.py source-lock.json guest-rpms.lock.json license-notices.json reuse.lock.json
+  x86-64.cmake x86-32.cmake)
+# Generated below from the distributed support files; Git is checked by its commit/tree lock.
+sha256sums=(SKIP
+  155044d7158ae2591c3bb778f9d4137e544134f801e0f3a58cac483cfa286b7b
+  9c6f9286af5ac561fd543589f56ef461b9c21a2e938d1c6e4c62113ee82ad2f2
+  9dc32568afc78eedc7ebb5ed764efd713fcd530aebf0c1e8ddee1281e7d63524
+  652c41bb657ff25f9025e4fb11743b33122e6c8a56ec0e2b919187b3eb9224e5
+  d086d930cffe9ca3410febfea721e25bd115c687e909aa99808ed485ac6dd42c
+  e3bd6e37948a4ee530ff364a8ca4f9d8275640f0c12dbc7d61cd10505bdd81ae
+  a316c4b1b13c2c5786455d37062e986e8efc5dfdcf89aa00d7071a83782a1553
+)
+
+prepare() {
+  python "$srcdir/sources.py" fetch "$srcdir/source-lock.json" "$srcdir/FEX"
+    python "$srcdir/sources.py" sysroot "$srcdir/guest-rpms.lock.json" "$srcdir/guest-sysroot" \
+      --cache "${FEX_DEVEL_CACHE:-$SRCDEST/fex-development-rpms}"
+}
+
+build() {
+  cmake -S "$srcdir/FEX" -B build -G Ninja \
+    -DCMAKE_INSTALL_PREFIX=/usr/lib/aurora-fex-steam -DBUILD_STEAM_SUPPORT=ON -DBUILD_FEXCONFIG=OFF -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=/usr/lib/llvm22/bin/clang -DCMAKE_CXX_COMPILER=/usr/lib/llvm22/bin/clang++ \
+    -DClang_DIR=/usr/lib/llvm22/lib/cmake/clang -DLLVM_DIR=/usr/lib/llvm22/lib/cmake/llvm \
+    -DUSE_LINKER=lld -DENABLE_LTO=OFF -DENABLE_OFFLINE_TELEMETRY=OFF \
+    -DENABLE_ASSERTIONS=ON -DENABLE_CLANG_THUNKS=ON -DBUILD_TESTING=OFF -DBUILD_THUNKS=ON \
+    -DTUNE_CPU=apple-m1 -DTUNE_ARCH=armv8-a \
+    -DOVERRIDE_HASH=14c92681f4d62cf84d901460e0358de09c8847a7 -DOVERRIDE_VERSION=FEX-2610 \
+    -DX86_DEV_ROOTFS="$srcdir/guest-sysroot" \
+    -DX86_64_TOOLCHAIN_FILE="$srcdir/x86-64.cmake" -DX86_32_TOOLCHAIN_FILE="$srcdir/x86-32.cmake"
+  cmake --build build --parallel "${OMARCHY_BUILD_JOBS:-10}"
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+  # Upstream Steam metadata uses depot-relative ./usr paths. Retain this
+  # separately configured prefix and supply that standard portable layout.
+  local depot="$pkgdir/usr/lib/aurora-fex-steam"
+  for name in FEXCompatTool ConfigTemplate.json emulator.json VERSIONS.txt toolmanifest.vdf; do
+    mv "$pkgdir/$name" "$depot/$name"
+  done
+  rm -f "$depot/bin/FEXConfig" "$depot/bin/FEXOfflineCompiler" "$depot/bin/FEXBash" "$depot/bin/FEXpidof"
+  mkdir -p "$depot/usr" "$depot/lib/aarch64-linux-gnu"
+  ln -s ../bin "$depot/usr/bin"
+  ln -s ../lib "$depot/usr/lib"
+  ln -s ../share "$depot/usr/share"
+  ln -s ../fex-emu "$depot/lib/aarch64-linux-gnu/fex-emu"
+  python "$srcdir/sources.py" notices "$srcdir/license-notices.json" "$srcdir/FEX" \
+    --output "$pkgdir/usr/share/licenses/$pkgname/source"
+  install -Dm644 "$srcdir/FEX/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/source-lock.json" "$pkgdir/usr/share/doc/$pkgname/source-lock.json"
+  install -Dm644 "$srcdir/guest-rpms.lock.json" "$pkgdir/usr/share/doc/$pkgname/development-inputs.json"
+
+}

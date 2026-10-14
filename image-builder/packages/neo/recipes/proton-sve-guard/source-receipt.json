@@ -1,0 +1,41 @@
+{
+  "new_sha256": "368997e5dae86e67871153f8b4c226cf68fb0f9112c0d726e653ca340305e798",
+  "vendor_sha256": "6ba770ec0df52311b760a0866226a83c177f67227598f990942382cad42b4bc3",
+  "missing_vendor_exports": [],
+  "extra_exports": [],
+  "vendor_glibc_versions": [
+    "GLIBC_2.17",
+    "GLIBC_2.25",
+    "GLIBC_2.32",
+    "GLIBC_2.33",
+    "GLIBC_2.34",
+    "GLIBC_2.38"
+  ],
+  "new_glibc_versions": [
+    "GLIBC_2.17",
+    "GLIBC_2.25",
+    "GLIBC_2.32",
+    "GLIBC_2.33",
+    "GLIBC_2.34",
+    "GLIBC_2.38"
+  ],
+  "network_mode": "none",
+  "wine_or_game_execution": false,
+  "ge_public_commit": "c191f35dcebbeccfacd3b4c6f6eea026e588c1c2",
+  "wine_public_commit": "46b29104e3741fe23bf5e2547196a253aab88c89",
+  "staging_public_commit": "6cc805ea57132eeaf44764e9213823c9b8d0d300",
+  "public_guard_commit": "a1b375b287fe6db4d2e95beb9d945af15b3ef9db",
+  "guard_patch_sha256": "db9da41be4dda3cb89cfec3d6ad7360a7260de023a3007048542202ab57106fe",
+  "vulkan_docs_tag": "v1.4.357",
+  "vk_xml_sha256": "264d0d7350e37d70c82407fb430d085040fc01a9a961d43dec8c2d6ed1dfd183",
+  "video_xml_sha256": "d018b914014c06605e367a3b929670511e6f6de2f225c405a8b5e2d912408b76",
+  "guard_fixture_cases": 14,
+  "guard_fixture_asan_ubsan": true,
+  "vendor_exports_count": 291,
+  "vendor_exports_sha256": "05837dff2a42df7edb4bdf77d60b05e1d18d7122aa9c8cedf698c7c3d7f9937a",
+  "new_exports_count": 291,
+  "new_exports_sha256": "05837dff2a42df7edb4bdf77d60b05e1d18d7122aa9c8cedf698c7c3d7f9937a",
+  "schema": 1,
+  "role": "ge-proton-native-ntdll-sve-guard",
+  "target": "GE-Proton11-7-aarch64"
+}

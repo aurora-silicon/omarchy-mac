@@ -140,7 +140,8 @@ class RecipeContractTests(unittest.TestCase):
     def test_actual_final_steam_support_is_checksum_bound(self):
         directory = ROOT / 'recipes/steam-native'
         recipe = (directory / 'PKGBUILD').read_text()
-        self.assertIn('pkgrel=2', recipe)
+        self.assertIn('pkgrel=3', recipe)
+        self.assertIn('aurora-proton-sve-guard aurora-fex-steam erofs-utils', recipe)
         self.assertIn('a1b375b287fe6db4d2e95beb9d945af15b3ef9db', recipe)
         for name in ['steam-first-launch.py', 'offline-policy.json']:
             self.assertIn(hashlib.sha256((directory / name).read_bytes()).hexdigest(), recipe)

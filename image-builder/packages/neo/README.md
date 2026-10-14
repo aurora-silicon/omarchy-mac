@@ -19,3 +19,5 @@ python3 -m py_compile recipes/fex/sources.py scripts/*.py tests/*.py
 ```
 
 They exercise clean checkout guards, ignored/untracked injection refusal, local/default runtime source selection, current overlay version/cross-file declaration, pinned support hashes and reuse rejection. They are not compiler, dependency-transaction, performance or hardware qualification. Fresh boot, encryption, SEP enrollment/reboot persistence, speaker safety, GPU/compositor and gaming functionality still need the actual software image and physical gates.
+
+The source manifest records SHA256 and size for each Git file blob. Schema 2 also records symbolic-link targets as Git blob bytes and the resolved source checksum, so the Steam FEX recipe can share the same locked inputs without duplicating them. It contains no compiled payloads or credentials.

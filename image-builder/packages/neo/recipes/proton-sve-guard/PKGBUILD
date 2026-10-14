@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+pkgname=aurora-proton-sve-guard
+pkgver=11.7.20261014
+pkgrel=1
+pkgdesc='Source-built GE-Proton11-7 AArch64 ntdll SVE record extent guard'
+arch=(aarch64)
+license=(LGPL-2.1-or-later)
+depends=(glibc)
+url=https://github.com/aurora-silicon/aurora-steam-native
+options=('!strip' '!debug')
+source=(ntdll.so COPYING.LIB source-receipt.json)
+sha256sums=(368997e5dae86e67871153f8b4c226cf68fb0f9112c0d726e653ca340305e798 e237fa56668030e928551ddd60f05df5fe957f75eab874bbd017e085ed722e7c a45fd18d6684320f8ab3dc7e31aa42fd0da5c7796e26e2c692680c1a0d732964)
+package() {
+  install -Dm755 ntdll.so "$pkgdir/usr/lib/aurora-proton-sve-guard/ntdll.so"
+  install -Dm644 COPYING.LIB "$pkgdir/usr/share/licenses/$pkgname/COPYING.LIB"
+  install -Dm644 source-receipt.json "$pkgdir/usr/share/doc/$pkgname/source-receipt.json"
+}

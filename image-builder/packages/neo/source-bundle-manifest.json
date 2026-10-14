@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "files": [
     {
       "path": "BUILD.md",
@@ -23,8 +23,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "5a565d0a067531ba55b6fd340c5b3286c04b0c4dcf93361461d6496ef67a7509",
-      "bytes": 2760
+      "sha256": "62e574c08fb3ea37c5ef02ac54aea8df97be38ee6076e093537ed62961bd7108",
+      "bytes": 3057
     },
     {
       "path": "public-reuse-assets.json",
@@ -60,6 +60,67 @@
       "path": "recipes/aura/select-board",
       "sha256": "91c7b35601a59c69f37de92e92d82cb2ed713f2bb695bc2b5766091ed9ba5479",
       "bytes": 2940
+    },
+    {
+      "path": "recipes/fex-steam/PKGBUILD",
+      "sha256": "4e814530e7379a2deb071570cff409339540a057552f48dee49b66510d87dae7",
+      "bytes": 3670
+    },
+    {
+      "path": "recipes/fex-steam/guest-rpms.lock.json",
+      "kind": "symlink",
+      "target": "../fex/guest-rpms.lock.json",
+      "resolved_sha256": "9dc32568afc78eedc7ebb5ed764efd713fcd530aebf0c1e8ddee1281e7d63524",
+      "sha256": "11287eb0b9261851b2a67a4f3fcbb3adc9c38977c0143af2eaf7529bc2efc772",
+      "bytes": 27
+    },
+    {
+      "path": "recipes/fex-steam/license-notices.json",
+      "kind": "symlink",
+      "target": "../fex/license-notices.json",
+      "resolved_sha256": "652c41bb657ff25f9025e4fb11743b33122e6c8a56ec0e2b919187b3eb9224e5",
+      "sha256": "a48fac2de9236bf951952aecbbee0786155dc07110a6b4fa3df97807a160e0a0",
+      "bytes": 27
+    },
+    {
+      "path": "recipes/fex-steam/reuse.lock.json",
+      "kind": "symlink",
+      "target": "../fex/reuse.lock.json",
+      "resolved_sha256": "d086d930cffe9ca3410febfea721e25bd115c687e909aa99808ed485ac6dd42c",
+      "sha256": "f4e83b2dd852cb9fd2a256c58a12c7512b07b9dc60038aad1cdb011a1485f202",
+      "bytes": 22
+    },
+    {
+      "path": "recipes/fex-steam/source-lock.json",
+      "kind": "symlink",
+      "target": "../fex/source-lock.json",
+      "resolved_sha256": "9c6f9286af5ac561fd543589f56ef461b9c21a2e938d1c6e4c62113ee82ad2f2",
+      "sha256": "8acfb4d4322969cb970200e31eb2630ff1ad266f5189d17fdb2a2a350a4aa1c1",
+      "bytes": 23
+    },
+    {
+      "path": "recipes/fex-steam/sources.py",
+      "kind": "symlink",
+      "target": "../fex/sources.py",
+      "resolved_sha256": "155044d7158ae2591c3bb778f9d4137e544134f801e0f3a58cac483cfa286b7b",
+      "sha256": "9505a164a3b454500b5e7ecc571133c84baaf615d59e0d6ce8f95e27de061249",
+      "bytes": 17
+    },
+    {
+      "path": "recipes/fex-steam/x86-32.cmake",
+      "kind": "symlink",
+      "target": "../fex/x86-32.cmake",
+      "resolved_sha256": "a316c4b1b13c2c5786455d37062e986e8efc5dfdcf89aa00d7071a83782a1553",
+      "sha256": "294aa6ec57caf81a26e0f445de727e3e5feb2489dda19194230c7ebe72daa2e3",
+      "bytes": 19
+    },
+    {
+      "path": "recipes/fex-steam/x86-64.cmake",
+      "kind": "symlink",
+      "target": "../fex/x86-64.cmake",
+      "resolved_sha256": "e3bd6e37948a4ee530ff364a8ca4f9d8275640f0c12dbc7d61cd10505bdd81ae",
+      "sha256": "b5d46f852313a3a53eac0b9b7bc26c8fcd721b4aa2abef4583bbea86fe709a9d",
+      "bytes": 19
     },
     {
       "path": "recipes/fex/PKGBUILD",
@@ -187,6 +248,46 @@
       "bytes": 19543
     },
     {
+      "path": "recipes/proton-sve-guard/BUILD.md",
+      "sha256": "e55000e21f7da0a29b6773f0037054b9ea48f287bcea3e99e3b9404cfe0b7cc2",
+      "bytes": 3400
+    },
+    {
+      "path": "recipes/proton-sve-guard/COPYING.LIB",
+      "sha256": "e237fa56668030e928551ddd60f05df5fe957f75eab874bbd017e085ed722e7c",
+      "bytes": 26434
+    },
+    {
+      "path": "recipes/proton-sve-guard/GE-LICENSE",
+      "sha256": "216d230e098800b1e8f8814f20d4057f4a7a0b484a9132809f2c9a1eb921cac7",
+      "bytes": 442
+    },
+    {
+      "path": "recipes/proton-sve-guard/GE-LICENSE.proton",
+      "sha256": "eb61fb9ebaf41402d2d1a21fde9eae0c87e164daa20e388eac7c1a8099401a7a",
+      "bytes": 1493
+    },
+    {
+      "path": "recipes/proton-sve-guard/PKGBUILD",
+      "sha256": "063b976cff3e97b0cd492131a2de20bfbfff26bfbb24cb5b3fc0fe8159b30647",
+      "bytes": 882
+    },
+    {
+      "path": "recipes/proton-sve-guard/build-source.py",
+      "sha256": "d786bbebbb67516755020df50eeb3fecb137282def9d20a510629004ebf446f2",
+      "bytes": 6245
+    },
+    {
+      "path": "recipes/proton-sve-guard/prepare-wine-only.sh",
+      "sha256": "024b4241d2097b902e9e67f6e8c7d23c132c847fd4cfebfb961e852935dc38c4",
+      "bytes": 20367
+    },
+    {
+      "path": "recipes/proton-sve-guard/source-receipt.json",
+      "sha256": "a45fd18d6684320f8ab3dc7e31aa42fd0da5c7796e26e2c692680c1a0d732964",
+      "bytes": 1554
+    },
+    {
       "path": "recipes/runtime/RECIPE-LICENSE",
       "sha256": "717ba1949502290f8e47688ae2e323acd06c8ca47aec9f7596b15f678c1af4a2",
       "bytes": 1063
@@ -223,8 +324,18 @@
     },
     {
       "path": "recipes/steam-native/PKGBUILD",
-      "sha256": "43075bcea3b94f1df2d56802e4b0bbb81bc1928278f61a49cdae7efad513f7cc",
-      "bytes": 2316
+      "sha256": "9cc6e8e86135ddafe2edf3f817a3d29e39f71ce40f5ad229cee5fc8fa38d256e",
+      "bytes": 2817
+    },
+    {
+      "path": "recipes/steam-native/RootFS-LICENSE",
+      "sha256": "6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e",
+      "bytes": 1211
+    },
+    {
+      "path": "recipes/steam-native/graphics_provider.json",
+      "sha256": "ee9a8cdc6c19a194246c4e8695245ec84a72d85e5c907278a9c82a73cc44c8e7",
+      "bytes": 449
     },
     {
       "path": "recipes/steam-native/offline-policy.json",
@@ -233,8 +344,8 @@
     },
     {
       "path": "recipes/steam-native/steam-first-launch.py",
-      "sha256": "c08a6d0f89218033c9facb5a3ae05201a8ba50d02174930b204bc2c4d89cddc5",
-      "bytes": 3014
+      "sha256": "5bda07bb06dde999091279426ea7fbad6cd699142631a81b63d106b867db8447",
+      "bytes": 15142
     },
     {
       "path": "recipes/uboot/PKGBUILD",
@@ -282,9 +393,14 @@
       "bytes": 7639
     },
     {
+      "path": "tests/test_proton_activation.py",
+      "sha256": "6a77f5a88cb6f9dd37bb18408e824fdb7e20c98d4379a41822ff2c9fefd188bf",
+      "bytes": 9972
+    },
+    {
       "path": "tests/test_recipes.py",
-      "sha256": "929880eb5c73f14d27a79e0a94bd1b623e2c278084669b45fa8cec89a09b0885",
-      "bytes": 13654
+      "sha256": "e2b64c35ecc7d1631d6481ebd627f0f8220b315bfc81ad67f3cdefc90bfc0f03",
+      "bytes": 13740
     }
   ]
 }

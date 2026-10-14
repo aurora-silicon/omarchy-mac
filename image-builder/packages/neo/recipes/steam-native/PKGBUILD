@@ -2,25 +2,29 @@
 # Maintainer: Ryan Murray <ryan@aurorasilicon.org>
 pkgname=aurora-steam-native
 pkgver=0.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc='Native ARM64 Steam launcher with pinned offline first-launch bootstrap'
 arch=(any)
 url=https://github.com/aurora-silicon/aurora-steam-native
-license=(MIT LGPL-2.1-or-later)
-depends=(bash python coreutils aurora-userpages gtk2)
+license=(MIT LGPL-2.1-or-later Unlicense)
+depends=(bash python coreutils aurora-userpages gtk2 aurora-proton-sve-guard aurora-fex-steam erofs-utils fex-emu-rootfs-arch mesa-fex-emu-overlay-x86_64 mesa-fex-emu-overlay-i386)
 optdepends=('FEX-Emu: x86 games through ARM64 Proton' 'vulkan-asahi: native Vulkan driver')
 makedepends=(git)
 source=('steam-native::git+https://github.com/aurora-silicon/aurora-steam-native.git#commit=a1b375b287fe6db4d2e95beb9d945af15b3ef9db'
-        steam-first-launch.py offline-policy.json)
+        steam-first-launch.py offline-policy.json graphics_provider.json RootFS-LICENSE)
 sha256sums=(SKIP
-  'c08a6d0f89218033c9facb5a3ae05201a8ba50d02174930b204bc2c4d89cddc5'
+  '5bda07bb06dde999091279426ea7fbad6cd699142631a81b63d106b867db8447'
   '168294514eb71fe6a3dc7ab48919f5313d9a85f3ac1669de9bb6cc60596f469b'
+  'ee9a8cdc6c19a194246c4e8695245ec84a72d85e5c907278a9c82a73cc44c8e7'
+  '6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e'
 )
 package() {
   install -Dm755 steam-first-launch.py "$pkgdir/usr/lib/aurora-steam-native/steam-first-launch.py"
   install -Dm644 offline-policy.json "$pkgdir/usr/share/aurora-steam-native/offline-policy.json"
   printf '#!/bin/bash\nexec /usr/bin/python /usr/lib/aurora-steam-native/steam-first-launch.py "$@"\n' > steam-native4k
   install -Dm755 steam-native4k "$pkgdir/usr/bin/steam-native4k"
+  install -Dm644 graphics_provider.json "$pkgdir/usr/share/aurora-steam-native/graphics_provider.json"
+  install -Dm644 RootFS-LICENSE "$pkgdir/usr/share/licenses/$pkgname/RootFS-LICENSE"
   cd steam-native
   install -Dm755 libexec/steam-native4k-launch-loop.sh "$pkgdir/usr/libexec/steam-native4k-launch-loop.sh"
   install -Dm755 bin/steam-native4k "$pkgdir/usr/share/aurora-steam-native/bin/steam-native4k"
