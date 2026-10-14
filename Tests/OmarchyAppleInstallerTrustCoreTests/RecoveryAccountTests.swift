@@ -215,10 +215,12 @@
     }
 
     func testOnlyAnInstalledRecoveryReceiptMeansRecoveryFinished() {
-      XCTAssertTrue(RecoveryAccountHandoff.isFinishedRecoveryReceipt(
-        Data(#"{"schema":1,"status":"installed","mode":"raw"}"#.utf8)))
-      XCTAssertFalse(RecoveryAccountHandoff.isFinishedRecoveryReceipt(
-        Data(#"{"status":"prepared"}"#.utf8)))
+      XCTAssertTrue(
+        RecoveryAccountHandoff.isFinishedRecoveryReceipt(
+          Data(#"{"schema":1,"status":"installed","mode":"raw"}"#.utf8)))
+      XCTAssertFalse(
+        RecoveryAccountHandoff.isFinishedRecoveryReceipt(
+          Data(#"{"status":"prepared"}"#.utf8)))
       XCTAssertFalse(RecoveryAccountHandoff.isFinishedRecoveryReceipt(Data("not json".utf8)))
     }
   }
