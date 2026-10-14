@@ -217,7 +217,25 @@ def load_policy(trust=TRUST):
                                  source['repository']) is not None
                 and isinstance(source['commit'], str) and HEX40.fullmatch(source['commit']) is not None,
                 'invalid trusted package source: ' + name)
+    stock_packages(policy)
     return policy
+
+
+def stock_packages(policy):
+    """Exact stock archives required by the operator, from pinned databases."""
+    stock = policy.get('required_stock_packages', {})
+    require(isinstance(stock, dict), 'invalid required stock packages')
+    for name, package in stock.items():
+        require(isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9@._+:-]+', name) is not None
+                and name not in policy['runtime_packages'] + policy['boot_packages'] + policy['refused_packages'],
+                'invalid required stock package: ' + str(name))
+        require(isinstance(package, dict) and set(package) == {'repository', 'version', 'sha256'}
+                and package['repository'] in ('asahi-alarm', 'core', 'extra', 'alarm', 'aur', 'omarchy')
+                and isinstance(package['version'], str)
+                and re.fullmatch(r'[A-Za-z0-9.+_:~\-]+', package['version']) is not None
+                and isinstance(package['sha256'], str) and HEX64.fullmatch(package['sha256']) is not None,
+                'invalid required stock archive: ' + name)
+    return stock
 
 
 def set_digest(manifest):
@@ -360,6 +378,7 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
         names = [p['name'] for p in packages]
         require(len(set(names)) == len(names), 'duplicate package in the set')
         require(not set(names) & set(policy['refused_packages']), 'refused package in the set')
+        require(not set(names) & set(stock_packages(policy)), 'stock package also supplied as a candidate')
         require(runtime | boot <= set(names), 'wrong package set: missing '
                 + ', '.join(sorted(runtime | boot - set(names))))
         declared = data.get('platform_sources', {})

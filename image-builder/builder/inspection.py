@@ -175,6 +175,15 @@ def check_apple_packages(root: Path, report: dict) -> str:
     return f"all {len(names)} packages of {path.name} installed"
 
 
+def check_stock_packages(root: Path, policy: dict, report: dict) -> str:
+    stock = candidate_set.stock_packages(policy)
+    versions = installed_versions(root)
+    for name, package in stock.items():
+        require(versions.get(name) == package['version'], f"required stock package {name} is missing or has another version")
+    report['required_stock_packages'] = stock
+    return f"all {len(stock)} operator-required stock packages installed; archive provenance checked during build"
+
+
 def check_minimum_versions(root: Path, policy: dict) -> str:
     versions = installed_versions(root)
     details = []
@@ -636,6 +645,8 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
         ("pacman-config", lambda: check_pacman_config(root, channel, candidates)),
         ("installed-system", lambda: check_installed_system(root, report)),
     ]
+    if candidate_set.stock_packages(policy):
+        checks.append(("required-stock-packages", lambda: check_stock_packages(root, policy, report)))
     if target_profile != "generic":
         report["image_target_profile"] = target_profile
         checks.append(("common-stage1", lambda: check_common_stage1(root, candidates, report)))

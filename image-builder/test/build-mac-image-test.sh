@@ -71,6 +71,7 @@ cat >"$candidates/import.json" <<'EOF'
   {"name": "omarchy-mac", "version": "0.1.0-1", "filename": "m.pkg.tar.xz", "group": "runtime"},
   {"name": "omarchy-mac-boot", "version": "20260921-10", "filename": "b.pkg.tar.xz", "group": "runtime"},
   {"name": "linux-aurora", "version": "7.0-1", "filename": "k.pkg.tar.zst", "group": "boot"},
+  {"name": "standalone-closure", "version": "1-1", "filename": "c.pkg.tar.zst", "group": "closure"},
   {"name": "m1n1-aurora", "version": "1.6.1-1", "filename": "n.pkg.tar.zst", "group": "boot"},
   {"name": "uboot-asahi", "version": "2026.07-1", "filename": "u.pkg.tar.zst", "group": "boot"}
 ]}
@@ -158,7 +159,7 @@ target_pacman() {
     return
   fi
   printf '%s\n' "$@" >"$scratch/requested"
-  for name in omarchy omarchy-settings omarchy-mac omarchy-mac-boot linux-aurora m1n1-aurora uboot-asahi; do
+  for name in omarchy omarchy-settings omarchy-mac omarchy-mac-boot linux-aurora m1n1-aurora uboot-asahi standalone-closure; do
     if [[ $resolution == stolen && $name == uboot-asahi ]]; then
       echo "asahi-alarm uboot-asahi 2026.07.asahi1-1"
     else
@@ -174,7 +175,7 @@ mkdir -p "$logs"
 (fail() { builder_fail "$@"; }; precheck_transaction; printf '%s\n' "${base_names[@]}" >"$scratch/base"; printf '%s\n' "${unavailable[@]}" >"$scratch/missing") >/dev/null
 [[ $(<"$scratch/base") == hyprland && $(<"$scratch/missing") == obs-studio ]] ||
   fail "base names the pinned repositories lack are left out and recorded"
-for name in omarchy omarchy-settings omarchy-mac omarchy-mac-boot linux-aurora m1n1-aurora uboot-asahi; do
+for name in omarchy omarchy-settings omarchy-mac omarchy-mac-boot linux-aurora m1n1-aurora uboot-asahi standalone-closure; do
   grep -Fxq "omarchy-candidates/$name" "$scratch/requested" || fail "the pre-check resolves $name by its qualified name"
   ! grep -Fxq "$name" "$scratch/requested" || fail "the pre-check also asks for a plain $name"
 done
@@ -214,7 +215,7 @@ mkdir -p "$target"
 mount_api() { :; }
 unmount_api() { :; }
 chown() { :; }
-pacman() { printf 'omarchy 4.0.0-1\nomarchy-settings 4.0.0-1\nomarchy-mac 0.1.0-1\nomarchy-mac-boot 20260921-10\nlinux-aurora 7.0-1\nm1n1-aurora 1.6.1-1\nuboot-asahi 2026.07-1\n'; }
+pacman() { printf 'omarchy 4.0.0-1\nomarchy-settings 4.0.0-1\nomarchy-mac 0.1.0-1\nomarchy-mac-boot 20260921-10\nlinux-aurora 7.0-1\nm1n1-aurora 1.6.1-1\nuboot-asahi 2026.07-1\nstandalone-closure 1-1\n'; }
 target_pacman() {
   [[ -e $target/var/lib/omarchy/image/target ]] && manifest=yes || manifest=no
   printf '%s manifest=%s\n' "$*" "$manifest" >>"$scratch/transactions"
@@ -229,7 +230,7 @@ mapfile -t transactions <"$scratch/transactions"
   fail "the first transaction is the base and omarchy-settings alone, before the manifest: ${transactions[0]}"
 [[ ${transactions[1]} == "-S omarchy-candidates/omarchy hyprland manifest=yes" ]] ||
   fail "the runtime comes next, after the manifest: ${transactions[1]}"
-for name in omarchy-mac omarchy-mac-boot linux-aurora m1n1-aurora uboot-asahi; do
+for name in omarchy-mac omarchy-mac-boot linux-aurora m1n1-aurora uboot-asahi standalone-closure; do
   [[ " ${transactions[2]} " == *" omarchy-candidates/$name "* ]] || fail "the Apple set installs $name by its qualified name"
 done
 [[ " ${transactions[2]} " == *" alsa-ucm-conf-asahi asahi-audio "* ]] ||

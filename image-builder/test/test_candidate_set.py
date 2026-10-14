@@ -75,6 +75,22 @@ class CandidateSetTest(unittest.TestCase):
         self.assertEqual({p["group"] for p in imported["packages"]}, {"runtime", "boot"})
         self.assertFalse((self.work / "output/candidate-signing-key.asc").exists())
 
+    def test_required_stock_policy_refuses_invalid_or_candidate_packages(self):
+        stock = {"repository": "asahi-alarm", "version": "1-1", "sha256": "a" * 64}
+        for name, entry in (("grub", stock), ("stock", dict(stock, repository="untrusted")),
+                            ("stock", dict(stock, sha256="not-a-digest")),
+                            ("stock", dict(stock, version="../unsafe"))):
+            with self.subTest(name=name, entry=entry), self.assertRaisesRegex(ValueError, "required stock"):
+                c.stock_packages(dict(fixtures.POLICY, required_stock_packages={name: entry}))
+        trust = self.trusted_sources({})
+        policy = json.loads((trust / "policy.json").read_text())
+        policy['required_stock_packages'] = {'asahi-scripts': stock}
+        (trust / "policy.json").write_text(json.dumps(policy))
+        directory, receipt = self.variant(versions={'asahi-scripts': '1-1'}, names=[*fixtures.VERSIONS, 'asahi-scripts'],
+                                          channel=('asahi-scripts',))
+        with self.assertRaisesRegex(ValueError, "stock package also supplied as a candidate"):
+            self.verify(directory, receipt, trust=trust)
+
     def test_frozen_trust_copies_only_public_inputs_and_pins_bytes(self):
         trust = self.work / "trust"
         shutil.copytree(self.signer.trust, trust)

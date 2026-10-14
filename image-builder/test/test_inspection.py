@@ -66,6 +66,14 @@ class InspectionTest(unittest.TestCase):
         with self.assertRaisesRegex(inspection.InspectionError, "inspection candidate trust differs"):
             inspection.inspect(self.root, self.candidates, "edge", self.factory, trust=trust)
 
+    def test_required_stock_packages_must_have_the_exact_version(self):
+        package = {'repository': 'asahi-alarm', 'version': '20260318-1', 'sha256': 'a' * 64}
+        policy = dict(fixtures.POLICY, required_stock_packages={'fex-emu-rootfs-arch': package})
+        with self.assertRaisesRegex(inspection.InspectionError, 'required stock package'):
+            inspection.check_stock_packages(self.root, policy, {})
+        fixtures.local_package(self.root, 'fex-emu-rootfs-arch', '20260318-1', [])
+        self.assertIn('1 operator-required stock', inspection.check_stock_packages(self.root, policy, {}))
+
     def test_direct_inspection_refuses_symlinked_trust_key(self):
         trust = self.root.parent / "symlinked-trust"
         shutil.copytree(self.signer.trust, trust)

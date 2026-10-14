@@ -763,11 +763,12 @@ available_base() {
 # installs: every candidate comes from [omarchy-candidates], no refused package
 # is pulled in, and the set resolves at all.
 precheck_transaction() {
-  local resolved refused name
+  local resolved refused name stock
   available_base
+  stock=$(stock_requests) || fail "the required stock archives do not match the pinned databases"
   resolved=$(target_pacman -Sp --print-format '%r %n %v' "${BOOTSTRAP[@]}" "${PLATFORM_PACKAGES[@]}" \
     "$(qualified omarchy)" "$(qualified omarchy-settings)" "${base_names[@]}" "${APPLE_AUDIO[@]}" \
-    $(qualified "${apple_names[@]}" $(candidate_names boot)) 2>>"$logs/precheck.log") ||
+    $(qualified "${apple_names[@]}" $(candidate_names boot) $(candidate_names closure)) $stock 2>>"$logs/precheck.log") ||
     fail "the package set does not resolve against the pinned databases (logs/precheck.log)"
   printf '%s\n' "$resolved" >"$logs/precheck.log"
   while read -r name; do
@@ -776,6 +777,11 @@ precheck_transaction() {
   for refused in $(jq -r '.refused_packages[]' "$candidate_trust/policy.json"); do
     ! grep -Eq "^[^ ]+ $refused " <<<"$resolved" || fail "the package set pulls in the refused $refused"
   done
+}
+
+stock_requests() {
+  python3 "$ROOT/builder/package_record.py" --repositories "$repos" \
+    --stock-policy "$candidate_trust/policy.json" --stock-requests
 }
 
 install_settings() {
@@ -864,9 +870,10 @@ install_runtime() {
 }
 
 install_apple_set() {
-  local installed name version
+  local installed name version stock
+  stock=$(stock_requests) || fail "the required stock archives do not match the pinned databases"
   mount_api
-  target_pacman -S $(qualified "${apple_names[@]}" $(candidate_names boot)) "${PLATFORM_PACKAGES[@]}" \
+  target_pacman -S $(qualified "${apple_names[@]}" $(candidate_names boot) $(candidate_names closure)) $stock "${PLATFORM_PACKAGES[@]}" \
     "${APPLE_AUDIO[@]}" >>"$logs/install.log" 2>&1 || fail "could not install the Apple set (logs/install.log)"
   unmount_api
   installed=$(pacman --dbpath "$target/var/lib/pacman" -Q)
@@ -1345,7 +1352,7 @@ SCRIPT
 record_packages() {
   python3 "$ROOT/builder/package_record.py" --root "$target" --repositories "$repos" \
     --order "$(repositories | awk '{ print $1 }' | paste -sd, -)" --cache /cache \
-    --candidates "$candidates/import.json" >"$work/packages" 2>>"$logs/packages.log" ||
+    --candidates "$candidates/import.json" --stock-policy "$candidate_trust/policy.json" >"$work/packages" 2>>"$logs/packages.log" ||
     fail "the installed packages do not trace to the pinned databases (logs/packages.log)"
 }
 
