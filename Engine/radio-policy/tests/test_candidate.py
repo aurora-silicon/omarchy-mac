@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MIT
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -50,15 +51,13 @@ class CandidateTests(unittest.TestCase):
         fixture = fixtures.CollectTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        with patch.object(policy, "collect", return_value=b"policy-fixture") as collect, \
+        with patch.object(policy, "collect", side_effect=AssertionError("no second emulator")), \
                 patch.object(policy, "validate_policy", side_effect=lambda d: d):
-            files = candidate.collect(str(fixture.root), chosen=fixture.chosen)
-            collect.assert_called_once_with(str(fixture.root))
+            files = candidate.collect(str(fixture.root), chosen=fixture.chosen, policy=b"policy-fixture")
         self.assertEqual(files[policy.POLICY_PATH], b"policy-fixture")
         self.assertEqual(len(files), 12)
-        with patch.object(policy, "collect", side_effect=ValueError("unsupported stock input")):
-            with self.assertRaisesRegex(candidate.Mt7932Error, "unsupported stock"):
-                candidate.collect(str(fixture.root), chosen=fixture.chosen)
+        with self.assertRaisesRegex(candidate.Mt7932Error, "preflight"):
+            candidate.collect(str(fixture.root), chosen=fixture.chosen)
 
         adapter = ModuleType("adapter_candidate")
         with patch.dict(sys.modules, {"omarchy_mt7932": candidate}):
@@ -69,18 +68,23 @@ class CandidateTests(unittest.TestCase):
         installer = SimpleNamespace(sysinfo=SimpleNamespace(device_class="j700ap"))
         missing = dict(files)
         del missing[policy.POLICY_PATH]
-        with self.assertRaisesRegex(adapter.AsahiAdapterError, "world-XZ"):
+        with patch.object(policy, "validate_policy", side_effect=lambda d: d), self.assertRaisesRegex(adapter.AsahiAdapterError, "world-XZ"):
             adapter._collect_neo_radios(installer, package, collect=lambda: missing)
         self.assertFalse(package.added)
-        adapter._collect_neo_radios(installer, package, collect=lambda: files)
+        with patch.object(policy, "validate_policy", side_effect=lambda d: d):
+            adapter._collect_neo_radios(installer, package, collect=lambda: files)
         self.assertEqual(dict(package.added), files)
-        # Follow the real default binding with preflight's cached policy.
-        with patch.object(candidate, "_read", side_effect=lambda root, *parts: fixtures.mt._read(str(fixture.root), *parts)), \
-                patch.object(candidate.glob, "glob", return_value=[str(fixture.root / candidate.FACTORY_DATA / 'BWC2-00008140-0000')]), \
-                patch.object(candidate, "device_tree_chosen", return_value=fixture.chosen), \
-                patch.object(policy, "validate_policy", side_effect=lambda d: d), \
-                patch.object(policy, "collect", side_effect=AssertionError("cached policy must be reused")):
-            adapter._collect_neo_radios(installer, package, policy=b"policy-fixture")
+        # The later collector consumes only the completed byte snapshot.
+        with patch.object(policy, "validate_policy", side_effect=lambda d: d), \
+                patch.object(candidate, "collect", side_effect=AssertionError("no later collection")), \
+                patch.object(adapter.omarchy_apple_aea, "neo_radio_root", side_effect=AssertionError("no later fetch")):
+            snapshot = adapter._validate_neo_radio_files(files)
+            self.assertIsInstance(snapshot, tuple)
+            self.assertEqual(snapshot, tuple(sorted(files.items())))
+            original = dict(snapshot)
+            files[policy.POLICY_PATH] = b"changed caller map"
+            self.assertEqual(dict(snapshot), original)
+            adapter._collect_neo_radios(installer, package, snapshot=snapshot)
         installer.sysinfo.device_class = "j613ap"
         adapter._collect_neo_radios(installer, package, collect=lambda: self.fail("non-Neo collection"))
 
@@ -90,7 +94,8 @@ class CandidateTests(unittest.TestCase):
         installer = SimpleNamespace(sysinfo=SimpleNamespace(device_class="j700ap"))
         instance = adapter.AsahiStage1Adapter(installer=installer, metadata_path=None,
                                              payload_path=None, stub_size=1)
-        with patch.object(policy, "collect", side_effect=ValueError("bad stock/native runtime")):
+        with patch.object(adapter.omarchy_apple_aea, "neo_radio_root", return_value=contextlib.nullcontext("/synthetic-staged")), \
+                patch.object(policy, "collect", side_effect=ValueError("bad stock/native runtime")):
             with self.assertRaisesRegex(adapter.AsahiAdapterError, "radio-policy preflight"):
                 instance.preflight(None)
         self.assertFalse(instance.preflight_complete)
@@ -99,6 +104,89 @@ class CandidateTests(unittest.TestCase):
         for operation in (instance.prepare_target, instance.remove_existing_install):
             with self.assertRaises(adapter.AsahiAdapterError):
                 operation(None)
+
+    def test_complete_snapshot_precedes_metadata_and_reuses_immutable_bytes(self):
+        adapter = ModuleType("adapter_snapshot")
+        exec(compile(self.collectors["omarchy_asahi.py"], "candidate", "exec"), adapter.__dict__)
+        fixture = fixtures.CollectTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        candidate = ModuleType("snapshot_radio")
+        exec(compile(self.collectors["omarchy_mt7932.py"], "candidate", "exec"), candidate.__dict__)
+        with patch.object(policy, "validate_policy", side_effect=lambda d: d):
+            files = candidate.collect(str(fixture.root), chosen=fixture.chosen, policy=b"policy-fixture")
+        installer = SimpleNamespace(sysinfo=SimpleNamespace(device_class="j700ap"))
+        instance = adapter.AsahiStage1Adapter(installer=installer, metadata_path=None, payload_path=None, stub_size=1)
+        events = []
+        def metadata():
+            events.append("metadata")
+            raise RuntimeError("stop before installation setup")
+        def generate(root):
+            events.append(("policy", root))
+            return b"policy-fixture"
+        def collect(root, policy):
+            events.append(("radios", root, policy))
+            return files
+        adapter.asahi_firmware = SimpleNamespace(core=SimpleNamespace(FWFile=lambda n, d: d))
+        with patch.object(adapter.omarchy_apple_aea, "neo_radio_root", return_value=contextlib.nullcontext("/pinned25G83")) as fetch, \
+                patch.object(policy, "collect", side_effect=generate) as emulator, \
+                patch.object(policy, "validate_policy", side_effect=lambda d: d), \
+                patch.object(adapter.omarchy_mt7932, "collect", side_effect=collect), \
+                patch.object(instance, "_load_metadata", side_effect=metadata):
+            with self.assertRaisesRegex(RuntimeError, "stop before"):
+                instance.preflight(None)
+        self.assertEqual(events, [("policy", "/pinned25G83"), ("radios", "/pinned25G83", b"policy-fixture"), "metadata"])
+        fetch.assert_called_once()
+        emulator.assert_called_once()
+        # Missing any output refuses before metadata/disk setup.
+        for name in files:
+            missing = dict(files)
+            del missing[name]
+            with patch.object(adapter.omarchy_apple_aea, "neo_radio_root", return_value=contextlib.nullcontext("/pinned25G83")), \
+                    patch.object(policy, "collect", return_value=b"policy-fixture"), \
+                    patch.object(policy, "validate_policy", side_effect=lambda d: d), \
+                    patch.object(adapter.omarchy_mt7932, "collect", return_value=missing), \
+                    patch.object(instance, "_load_metadata", side_effect=AssertionError("must refuse first")):
+                with self.assertRaisesRegex(adapter.AsahiAdapterError, "preflight"):
+                    instance.preflight(None)
+        with patch.object(adapter.omarchy_apple_aea, "neo_radio_root", side_effect=ValueError("missing authenticated stock input")), \
+                patch.object(policy, "collect", side_effect=AssertionError("no emulator before acquisition")), \
+                patch.object(instance, "_load_metadata", side_effect=AssertionError("no disk setup")):
+            with self.assertRaisesRegex(adapter.AsahiAdapterError, "missing authenticated"):
+                instance.preflight(None)
+        mutable = dict(files)
+        mutable[next(iter(mutable))] = bytearray(b"mutable")
+        with patch.object(adapter.omarchy_apple_aea, "neo_radio_root", return_value=contextlib.nullcontext("/pinned25G83")), \
+                patch.object(policy, "collect", return_value=b"policy-fixture"), \
+                patch.object(adapter.omarchy_mt7932, "collect", return_value=mutable), \
+                patch.object(instance, "_load_metadata", side_effect=AssertionError("no disk setup")):
+            with self.assertRaisesRegex(adapter.AsahiAdapterError, "immutable bytes"):
+                instance.preflight(None)
+        installer.sysinfo.device_class = "j613ap"
+        with patch.object(adapter.omarchy_apple_aea, "neo_radio_root", side_effect=AssertionError("non-J700 fetch")), \
+                patch.object(instance, "_load_metadata", side_effect=RuntimeError("non-J700 metadata reached")):
+            with self.assertRaisesRegex(RuntimeError, "non-J700 metadata"):
+                instance.preflight(None)
+
+    def test_fixed40_identity_and_wrong39_lock_refusal(self):
+        self.assertEqual(builder.VERSION, "v0.9.2-aurora.radio-policy.2")
+        self.assertEqual(builder.BASE, {
+            "filename": "installer-v0.9.2-omarchy.40.tar.gz",
+            "size_bytes": 23858473,
+            "sha256": "f7c37dea75abad81f825a7d4a623f52f0d4d30495fef5d00ee43e0187779059e",
+        })
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "radio-policy").mkdir()
+            (root / "source-lock.json").write_text(json.dumps({"validation_artifact": {
+                "filename": "installer-v0.9.2-omarchy.39.tar.gz",
+                "size_bytes": 17864817,
+                "sha256": "893931e7a27b9e4ac62c20b591045caa9dcc8f0750b30704f178e4d4c077dd4a",
+            }}))
+            with patch.object(builder, "ROOT", root / "radio-policy"):
+                with self.assertRaisesRegex(ValueError, "frozen .40"):
+                    builder.build(root / "unused", root / "unused-wheel", root / "out")
+            self.assertFalse((root / "out").exists())
 
     def test_native_library_failure_has_no_host_fallback(self):
         files = builder.wheel_members(wheel())
@@ -133,7 +221,7 @@ class CandidateTests(unittest.TestCase):
             root = Path(temp)
             (root / "base").write_bytes(b"wrong")
             (root / "wheel").write_bytes(b"wrong")
-            with self.assertRaisesRegex(ValueError, "authenticated .39"):
+            with self.assertRaisesRegex(ValueError, "authenticated frozen engine profile"):
                 builder.build(root / "base", root / "wheel", root / "out")
             self.assertFalse((root / "out").exists())
 
@@ -171,7 +259,7 @@ class CandidateTests(unittest.TestCase):
                 self.assertFalse((root / "out.tar.gz").exists())
                 builder.build(base, w, root / "out.tar.gz")
             with patch.object(builder, "ROOT", candidate):
-                with self.assertRaisesRegex(ValueError, "frozen .39 source lock"):
+                with self.assertRaisesRegex(ValueError, "frozen .40 source lock"):
                     builder.build(base, w, root / "different-base.tar.gz")
             with tarfile.open(root / "out.tar.gz") as archive:
                 self.assertEqual(archive.extractfile("./boot/m1n1.bin").read(), originals["boot/m1n1.bin"])

@@ -110,6 +110,7 @@ sys.path.insert(
     str(Path(__file__).resolve().parents[1] / "src"),
 )
 
+import omarchy_apple_aea  # noqa: E402
 from omarchy_asahi import (  # noqa: E402
     _collect_neo_radios,
     _collect_neo_touch_id,
@@ -1560,6 +1561,22 @@ class Macos26BootcachesTests(unittest.TestCase):
         self.assertEqual(installer.bootcaches["bless2"]["RestoreBundlePath"], "./Elsewhere")
 
 
+class FakeDecrypt:
+    """omarchy_apple_aea.decrypt, writing each archive's known plaintext."""
+
+    def __init__(self, plaintexts):
+        self.plaintexts, self.calls = plaintexts, []
+
+    def __call__(self, source, destination):
+        self.calls.append(os.path.basename(source))
+        if os.path.exists(destination):
+            raise AssertionError(f"{destination} decrypted twice")
+        name = os.path.basename(source)
+        if name not in self.plaintexts:
+            raise omarchy_apple_aea.AppleInputError(f"no key for {name}")
+        Path(destination).write_bytes(self.plaintexts[name])
+
+
 class EncryptedRecoveryFirmwareTests(unittest.TestCase):
     """macOS 26 recovery images are AEA archives hdiutil cannot attach."""
 
@@ -1569,10 +1586,6 @@ class EncryptedRecoveryFirmwareTests(unittest.TestCase):
         root = Path(self.temporary.name)
         self.work = root / "work"
         self.work.mkdir()
-        self.host = root / "host"
-        (self.host / "usr/share/firmware/wifi").mkdir(parents=True)
-        (self.host / "usr/sbin").mkdir(parents=True)
-        (self.host / "usr/sbin/appleh13camerad").write_bytes(b"camera")
         self.recovery = root / "stub-recovery"
         self.image = self.recovery / "vgid-1/usr/standalone/firmware/arm64eBaseSystem.dmg"
         self.image.parent.mkdir(parents=True)
@@ -1580,17 +1593,17 @@ class EncryptedRecoveryFirmwareTests(unittest.TestCase):
         os.chdir(self.work)
         self.addCleanup(os.chdir, previous)
         self.runs = []
-        self.seen = {}
+        self.decrypt = FakeDecrypt({"arm64eBaseSystem.dmg": b"plain" + b"koly"})
 
-    def make(self, image_bytes, host_build="25G72", ipsw_build="25G72"):
+    def make(self, image_bytes):
         self.image.write_bytes(image_bytes)
         test = self
 
         class Stub:
             def __init__(self, sysinfo, dutil, osinfo):
-                self.sysinfo = SimpleNamespace(macos_build=host_build)
+                self.sysinfo = SimpleNamespace(macos_build="27A5000")
                 self.osi = SimpleNamespace(recovery=str(test.recovery), vgid="vgid-1")
-                self.manifest = {"ProductBuildVersion": ipsw_build}
+                self.manifest = {"ProductBuildVersion": "25G83"}
 
             def load_identity(self):
                 self.bootcaches = {"bless2": {}}
@@ -1598,9 +1611,6 @@ class EncryptedRecoveryFirmwareTests(unittest.TestCase):
             def collect_firmware(self, pkg):
                 fake_stub.subprocess.run(["hdiutil", "attach", "-quiet", "-readonly",
                                           "-mountpoint", "recovery", str(test.image)], check=True)
-                if os.path.lexists("recovery"):
-                    test.seen["wifi"] = os.path.isdir("recovery/usr/share/firmware/wifi")
-                    test.seen["camera"] = Path("recovery/usr/sbin/appleh13camerad").read_bytes()
                 fake_stub.subprocess.run(["tar", "czf", "all_firmware.tar.gz"], check=True)
                 fake_stub.subprocess.run(["hdiutil", "detach", "-quiet", "recovery"])
                 return pkg
@@ -1623,28 +1633,35 @@ class EncryptedRecoveryFirmwareTests(unittest.TestCase):
 
     def collect(self, installer):
         with patch("omarchy_asahi.stub", self.fake_stub), patch(
-            "omarchy_asahi.HOST_ROOT", str(self.host)
+            "omarchy_asahi.omarchy_apple_aea.decrypt", self.decrypt
         ):
             return installer.collect_firmware("pkg")
 
-    def test_firmware_comes_from_the_running_macos_of_the_same_build(self):
+    def test_an_encrypted_image_is_attached_decrypted_on_any_running_macos(self):
         installer = self.make(b"AEA1" + b"\0" * 60)
         self.assertEqual(self.collect(installer), "pkg")
-        self.assertEqual(self.seen, {"wifi": True, "camera": b"camera"})
-        # Neither hdiutil call reaches the system; the tar still does.
-        self.assertEqual(self.runs, [["tar", "czf", "all_firmware.tar.gz"]])
-        self.assertFalse(os.path.lexists("recovery"))
+        decrypted = str(self.work / "decrypted-0-arm64eBaseSystem.dmg")
+        self.assertEqual(Path(decrypted).read_bytes(), b"plainkoly")
+        self.assertEqual(self.runs, [
+            ["hdiutil", "attach", "-quiet", "-readonly", "-mountpoint", "recovery", decrypted],
+            ["tar", "czf", "all_firmware.tar.gz"],
+            ["hdiutil", "detach", "-quiet", "recovery"],
+        ])
+        # The stub's own image is untouched; install_files replaces it.
+        self.assertEqual(self.image.read_bytes()[:4], b"AEA1")
 
-    def test_a_different_running_build_is_refused(self):
-        installer = self.make(b"AEA1" + b"\0" * 60, host_build="25G83")
-        with self.assertRaisesRegex(AsahiAdapterError, "25G72.*25G83"):
+    def test_an_image_that_will_not_decrypt_is_refused(self):
+        self.decrypt = FakeDecrypt({})
+        installer = self.make(b"AEA1" + b"\0" * 60)
+        with self.assertRaisesRegex(AsahiAdapterError, "could not decrypt arm64eBaseSystem.dmg"):
             self.collect(installer)
         self.assertEqual(self.runs, [])
 
     def test_a_plain_recovery_image_is_attached_as_before(self):
         installer = self.make(b"koly" + b"\0" * 60)
         self.collect(installer)
-        self.assertEqual(self.runs[0][:2], ["hdiutil", "attach"])
+        self.assertEqual(self.decrypt.calls, [])
+        self.assertEqual(self.runs[0][-1], str(self.image))
         self.assertEqual(self.runs[-1][:2], ["hdiutil", "detach"])
 
 
@@ -1661,26 +1678,24 @@ class DecryptedMacos26ImagesTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         root = Path(self.temporary.name)
+        self.work = root / "work"
+        self.work.mkdir()
+        previous = os.getcwd()
+        os.chdir(self.work)
+        self.addCleanup(os.chdir, previous)
         self.stub_recovery = root / "stub-recovery"
         self.stub_preboot = root / "stub-preboot"
-        self.host_recovery = root / "host-recovery"
-        self.host_preboot = root / "host-preboot"
         self.stub_image = self.stub_recovery / STUB_VG / "usr/standalone/firmware/arm64eBaseSystem.dmg"
-        self.host_image = self.host_recovery / "host-vg/usr/standalone/firmware/arm64eBaseSystem.dmg"
         self.stub_restore = self.stub_preboot / STUB_VG / "Restore"
-        self.host_restore = self.host_preboot / "host-vg/restore"
-        for path in (self.stub_image, self.host_image):
-            path.parent.mkdir(parents=True)
+        self.stub_image.parent.mkdir(parents=True)
         self.stub_restore.mkdir(parents=True)
-        self.host_restore.mkdir(parents=True)
-        self.host_image.write_bytes(self.UDIF)
-        (self.host_restore / "094-96734-085.dmg.aea").write_bytes(b"exclave plain")
         self.step2 = root / "step2.sh"
-        self.cur_os = SimpleNamespace(
-            recovery=str(self.host_recovery), preboot=str(self.host_preboot), vgid="host-vg"
-        )
+        self.cur_os = SimpleNamespace(recovery="/host-recovery", preboot="/host-preboot", vgid="host-vg")
+        self.decrypt = FakeDecrypt({
+            "arm64eBaseSystem.dmg": self.UDIF, "094-96734-093.dmg.aea": b"exclave plain",
+        })
 
-    def make(self, image, restore, host_build="25G72", ipsw_build="25G72"):
+    def make(self, image, restore):
         self.stub_image.write_bytes(image)
         for name, data in restore.items():
             (self.stub_restore / name).write_bytes(data)
@@ -1688,13 +1703,13 @@ class DecryptedMacos26ImagesTests(unittest.TestCase):
 
         class Stub:
             def __init__(self, *args):
-                self.sysinfo = SimpleNamespace(macos_build=host_build)
+                self.sysinfo = SimpleNamespace(macos_build="27A5000")
                 self.osi = SimpleNamespace(
                     recovery=str(test.stub_recovery), preboot=str(test.stub_preboot), vgid=STUB_VG,
                     preboot_vgid=STUB_VG,
                 )
                 self.step2_sh = str(test.step2)
-                self.manifest = {"ProductBuildVersion": ipsw_build}
+                self.manifest = {"ProductBuildVersion": "25G83"}
                 self.pb_vgid = str(test.stub_preboot / STUB_VG)
                 self.bootcaches = {"bless2": {}}
 
@@ -1710,37 +1725,42 @@ class DecryptedMacos26ImagesTests(unittest.TestCase):
         with patch("omarchy_asahi.stub.StubInstaller", Stub):
             return stub_installer("sysinfo", "dutil", "osinfo")
 
-    def test_encrypted_images_are_replaced_by_the_running_macos_copies(self):
-        installer = self.make(self.AEA, {"094-96734-085.dmg.aea": self.AEA, "BuildManifest.plist": b"x"})
-        installer.install_files(self.cur_os)
+    def install(self, installer):
+        with patch("omarchy_asahi.omarchy_apple_aea.decrypt", self.decrypt):
+            installer.install_files(self.cur_os)
+
+    def test_encrypted_images_are_decrypted_in_place_on_any_running_macos(self):
+        installer = self.make(self.AEA, {"094-96734-093.dmg.aea": self.AEA, "BuildManifest.plist": b"x"})
+        self.install(installer)
         self.assertIs(self.installed, self.cur_os)
         self.assertEqual(self.stub_image.read_bytes(), self.UDIF)
-        self.assertEqual((self.stub_restore / "094-96734-085.dmg.aea").read_bytes(), b"exclave plain")
+        self.assertEqual((self.stub_restore / "094-96734-093.dmg.aea").read_bytes(), b"exclave plain")
         self.assertEqual((self.stub_restore / "BuildManifest.plist").read_bytes(), b"x")
+        self.assertEqual(self.decrypt.calls, ["arm64eBaseSystem.dmg", "094-96734-093.dmg.aea"])
+        # No decrypted copy is left behind in the working directory.
+        self.assertEqual(list(self.work.iterdir()), [])
         # The same install also writes Omarchy's Recovery setup.
         self.assertIn(f'VGID="{STUB_VG}"', self.step2.read_text())
 
     def test_older_firmware_is_left_alone(self):
         installer = self.make(b"koly-free plain", {"094-1.dmg": b"plain"})
-        installer.install_files(self.cur_os)
+        self.install(installer)
         self.assertEqual(self.stub_image.read_bytes(), b"koly-free plain")
+        self.assertEqual(self.decrypt.calls, [])
 
-    def test_a_different_running_build_is_refused(self):
-        installer = self.make(self.AEA, {}, host_build="25G83")
-        with self.assertRaisesRegex(AsahiAdapterError, "25G72.*25G83"):
-            installer.install_files(self.cur_os)
-        self.assertEqual(self.stub_image.read_bytes(), self.AEA)
-
-    def test_an_encrypted_file_without_a_decrypted_copy_is_refused(self):
+    def test_an_encrypted_file_that_will_not_decrypt_is_refused(self):
         installer = self.make(self.AEA, {"094-00000-000.dmg.aea": self.AEA})
         with self.assertRaisesRegex(AsahiAdapterError, "094-00000-000.dmg.aea"):
-            installer.install_files(self.cur_os)
+            self.install(installer)
+        # Nothing in the stub is replaced until every image has decrypted.
+        self.assertEqual(self.stub_image.read_bytes(), self.AEA)
 
-    def test_an_encrypted_running_recovery_image_is_refused(self):
-        self.host_image.write_bytes(self.AEA)
+    def test_a_recovery_image_that_does_not_decrypt_to_a_disk_image_is_refused(self):
+        self.decrypt.plaintexts["arm64eBaseSystem.dmg"] = b"not a disk image" * 64
         installer = self.make(self.AEA, {})
         with self.assertRaisesRegex(AsahiAdapterError, "recovery image"):
-            installer.install_files(self.cur_os)
+            self.install(installer)
+        self.assertEqual(self.stub_image.read_bytes(), self.AEA)
 
 
 def j700_stage1(path=b"", window=0, uuid=b""):

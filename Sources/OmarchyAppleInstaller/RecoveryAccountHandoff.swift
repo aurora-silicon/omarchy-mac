@@ -47,12 +47,15 @@
     }
 
     static func updateRecoveryApp(for target: RecoveryAccountTarget) throws {
-      let source = URL(
-        fileURLWithPath:
-          "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppName).app"
-      )
+      // Prefer the helper's copy for apps launched from a disk image;
+      // packages also provide the template in /Applications.
       let fm = FileManager.default
-      guard fm.fileExists(atPath: source.path) else {
+      let found = [
+        InstallerProductIdentity.installedRecoveryTemplateDirectory
+          + "/\(InstallerProductIdentity.recoveryAppName).app",
+        "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppName).app",
+      ].map { URL(fileURLWithPath: $0) }.first { fm.fileExists(atPath: $0.path) }
+      guard let source = found else {
         throw AccountSetupFailure(
           "This installer is missing its native Recovery app. Reinstall the updated installer package."
         )
@@ -213,6 +216,8 @@
           do {
             try requireLivePartitions(evidence: evidence, listing: diskList)
           } catch { continue }
+          // Recovery already finished this one: it is installed, not waiting.
+          if recoveryFinished(current) { continue }
           found.append(
             CompletedRecoveryInstallation(
               binding: file.deletingPathExtension().lastPathComponent, target: current,
@@ -226,6 +231,32 @@
           "Choose which completed installation should receive a recovery account.")
       }
       return found.first
+    }
+
+    /// Recovery's Finish Installation writes this receipt on the installed
+    /// System volume only after it has authorized and enrolled the boot.
+    static let recoveryReceiptPath = "Aurora/Recovery/State/installation.json"
+
+    static func isFinishedRecoveryReceipt(_ data: Data) -> Bool {
+      (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["status"] as? String
+        == "installed"
+    }
+
+    /// Whether Recovery completed the installation on `target`. The System
+    /// volume is mounted read-only to look, if macOS has not mounted it.
+    static func recoveryFinished(_ target: RecoveryAccountTarget) -> Bool {
+      guard var info = try? AccountNativeCommand.disk(target.systemUUID) else { return false }
+      if (info["MountPoint"] as? String ?? "").isEmpty {
+        _ = try? AccountNativeCommand.checked(
+          "/usr/sbin/diskutil", ["mount", "readOnly", target.systemUUID])
+        guard let mounted = try? AccountNativeCommand.disk(target.systemUUID) else { return false }
+        info = mounted
+      }
+      guard let mount = info["MountPoint"] as? String, !mount.isEmpty,
+        let receipt = try? RecoveryAccountInstaller.protectedRead(
+          URL(fileURLWithPath: mount).appendingPathComponent(recoveryReceiptPath), limit: 65536)
+      else { return false }
+      return isFinishedRecoveryReceipt(receipt)
     }
 
     static func requireLivePartitions(evidence: [String: Data], listing: [String: Any]) throws {

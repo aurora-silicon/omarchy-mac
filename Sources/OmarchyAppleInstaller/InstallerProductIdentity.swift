@@ -18,6 +18,10 @@ public enum InstallerProductIdentity {
   /// presence is the app's synchronous registration signal for the helper.
   public static let systemLaunchDaemonPath =
     systemLaunchDaemonDirectory + "/" + helperDaemonPlistName
+  /// A root-owned copy of the app's native Recovery app, for helpers that an
+  /// app run from anywhere, not the package's /Applications copy, installed.
+  public static let installedRecoveryTemplateDirectory =
+    "/Library/PrivilegedHelperTools/" + helperIdentifier + ".RecoveryTemplate"
   public static let helperWorkingDirectory =
     "/var/db/" + appIdentifier
   public static let clientRequirementEnvironmentVariable =

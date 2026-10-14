@@ -59,6 +59,13 @@ int main(int argc, char **argv)
             if (!fgets(password, sizeof(password), stdin)) return 3;
             return 4;
         }
+        if (!strcmp(argv[1], "--bputil")) {
+            alarm(3); /* Bound the regression when an old matcher misses it. */
+            printf("Use at your own risk!\n\nAuthorized user: "); fflush(stdout);
+            if (!fgets(user,sizeof(user),stdin)) return 16;
+            const char *secret=getpass("Password for fixture-user: ");
+            return strcmp(user,"fixture-user\n") || !secret || strcmp(secret,"fixture-password") ? 17 : 0;
+        }
         if (!strcmp(argv[1], "--failure-output")) {
             fprintf(stderr,"final command diagnostic\n"); return 42;
         }
@@ -82,6 +89,9 @@ int main(int argc, char **argv)
     child[1] = "--getpass";
     int tty=authorization_run(argv[0],child,"fixture-user","fixture-password",true);
     if(tty!=0) { fprintf(stderr,"FAIL native getpass: status=%d\n",tty); return 1; }
+    child[1] = "--bputil";
+    int bputil=authorization_run(argv[0],child,"fixture-user","fixture-password",false);
+    if(bputil!=0) { fprintf(stderr,"FAIL bputil authorized user prompt: status=%d\n",bputil); return 1; }
     child[1] = "--native-confirm";
     int native=authorization_run(argv[0],child,"fixture-user","fixture-password",true);
     if(native!=0) { fprintf(stderr,"FAIL native kmutil prompt with newline: status=%d\n",native); return 1; }
@@ -104,6 +114,6 @@ int main(int argc, char **argv)
     child[1] = "--secret-output";
     assert(authorization_run_logged(argv[0],child,"fixture-user","fixture-password",false,capture,NULL) == 0);
     assert(strstr(latest,"[redacted]"));
-    puts("PASS exact native kmutil prompt / newline / byte-split / repeated prompt; final output / exact exit status / fragmented credential redaction;  split confirmation/username/password prompts; exact one-shot confirmation; unauthorized/repeated confirmation rejection; repeated password rejection; command allowlist");
+    puts("PASS exact native kmutil prompt / newline / byte-split / repeated prompt; final output / exact exit status / fragmented credential redaction;  split confirmation/username/password prompts; bputil authorized-user prompt; exact one-shot confirmation; unauthorized/repeated confirmation rejection; repeated password rejection; command allowlist");
     return 0;
 }

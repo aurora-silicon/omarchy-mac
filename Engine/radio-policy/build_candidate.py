@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Build an unsigned radio-policy candidate from the authenticated .39 engine.
+"""Build an unsigned radio-policy candidate from the authenticated frozen engine profile.
 
 This does not change the production engine pin, catalog, signing or release lock.
 Inputs are local files; this command performs no downloads or installation.
@@ -18,11 +18,11 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "v0.9.2-aurora.radio-policy.1"
+VERSION = "v0.9.2-aurora.radio-policy.2"
 BASE = {
-    "filename": "installer-v0.9.2-omarchy.39.tar.gz",
-    "size_bytes": 17864817,
-    "sha256": "893931e7a27b9e4ac62c20b591045caa9dcc8f0750b30704f178e4d4c077dd4a",
+    "filename": "installer-v0.9.2-omarchy.40.tar.gz",
+    "size_bytes": 23858473,
+    "sha256": "f7c37dea75abad81f825a7d4a623f52f0d4d30495fef5d00ee43e0187779059e",
 }
 WHEEL = {
     "filename": "unicorn-2.1.4-cp37-abi3-macosx_11_0_arm64.whl",
@@ -89,15 +89,16 @@ def pin_native_loader(files):
 
 
 def patched_collectors(originals):
+    patch_path = ROOT / "collector.patch"
     if set(originals) != set(COLLECTORS):
         raise ValueError("Unexpected collector patch inventory")
     with tempfile.TemporaryDirectory(prefix="aurora-radio-patch-") as temp:
         root = Path(temp)
         for name, content in originals.items():
             (root / name).write_bytes(content)
-        subprocess.run(["git", "apply", "--check", str(ROOT / "collector.patch")], cwd=root,
+        subprocess.run(["git", "apply", "--unidiff-zero", "--check", str(patch_path)], cwd=root,
                        check=True, capture_output=True, timeout=15)
-        subprocess.run(["git", "apply", str(ROOT / "collector.patch")], cwd=root,
+        subprocess.run(["git", "apply", "--unidiff-zero", str(patch_path)], cwd=root,
                        check=True, capture_output=True, timeout=15)
         return {name: (root / name).read_bytes() for name in COLLECTORS}
 
@@ -108,10 +109,10 @@ def build(base, wheel, output):
     lock = json.loads((ROOT.parent / "source-lock.json").read_text())
     artifact = lock["validation_artifact"]
     if any(artifact.get(key) != value for key, value in BASE.items()):
-        raise ValueError("Candidate requires the frozen .39 source lock")
+        raise ValueError("Candidate requires the frozen .40 source lock")
     base_data = base.read_bytes()
     if len(base_data) != artifact["size_bytes"] or digest(base_data) != artifact["sha256"]:
-        raise ValueError("Base is not the exact authenticated .39 engine")
+        raise ValueError("Base is not the exact authenticated frozen engine profile")
     wheel_data = wheel.read_bytes()
     if len(wheel_data) != WHEEL["bytes"] or digest(wheel_data) != WHEEL["sha256"]:
         raise ValueError("Unicorn wheel size/hash mismatch")
@@ -168,7 +169,7 @@ def build(base, wheel, output):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("base", type=Path, help="authenticated installer-v0.9.2-omarchy.39.tar.gz")
+    parser.add_argument("base", type=Path, help="exact frozen engine archive for the fixed .40 base")
     parser.add_argument("wheel", type=Path, help=WHEEL["filename"])
     parser.add_argument("output", type=Path, help="new unsigned candidate archive")
     args = parser.parse_args()

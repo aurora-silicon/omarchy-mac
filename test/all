@@ -10,6 +10,8 @@ fi
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 tests_temp=$(mktemp -d "${TMPDIR:-/tmp}/omarchy-installer-tests.XXXXXX")
+# Use one physical spelling for fixtures and production paths on macOS.
+tests_temp=$(cd -- "$tests_temp" && pwd -P)
 trap 'rm -rf -- "$tests_temp"' EXIT
 export TMPDIR="$tests_temp"
 export PYTHONPYCACHEPREFIX="$tests_temp/pycache"
@@ -34,6 +36,7 @@ print("Python compilation and shell syntax passed")
 PY
 
 python3 -m unittest discover -s Engine/tests -p 'test_*.py'
+python3 -m unittest discover -s Engine/radio-policy/tests -p 'test_*.py'
 python3 -m unittest discover -s Engine/overlay/tests -p 'test_*.py'
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 bash scripts/tests/preclean-m1-test.sh
