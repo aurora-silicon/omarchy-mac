@@ -282,6 +282,7 @@ host_main() {
     [[ -n $native_btrfs && -n $native_btrfs_sha ]] || fail "native Btrfs requires a directory and receipt SHA256"
     python3 "$ROOT/builder/native_btrfs.py" "$native_btrfs" --sha256 "$native_btrfs_sha" --output "$host_work/native-btrfs" || fail "native Btrfs tool closure does not verify"
     [[ -f $host_work/native-btrfs/snapper ]] || fail "native Btrfs closure needs stock native Snapper for the runtime setup"
+    [[ -f $host_work/native-btrfs/xtables-nft-multi ]] || fail "native tool closure needs stock nft iptables for the isolated runtime firewall setup"
     native_mounts=(-v "$host_work/native-btrfs:/native-btrfs:ro" -e "MAC_IMAGE_NATIVE_BTRFS_SHA256=$native_btrfs_sha")
   fi
   if [[ -n $(record_field candidate_trust_policy_sha256 "$inputs") ]]; then
@@ -659,7 +660,7 @@ prepare_isolated_api() {
     _isolated_mount "$root/dev/$node" --bind "$name"
   done < <(losetup -n -O NAME,BACK-FILE --list 2>/dev/null || true)
   _isolated_mount "$root/run" -t tmpfs -o mode=0755,nosuid,noexec tmpfs
-  # Only the system-setup Snapper leaf enters a second private mount namespace.
+  # Only system-setup Snapper/firewall leaves enter a second private namespace.
   # Other runtime leaves, package hooks and mkinitcpio see the real ARM tools.
   if ((record == 0)) && [[ ${OMARCHY_ISOLATED_NATIVE_FS_TOOLS:-0} == 1 && -n ${MAC_IMAGE_NATIVE_BTRFS_SHA256:-} ]]; then
     local native_root=$root/run/omarchy-builder/native-btrfs
@@ -673,6 +674,13 @@ prepare_isolated_api() {
     mount -o remount,bind,ro,nosuid,nodev "$root/run/omarchy-builder/original-snapper.sh" || fail "could not freeze runtime Snapper leaf"
     _isolated_mount "$leaf" --bind /native-btrfs/bin/snapper-leaf
     mount -o remount,bind,ro,exec,nosuid,nodev "$leaf" || fail "could not freeze native Snapper leaf launcher"
+    leaf=$root/usr/share/omarchy/install/config/firewall.sh
+    [[ -f $leaf && ! -L $leaf ]] || fail "native firewall context has no installed runtime leaf"
+    touch "$root/run/omarchy-builder/original-firewall.sh"
+    _isolated_mount "$root/run/omarchy-builder/original-firewall.sh" --bind "$leaf"
+    mount -o remount,bind,ro,nosuid,nodev "$root/run/omarchy-builder/original-firewall.sh" || fail "could not freeze runtime firewall leaf"
+    _isolated_mount "$leaf" --bind /native-btrfs/bin/firewall-leaf
+    mount -o remount,bind,ro,exec,nosuid,nodev "$leaf" || fail "could not freeze native firewall leaf launcher"
   fi
   # systemd-tmpfiles never runs here: the installer takes its lock under /run/lock.
   mkdir -m 0755 -p "$root/run/lock"

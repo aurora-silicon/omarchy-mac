@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -40,7 +41,7 @@ class NativeBtrfsTests(unittest.TestCase):
         self.assertIn('$tool_root/snapper', (target / 'bin/snapper').read_text())
         runner = (target / 'bin/snapper-leaf-run').read_text()
         self.assertIn('mount --make-rprivate /', runner)
-        self.assertIn('exec /bin/bash /run/omarchy-builder/original-snapper.sh', runner)
+        self.assertIn('exec /bin/bash -eE /run/omarchy-builder/original-snapper.sh', runner)
         self.assertNotIn('mkinitcpio', runner)
         self.assertFalse((target / 'bin/btrfs').stat().st_mode & 0o222)
         self.assertFalse(target.stat().st_mode & 0o222)
@@ -51,6 +52,57 @@ class NativeBtrfsTests(unittest.TestCase):
         (self.source / 'btrfs').write_bytes(self.header + b'changed')
         with self.assertRaisesRegex(ValueError, 'file changed'):
             module.validate(self.source, self.sha)
+
+    def test_original_leaf_failure_cannot_fall_through_to_success(self):
+        (self.source / 'xtables-nft-multi').write_bytes(self.header)
+        self.files['xtables-nft-multi'] = hashlib.sha256(self.header).hexdigest()
+        self.write_receipt()
+        target = Path(self.tmp.name) / 'output'
+        module.freeze(self.source, target, self.sha)
+        leaf = Path(self.tmp.name) / 'original.sh'
+        marker = Path(self.tmp.name) / 'false-pass'
+        leaf.write_text('false\nprintf "incorrect success" > "' + str(marker) + '"\n')
+        for kind in ['snapper', 'firewall']:
+            runner = (target / ('bin/' + kind + '-leaf-run')).read_text()
+            handoff = runner.splitlines()[-1].replace('/run/omarchy-builder/original-' + kind + '.sh', str(leaf))
+            result = subprocess.run(['/bin/bash', '-c', handoff], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+
+    def test_firewall_multicall_alias_dispatch_and_private_network(self):
+        (self.source / 'xtables-nft-multi').write_bytes(self.header)
+        self.files['xtables-nft-multi'] = hashlib.sha256(self.header).hexdigest()
+        self.write_receipt()
+        target = Path(self.tmp.name) / 'output'
+        module.freeze(self.source, target, self.sha)
+        launcher = (target / 'bin/firewall-leaf').read_text()
+        self.assertIn('unshare --mount --net --fork', launcher)
+        runner = (target / 'bin/firewall-leaf-run').read_text()
+        self.assertEqual(runner.count('mount --bind'), 1)
+        self.assertIn('/usr/bin/xtables-nft-multi', runner)
+        self.assertIn('original-firewall.sh', runner)
+        self.assertNotIn('mkinitcpio', runner)
+        # Execute the generated basename dispatch with only the ELF loader leaf
+        # intercepted. A shared-target mount must preserve both frontend aliases.
+        fake = Path(self.tmp.name) / 'loader'
+        fake.mkdir()
+        loader = fake / 'ld-linux-x86-64.so.2'
+        loader.write_text('#!/bin/bash\nprintf "%s\\n" "$XTABLES_LIBDIR" "$@"\n')
+        loader.chmod(0o700)
+        dispatcher = fake / 'xtables-nft-multi'
+        dispatcher.write_text((target / 'bin/xtables-nft-multi').read_text().replace('/run/omarchy-builder/native-btrfs', str(fake)))
+        dispatcher.chmod(0o700)
+        for name in ['iptables', 'ip6tables', 'iptables-save', 'ip6tables-restore']:
+            alias = fake / name
+            alias.symlink_to('xtables-nft-multi')
+            result = subprocess.run([str(alias), '-V'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [str(fake), '--library-path', str(fake), str(fake / 'xtables-nft-multi'), name, '-V'])
+        result = subprocess.run([str(dispatcher), '-V'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 64)
+        result = subprocess.run([str(dispatcher), 'iptables', '-V'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-2:], ['iptables', '-V'])
 
     def test_symlink_and_path_escape_are_rejected(self):
         (self.source / 'btrfs').unlink()
