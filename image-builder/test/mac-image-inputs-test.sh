@@ -119,3 +119,21 @@ if "$BASH" "$inputs" resolve "$work/new" --candidates "$work" --alarm-server htt
 fi
 grep -Fq "not an https server URL: http://mirror.invalid" "$work/out" || fail "resolve refuses an http server by name"
 pass "resolve refuses an http server"
+
+# Target choice belongs to the immutable input record and pinned operator policy.
+awk -v policy="$(hex 4)" -v public="$(hex 5)" '{print; if ($0 ~ /^candidate_manifest_sha256=/) {
+  print "candidate_trust_policy_sha256=" policy; print "candidate_trust_public_key_sha256=" public;
+  print "image_target_profile=neo-j700"
+}}' "$work/inputs" >"$work/neo-inputs"
+"$BASH" "$inputs" check "$work/neo-inputs" | cmp -s - "$work/neo-inputs" || fail "a pinned Neo record checks"
+for variant in unknown unpinned; do
+  if [[ $variant == "unknown" ]]; then
+    sed 's/image_target_profile=neo-j700/image_target_profile=j614s/' "$work/neo-inputs" >"$work/bad-profile"
+  else
+    sed '/^candidate_trust_.*sha256=/d' "$work/neo-inputs" >"$work/bad-profile"
+  fi
+  if "$BASH" "$inputs" check "$work/bad-profile" >/dev/null 2>&1; then
+    fail "target record rejects $variant selection"
+  fi
+done
+pass "Neo input records pin the known target and require both operator trust digests"

@@ -118,7 +118,7 @@ def require(condition: bool, message: str) -> None:
         raise CheckError(message)
 
 
-def expected_metadata(package: str) -> dict:
+def expected_metadata(package: str, target_profile: str = "generic") -> dict:
     return {
         "os_list": [
             {
@@ -143,7 +143,7 @@ def expected_metadata(package: str) -> dict:
                     {"image": "boot.img", "name": "Boot", "size": f"{BOOT_SIZE}B", "type": "Linux"},
                     {"expand": True, "image": "root.img", "name": "Root", "size": f"{ROOT_SIZE}B", "type": "Linux"},
                 ],
-                "supported_fw": ["13.5", "14.8.3"],
+                "supported_fw": _module("candidate_set").IMAGE_TARGET_PROFILES[target_profile]["supported_fw"],
             }
         ]
     }
@@ -196,7 +196,8 @@ def check_plaintext_root(header: bytes, where: str) -> None:
     check_root_superblock(header, where)
 
 
-def check_payload(lane: str, package: Path, installer_data: Path, profile: str = "release") -> dict[str, str]:
+def check_payload(lane: str, package: Path, installer_data: Path, profile: str = "release",
+                  target_profile: str = "generic") -> dict[str, str]:
     check_profile(lane, profile)
     name = package.name
     match = PAYLOAD_NAME.fullmatch(name)
@@ -207,7 +208,7 @@ def check_payload(lane: str, package: Path, installer_data: Path, profile: str =
         metadata = json.loads(installer_data.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise CheckError(f"{installer_data} is not JSON") from error
-    require(metadata == expected_metadata(name), f"{installer_data} is not the installer_data for {name}")
+    require(metadata == expected_metadata(name, target_profile), f"{installer_data} is not the installer_data for {name}")
 
     try:
         archive = zipfile.ZipFile(package)
@@ -235,12 +236,13 @@ def check_payload(lane: str, package: Path, installer_data: Path, profile: str =
                 f"unexpected member {info.filename}",
             )
             members[info.filename] = info
-        missing = sorted(REQUIRED_MEMBERS - set(members))
+        required_members = REQUIRED_MEMBERS | ({"esp/aurora/stage1.bin"} if target_profile == "neo-j700" else set())
+        missing = sorted(required_members - set(members))
         require(not missing, "missing members: " + ", ".join(missing))
         require("esp/omarchy" in directories, "missing members: esp/omarchy/")
         require(not any(name.startswith("esp/omarchy/") for name in members), "the image carries install.conf")
         require(".builder" not in {PurePosixPath(n).name for n in members}, "the ESP keeps the builder marker")
-        for member in REQUIRED_MEMBERS:
+        for member in required_members:
             require(members[member].file_size > 0, f"{member} is empty")
         for member, capacity in (("boot.img", BOOT_SIZE), ("root.img", ROOT_SIZE)):
             size = members[member].file_size
@@ -257,10 +259,17 @@ def check_payload(lane: str, package: Path, installer_data: Path, profile: str =
             # Enough of the UKI's PE header to tell the machine type.
             f"esp/EFI/Linux/omarchy_{KERNEL}.efi": 4 << 10,
         }
+        if target_profile == "neo-j700":
+            keep["esp/aurora/stage1.bin"] = 16 << 20
         digests = {}
         captured = {}
         for member, info in members.items():
             digests[member], captured[member] = read_member(archive, info, keep.get(member, 0))
+    if target_profile == "neo-j700":
+        try:
+            _module("candidate_set").bare_stage1(captured["esp/aurora/stage1.bin"])
+        except ValueError as error:
+            raise CheckError(str(error)) from error
     require(digests[ICON] == ICON_SHA256, f"{ICON} is not the Omarchy volume icon")
     check_boot_superblock(captured["boot.img"], "boot.img")
     check_plaintext_root(captured["root.img"], "root.img")
@@ -718,13 +727,29 @@ def check_provenance(lane: str, directory: Path) -> None:
     require(report.get("lab_access_sha256") == fields.get("lab_access_sha256", [None])[0],
             "INSPECTION's lab access digest does not match PROVENANCE")
     check_image_target_record(report, fields, profile)
-    check_payload(lane, payload, installer_data, profile)
+    target_profile = recorded_target_profile(fields)
+    require(fields.get("input.image_target_profile") == fields.get("image_target_profile"),
+            "PROVENANCE target profile differs from its inputs")
+    check_payload(lane, payload, installer_data, profile, target_profile)
+
+
+def recorded_target_profile(fields: dict[str, list[str]]) -> str:
+    values = fields.get("image_target_profile", ["generic"])
+    require(len(values) == 1 and values[0] in _module("candidate_set").IMAGE_TARGET_PROFILES,
+            "invalid recorded image target profile")
+    return values[0]
 
 
 def check_image_target_record(report: dict, fields: dict[str, list[str]], profile: str) -> None:
     """The provenance the image's target manifest carries, as INSPECTION read it, is this build's."""
     target = report.get("image_target")
+    target_profile = recorded_target_profile(fields)
     require(isinstance(target, dict), "INSPECTION does not record the image target's provenance")
+    require(target.get("image_target_profile", "generic") == target_profile,
+            "INSPECTION target profile does not match PROVENANCE")
+    if target_profile != "generic":
+        require(target.get("board") == _module("candidate_set").IMAGE_TARGET_PROFILES[target_profile]["board"],
+                "INSPECTION board does not match its target profile")
     for key, field in (("candidate_set", "input.candidate_set"), ("candidate_source_commit", "input.candidate_source_commit"),
                        ("builder_commit", "builder_commit"), ("builder_tree_clean", "builder_tree_clean")):
         require(target.get(key) is not None and [target[key]] == fields.get(field),
@@ -778,6 +803,11 @@ def check_descriptor(lane: str, directory: Path) -> None:
     for key in IMAGE_INPUTS:
         require(input_fields.get(key) == fields[key], f"IMAGE {key} does not match the inputs record")
         require(provenance_fields.get(f"input.{key}") == fields[key], f"IMAGE {key} does not match PROVENANCE")
+    target_profile = recorded_target_profile(fields)
+    require(input_fields.get("image_target_profile") == fields.get("image_target_profile")
+            == provenance_fields.get("image_target_profile")
+            == provenance_fields.get("input.image_target_profile"),
+            "IMAGE target profile does not match inputs and PROVENANCE")
     trust_fields = ("candidate_trust_policy_sha256", "candidate_trust_public_key_sha256")
     if any(key in input_fields or key in fields for key in trust_fields):
         for key in trust_fields:
@@ -799,7 +829,7 @@ def check_descriptor(lane: str, directory: Path) -> None:
     payload = payload_in(directory, lane)
     installer_data = directory / "installer_data.json"
     require(installer_data.is_file(), "installer_data.json is not beside IMAGE")
-    digests = check_payload(lane, payload, installer_data, profile)
+    digests = check_payload(lane, payload, installer_data, profile, target_profile)
     recorded = {}
     for value in fields.get("image_sha256", []):
         require("|" in value, "IMAGE has a malformed image_sha256")
@@ -810,7 +840,7 @@ def check_descriptor(lane: str, directory: Path) -> None:
     require(recorded == digests, "IMAGE does not name each payload member's sha256")
 
 
-USAGE = """Usage: mac-image-check payload <edge|rc|stable> PAYLOAD.zip INSTALLER_DATA.json [--profile lab]
+USAGE = """Usage: mac-image-check payload <edge|rc|stable> PAYLOAD.zip INSTALLER_DATA.json [--profile lab] [--target-profile neo-j700]
        mac-image-check image <edge|rc|stable> ROOT.img BOOT.img ESP_DIR --candidates DIR [--report FILE] [--profile lab] [--trust-dir DIR]
        mac-image-check tree <edge|rc|stable> ROOT_TREE [FACTORY_TREE] --candidates DIR [--report FILE] [--profile lab] [--trust-dir DIR]
        mac-image-check provenance <edge|rc|stable> BUILD_DIR
@@ -821,14 +851,18 @@ def main(argv: list[str]) -> int:
     rest: list[str] = []
     options: dict[str, Path] = {}
     profile = "release"
+    target_profile = "generic"
     arguments = iter(argv[1:])
     for arg in arguments:
-        if arg in ("--candidates", "--report", "--profile", "--trust-dir"):
+        if arg in ("--candidates", "--report", "--profile", "--trust-dir", "--target-profile"):
             value = next(arguments, None)
-            if value is None or (arg == "--profile" and value not in PROFILES):
+            if (value is None or (arg == "--profile" and value not in PROFILES)
+                    or (arg == "--target-profile" and value not in _module("candidate_set").IMAGE_TARGET_PROFILES)):
                 print(USAGE, file=sys.stderr)
                 return 64
-            if arg == "--profile":
+            if arg == "--target-profile":
+                target_profile = value
+            elif arg == "--profile":
                 profile = value
             else:
                 options[arg[2:]] = Path(value)
@@ -846,6 +880,9 @@ def main(argv: list[str]) -> int:
     elif len(paths) != arity[mode]:
         print(USAGE, file=sys.stderr)
         return 64
+    if target_profile != "generic" and mode != "payload":
+        print(USAGE, file=sys.stderr)
+        return 64
     if "trust-dir" in options and mode not in ("image", "tree"):
         print(USAGE, file=sys.stderr)
         return 64
@@ -854,7 +891,7 @@ def main(argv: list[str]) -> int:
         return 64
     try:
         if mode == "payload":
-            check_payload(lane, Path(paths[0]), Path(paths[1]), profile)
+            check_payload(lane, Path(paths[0]), Path(paths[1]), profile, target_profile)
         elif mode == "image":
             check_image(lane, Path(paths[0]), Path(paths[1]), Path(paths[2]), options["candidates"], options.get("report"),
                         profile, options.get("trust-dir"))

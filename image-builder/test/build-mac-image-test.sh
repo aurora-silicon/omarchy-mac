@@ -616,3 +616,25 @@ done
 [[ $(wc -l <"$scratch/requests") -eq 6 && $(head -n 1 "$scratch/requests") == "-S --noconfirm --needed vulkan-asahi" ]] ||
   fail "every sync or refresh is recorded: $(<"$scratch/requests")"
 pass "the first-boot probe's pacman refuses and records every sync or refresh, and runs everything else"
+
+select_target_profile neo-j700
+[[ $PLATFORM_COMPATIBLE == "apple,j700" && $image_board == "apple,j700" && ${SUPPORTED_FW[*]} == "26.6.2" \
+  && ${BOARD_CONTEXT[*]} == "OMARCHY_M1N1_BOARD=j700" ]] || fail "Neo profile is bound to J700 firmware and temporary builder context"
+mkdir -p "$scratch/profile-root/usr/lib/aura"
+target=$scratch/profile-root
+printf 'package-owned Stage1' >"$target/usr/lib/aura/aura-stage1.bin"
+stage_common_stage1
+cmp -s "$target/usr/lib/aura/aura-stage1.bin" "$target/boot/efi/aurora/stage1.bin" || fail "common Stage1 stages exact installed bytes"
+mkdir -p "$target/run/systemd/system"
+if (fail() { builder_fail "$@"; }; require_unbooted_target "$target") >/dev/null 2>&1; then
+  fail "Neo context rejects a booted target"
+fi
+rmdir "$target/run/systemd/system"
+require_unbooted_target "$target"
+if (fail() { builder_fail "$@"; }; select_target_profile j614s) >/dev/null 2>&1; then
+  fail "an unknown/unqualified target profile is rejected"
+fi
+select_target_profile generic
+[[ $PLATFORM_COMPATIBLE == "apple,arm-platform" && ${SUPPORTED_FW[*]} == "13.5 14.8.3" \
+  && -z $image_board && ${#BOARD_CONTEXT[@]} == 0 ]] || fail "generic defaults remain unchanged"
+pass "Neo profile selects J700/26.6.2, stages exact bare payload, rejects booted context, and preserves generic defaults"

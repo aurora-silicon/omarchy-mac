@@ -36,6 +36,51 @@ KERNEL=linux-aurora
 # and is the only machine identity the build chroot sees.
 PLATFORM=apple-silicon
 PLATFORM_COMPATIBLE=apple,arm-platform
+image_target_profile=generic
+image_board=""
+BOARD_CONTEXT=()
+
+# Only the trusted policy/input identity selects the image's board and firmware.
+select_target_profile() {
+  local metadata
+  metadata=$(python3 "$ROOT/builder/candidate_set.py" target-profile --name "$1") || fail "unsupported image target profile"
+  image_target_profile=$1
+  PLATFORM_COMPATIBLE=$(jq -r '.compatible' <<<"$metadata")
+  image_board=$(jq -r '.board // empty' <<<"$metadata")
+  mapfile -t SUPPORTED_FW < <(jq -r '.supported_fw[]' <<<"$metadata")
+  BOARD_CONTEXT=()
+  [[ -z $image_board ]] || BOARD_CONTEXT=(OMARCHY_M1N1_BOARD=${image_board#apple,})
+}
+
+bind_target_profile() {
+  local recorded=$1 imported=$2 trust=$3 expected
+  expected=$(python3 - "$ROOT/builder" "$imported" "$trust" <<'PYPROFILE'
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import candidate_set
+profile = candidate_set.image_target_profile(candidate_set.load_policy(pathlib.Path(sys.argv[3])))
+summary = json.loads(pathlib.Path(sys.argv[2]).read_text())
+if summary.get("image_target_profile", "generic") != profile:
+    sys.exit("candidate import and operator target profile disagree")
+print(profile)
+PYPROFILE
+) || fail "the trusted target profile does not match the candidate import"
+  [[ ${recorded:-generic} == "$expected" ]] || fail "the inputs record names another image target profile; resolve again"
+  select_target_profile "$expected"
+}
+
+require_unbooted_target() {
+  [[ -z $image_board || ! -d $1/run/systemd/system ]] || fail "Neo image context requires an unbooted target"
+}
+
+stage_common_stage1() {
+  [[ $image_target_profile != "neo-j700" ]] || {
+    local source=$target/usr/lib/aura/aura-stage1.bin
+    [[ -f $source && ! -L $source ]] || fail "the Neo package carries no regular bare common Stage1"
+    install -d -m 0755 "$target/boot/efi/aurora"
+    install -m 0644 "$source" "$target/boot/efi/aurora/stage1.bin"
+  }
+}
 
 # The keyring asahi-alarm's packages are signed with.
 ASAHI_KEYRING_FILE=asahi-alarm-keyring-20241216-1-any.pkg.tar.xz
@@ -225,10 +270,12 @@ host_main() {
     fail "the candidate set is signed by another key than the inputs record names"
   [[ $(sed -n 's/^set=//p' "$host_work/import.txt") == "$(record_field candidate_set "$inputs")" ]] ||
     fail "the candidate set is not the one the inputs record names"
+  bind_target_profile "$(record_field image_target_profile "$inputs")" "$host_work/candidates/import.json" "$host_work/trust"
   if $dry_run; then
     echo "Would build the Apple Silicon image of $(sed -n 's/^set=//p' "$host_work/import.txt") from $inputs into $out"
     [[ -z $lab_access ]] || { echo "as a lab test image:"; python3 "$ROOT/builder/lab_access.py" validate "$lab_access"; }
     cat "$host_work/import.txt"
+    [[ $image_target_profile == "generic" ]] || echo "image_target_profile=$image_target_profile"
     return 0
   fi
   mkdir -p "$out"
@@ -491,7 +538,8 @@ make_boot_fs() {
 }
 
 target_pacman() {
-  pacman --config "$work/build.conf" --root "$target" --dbpath "$target/var/lib/pacman" \
+  require_unbooted_target "$target"
+  env -u OMARCHY_M1N1_BOARD "${BOARD_CONTEXT[@]}" pacman --config "$work/build.conf" --root "$target" --dbpath "$target/var/lib/pacman" \
     --hookdir "$target/etc/pacman.d/hooks" --gpgdir /etc/pacman.d/gnupg --noconfirm "$@"
 }
 
@@ -627,7 +675,7 @@ isolated_chroot() {
   local root=$1
   shift
   unshare --mount --pid --fork --mount-proc \
-    env OMARCHY_ISOLATED_ROOT="$root" OMARCHY_ISOLATED_WORK="$work" OMARCHY_ISOLATED_LOOPS="${isolated_loops:-1}" \
+    env OMARCHY_BUILDER_TARGET_PROFILE="$image_target_profile" OMARCHY_ISOLATED_ROOT="$root" OMARCHY_ISOLATED_WORK="$work" OMARCHY_ISOLATED_LOOPS="${isolated_loops:-1}" \
     "$BASH" "$ROOT/bin/build-mac-image" --isolated-chroot "$@"
 }
 
@@ -772,6 +820,9 @@ write_image_target() {
   printf 'format=1\nplatform=%s\ncandidate_set=%s\ncandidate_source_commit=%s\nbuilder_commit=%s\nbuilder_tree_clean=%s\nimage_profile=%s\n' \
     "$PLATFORM" "$set_name" "$source_commit" "$MAC_IMAGE_BUILDER_COMMIT" "$MAC_IMAGE_BUILDER_CLEAN" "$image_profile" \
     >"$target/var/lib/omarchy/image/target"
+  if [[ $image_target_profile != "generic" ]]; then
+    printf 'image_target_profile=%s\nboard=%s\n' "$image_target_profile" "$image_board" >>"$target/var/lib/omarchy/image/target"
+  fi
   chmod 0644 "$target/var/lib/omarchy/image/target"
   chown root:root "$target/var/lib/omarchy" "$target/var/lib/omarchy/image" "$target/var/lib/omarchy/image/target"
 }
@@ -910,7 +961,7 @@ run_system_setup() {
   rm -f "$target/etc/resolv.conf"
   cp /etc/resolv.conf "$target/etc/resolv.conf" || fail "could not lend the builder's resolver to the image"
   chmod 0644 "$target/etc/resolv.conf"
-  isolated_chroot "$target" env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/bin HOME=/root TERM=dumb \
+  isolated_chroot "$target" env -i "${BOARD_CONTEXT[@]}" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin HOME=/root TERM=dumb \
     LANG=C.UTF-8 OMARCHY_MAC_IMAGE_BUILD=1 OMARCHY_PATH=/usr/share/omarchy \
     /usr/bin/omarchy-apply-system --defer-provisioning --first-install >>"$logs/system-setup.log" 2>&1 ||
     { cp "$target/var/log/omarchy-install.log" "$logs/" 2>/dev/null || true
@@ -1106,6 +1157,7 @@ configure_image() {
   # that order the same on every builder.
   isolated_chroot "$target" env LC_ALL=C update-m1n1 >"$logs/update-m1n1.log" 2>&1 ||
     fail "update-m1n1 failed (logs/update-m1n1.log)"
+  stage_common_stage1
   activate_limine
   arm_first_boot
   # Recorded once the boot setup, which could change packages, is done.
@@ -1185,7 +1237,7 @@ probe_first_boot() {
   probe_pacman /var/tmp/first-boot-probe.requests /usr/bin/pacman.image >"$probe/usr/bin/pacman"
   chmod 0755 "$probe/usr/bin/pacman"
   : >"$probe/var/tmp/first-boot-probe.requests"
-  isolated_loops=0 isolated_chroot "$probe" unshare --net env -i PATH=/usr/share/omarchy/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
+  isolated_loops=0 isolated_chroot "$probe" unshare --net env -i "${BOARD_CONTEXT[@]}" PATH=/usr/share/omarchy/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
     HOME=/root TERM=dumb LANG=C.UTF-8 OMARCHY_PATH=/usr/share/omarchy OMARCHY_INSTALL=/usr/share/omarchy/install \
     OMARCHY_INSTALL_USER= OMARCHY_IMAGE_DEFERRED_HARDWARE=1 OMARCHY_IMAGE_BOOT_REBUILD=/var/lib/omarchy/image/boot-rebuild \
     /bin/bash -c '
@@ -1244,7 +1296,7 @@ activate_limine() {
   [[ ! -e $target/var/lib/omarchy/limine.enabled ]] || fail "the Limine gate is set before the boot setup ran"
   mode=$(boot_setup_mode) || exit 1
   echo "boot setup: $mode" >>"$logs/limine-boot.log"
-  isolated_chroot "$target" env -i PATH=/usr/share/omarchy/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
+  isolated_chroot "$target" env -i "${BOARD_CONTEXT[@]}" PATH=/usr/share/omarchy/bin:/usr/local/sbin:/usr/local/bin:/usr/bin \
     HOME=/root TERM=dumb LANG=C.UTF-8 OMARCHY_PATH=/usr/share/omarchy BOOT_PART=/boot EFI_PART=/boot/efi \
     /bin/bash -eE -s -- "$root_device" "$ROOT_UUID" "$mode" >>"$logs/limine-boot.log" 2>&1 <<'SCRIPT' ||
 set -euo pipefail
@@ -1409,6 +1461,7 @@ write_provenance() {
     done
     jq -r '.packages[] | "candidate=\(.name)|\(.version)|\(.filename)|\(.sha256)"' "$candidates/import.json"
     jq -r '.packages[] | select(.group == "runtime") | "candidate_source=\(.name)|\(.source_commit)"' "$candidates/import.json"
+    [[ $image_target_profile == "generic" ]] || printf 'image_target_profile=%s\n' "$image_target_profile"
     printf 'hardware_setup=%s\n' "$hardware_setup"
     printf 'test_image_pin=%s\n' "$test_image_pin"
     [[ $profile == release ]] || printf 'profile=%s\nlab_access_sha256=%s\n' "$profile" "$lab_access_sha256"
@@ -1443,7 +1496,7 @@ write_image() {
       candidate_manifest_sha256 omarchy_channel; do
       printf '%s=%s\n' "$key" "$(field "$key")"
     done
-    for key in candidate_trust_policy_sha256 candidate_trust_public_key_sha256; do
+    for key in candidate_trust_policy_sha256 candidate_trust_public_key_sha256 image_target_profile; do
       [[ -z $(field "$key") ]] || printf '%s=%s\n' "$key" "$(field "$key")"
     done
     printf 'hardware_setup=%s\n' "$hardware_setup"
@@ -1489,6 +1542,7 @@ interrupted() {
 container_main() {
   (($# == 0)) || usage_error "--in-container takes no arguments"
   bash "$ROOT/bin/mac-image-inputs" check /inputs >/dev/null
+  bind_target_profile "$(field image_target_profile)" "$candidates/import.json" "$candidate_trust"
   lane=$(field omarchy_channel)
   if [[ -d $lab_access_dir ]]; then
     [[ $lane == edge ]] || fail "a lab image is built for the edge lane only"
@@ -1539,7 +1593,7 @@ build_payload() {
   find "$work/final" -exec touch -h -d "$(field resolved_at)" {} +
   (cd "$work/final" && bsdtar --format zip -cf "$zip" esp boot.img root.img omarchy-volume.icns)
   write_installer_data "${zip##*/}" /out/installer_data.json
-  python3 "$ROOT/bin/mac-image-check" payload "$lane" "$zip" /out/installer_data.json --profile "$profile" ||
+  python3 "$ROOT/bin/mac-image-check" payload "$lane" "$zip" /out/installer_data.json --profile "$profile" --target-profile "$image_target_profile" ||
     fail "the payload does not pass the layout check"
   write_provenance "$zip" >/out/PROVENANCE
   write_image >/out/IMAGE
@@ -1555,6 +1609,8 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     work=${OMARCHY_ISOLATED_WORK:-/work}
     target=${OMARCHY_ISOLATED_ROOT:?}
     isolated_loops=${OMARCHY_ISOLATED_LOOPS:-1}
+    select_target_profile "${OMARCHY_BUILDER_TARGET_PROFILE:-generic}"
+    require_unbooted_target "$target"
     api_mounts=()
     prepare_isolated_api "$target" 0
     if findmnt -n "$target/proc" >/dev/null 2>&1; then
@@ -1563,7 +1619,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     mkdir -p "$target/proc"
     mount -t proc -o nosuid,noexec,nodev proc "$target/proc" || fail "could not mount a namespaced /proc"
     mask_host_hardware "$target"
-    exec chroot "$target" "$@"
+    exec chroot "$target" env -u OMARCHY_M1N1_BOARD "${BOARD_CONTEXT[@]}" "$@"
   elif [[ ${1:-} == --in-container ]]; then
     shift
     container_main "$@"

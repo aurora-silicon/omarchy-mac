@@ -75,6 +75,7 @@ record_body() {
     printf 'candidate_trust_policy_sha256=%s\ncandidate_trust_public_key_sha256=%s\n' \
       "$candidate_trust_policy" "$candidate_trust_public_key"
   fi
+  [[ -z ${image_target_profile:-} ]] || printf 'image_target_profile=%s\n' "$image_target_profile"
   printf 'omarchy_channel=%s\nomarchy_server=%s\nomarchy_db_sha256=%s\n' "$omarchy_channel" "$omarchy_server" "$omarchy_db"
   printf 'asahi_alarm_server=%s\nasahi_alarm_db_sha256=%s\n' "$asahi_alarm_server" "$asahi_alarm_db"
   printf 'alarm_server=%s\n' "$alarm_server"
@@ -93,7 +94,7 @@ valid_server() {
 # Parses FILE, which must be byte for byte the canonical rendering of its fields.
 load_record() {
   local file=$1 line key value hex='^[0-9a-f]{64}$'
-  candidate_trust_policy="" candidate_trust_public_key=""
+  candidate_trust_policy="" candidate_trust_public_key="" image_target_profile=""
   declare -A seen=()
   [[ -f $file && ! -L $file ]] || fail "$file is not a regular file"
   (($(wc -c <"$file") <= 8192)) || fail "$file is not an inputs record"
@@ -112,6 +113,7 @@ load_record() {
       candidate_manifest_sha256) candidate_manifest=$value ;;
       candidate_trust_policy_sha256) candidate_trust_policy=$value ;;
       candidate_trust_public_key_sha256) candidate_trust_public_key=$value ;;
+      image_target_profile) [[ $value == "neo-j700" ]] || fail "unsupported image target profile"; image_target_profile=$value ;;
       omarchy_channel) omarchy_channel=$value ;;
       omarchy_server) omarchy_server=$value ;;
       omarchy_db_sha256) omarchy_db=$value ;;
@@ -140,6 +142,9 @@ load_record() {
   done
   if [[ -n $candidate_trust_policy || -n $candidate_trust_public_key ]]; then
     [[ $candidate_trust_policy =~ $hex && $candidate_trust_public_key =~ $hex ]] || fail "$file has incomplete candidate trust pins"
+  fi
+  if [[ -n $image_target_profile ]]; then
+    [[ $candidate_trust_policy =~ $hex && $candidate_trust_public_key =~ $hex ]] || fail "target profile requires pinned operator trust"
   fi
   for key in "${ALARM_REPOSITORIES[@]}"; do
     [[ ${alarm_db[$key]:-} =~ $hex ]] || fail "$file is not an inputs record"
@@ -202,6 +207,8 @@ resolve() {
     candidate_trust_public_key=$(sed -n 's/^candidate_trust_public_key_sha256=//p' <<<"$described")
   fi
   candidate_manifest=$(sed -n 's/^manifest_sha256=//p' <<<"$described")
+  image_target_profile=$(sed -n 's/^image_target_profile=//p' <<<"$described")
+  [[ -z $image_target_profile || $explicit_trust == true ]] || fail "target profile requires explicit pinned operator trust"
 
   mkdir "$work/db"
   download "$(db_url "$omarchy_server" omarchy)" "$work/db/omarchy.db" || fail "could not download omarchy.db"

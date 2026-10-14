@@ -45,6 +45,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,36 @@ REQUIRED_OWNERS = {
 # A package the set took from an Omarchy channel's aarch64 repository, by its own file name.
 CHANNEL_URL = re.compile(r'https://pkgs\.omarchy\.org/(edge|rc|stable)/aarch64/([^/]+)')
 BAD_STATUS = re.compile(r'\b(BADSIG|ERRSIG|REVKEYSIG|EXPKEYSIG|EXPSIG|KEYREVOKED|KEYEXPIRED|SIGEXPIRED)\b')
+
+
+# Operator-selected image targets, not runtime or feature overrides. Generic is
+# the existing cross-board profile; Neo is bound to its public firmware facts.
+IMAGE_TARGET_PROFILES = {
+    'generic': {'compatible': 'apple,arm-platform', 'board': None, 'supported_fw': ['13.5', '14.8.3']},
+    'neo-j700': {'compatible': 'apple,j700', 'board': 'apple,j700', 'supported_fw': ['26.6.2']},
+}
+STAGE1_PATH = 'usr/lib/aura/aura-stage1.bin'
+STAGE1_MAGIC = b'AURORA-S1-CFG01\0'
+STAGE1_BODY = struct.Struct('<II40s192s')
+
+
+def image_target_profile(policy):
+    name = policy.get('image_target_profile', 'generic')
+    require(isinstance(name, str) and name in IMAGE_TARGET_PROFILES, 'unsupported trusted image target profile')
+    return name
+
+
+def bare_stage1(data):
+    """Unfilled distribution Stage1; target UUID/path and CRC belong to install."""
+    require(data.endswith(b'STACKBOT') and data.count(STAGE1_MAGIC) == 1,
+            'common Stage1 must be bare with one config block and STACKBOT tail')
+    offset = data.index(STAGE1_MAGIC) + len(STAGE1_MAGIC)
+    require(offset + STAGE1_BODY.size + 4 <= len(data) - 8, 'common Stage1 config is truncated')
+    version, window, uuid, path = STAGE1_BODY.unpack_from(data, offset)
+    crc, = struct.unpack_from('<I', data, offset + STAGE1_BODY.size)
+    require(version == 1 and window == 0 and not any(uuid) and not any(path) and crc == 0,
+            'common Stage1 must have the unfilled version-1 config and zero CRC sentinel')
+    return hashlib.sha256(data).hexdigest()
 
 
 def require(ok, message):
@@ -173,6 +204,7 @@ def load_policy(trust=TRUST):
             'trust anchor checksum mismatch')
     for key in ('primary_fingerprint', 'signing_fingerprint'):
         require(HEX40.fullmatch(policy[key].lower()) is not None, 'invalid trust anchor fingerprint')
+    image_target_profile(policy)
     sources = policy.get('package_sources', {})
     require(isinstance(sources, dict), 'invalid trusted package sources')
     for name, source in sources.items():
@@ -273,7 +305,7 @@ def from_channel(origin, filename):
             and origin.get('channel') == f'omacom {match[1]} aarch64' and 'commit' not in origin)
 
 
-def verify_payloads(payloads):
+def verify_payloads(payloads, target_profile="generic"):
     """Every file has one owner, and each boot payload the image needs its expected one."""
     owners = {}
     for name, paths in sorted(payloads.items()):
@@ -282,6 +314,8 @@ def verify_payloads(payloads):
             owners[path] = name
     for path, owner in REQUIRED_OWNERS.items():
         require(owners.get(path) == owner, f'{path} is not in {owner}')
+    if target_profile == 'neo-j700':
+        require(owners.get(STAGE1_PATH) == 'm1n1-aurora', 'common Stage1 is not owned by m1n1-aurora')
     kernels = [p for p in payloads.get('linux-aurora', ()) if PurePosixPath(p).match('usr/lib/modules/*/vmlinuz')]
     require(len(kernels) == 1, 'linux-aurora does not carry one kernel')
     release = PurePosixPath(kernels[0]).parts[3]
@@ -393,10 +427,22 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
             versions[name] = package['version']
             payloads[name] = payload_paths(path)
             fields_of[name] = fields
-        verify_payloads(payloads)
-        require(versions['omarchy'] == versions['omarchy-settings'], 'mixed desktop versions')
-        settings_pin = 'omarchy-settings=' + versions['omarchy-settings'].rsplit('-', 1)[0]
-        require(settings_pin in fields_of['omarchy'].get('depend', []), 'missing settings version pin')
+        target_profile = image_target_profile(policy)
+        verify_payloads(payloads, target_profile)
+        if target_profile == 'neo-j700':
+            aura = destination / next(p['filename'] for p in packages if p['name'] == 'm1n1-aurora')
+            bare_stage1(member(aura, STAGE1_PATH))
+        # pkgrel describes packaging, not the upstream source version. Official
+        # runtime/settings recipes may release their packaging independently;
+        # both archives have already proved the same exact source commit above.
+        desktop_version = versions['omarchy'].rsplit('-', 1)[0]
+        settings_version = versions['omarchy-settings'].rsplit('-', 1)[0]
+        require(desktop_version == settings_version, 'mixed desktop versions')
+        settings_pins = [dependency[len('omarchy-settings='):]
+                         for dependency in fields_of['omarchy'].get('depend', [])
+                         if dependency.startswith('omarchy-settings=')]
+        require(settings_pins and all(pin in (settings_version, versions['omarchy-settings'])
+                                      for pin in settings_pins), 'missing or incompatible settings version pin')
         for name in ('omarchy-mac', 'omarchy-mac-boot'):
             pins = [d for d in fields_of[name].get('depend', []) if d.startswith('omarchy=')]
             require(all(pin[len('omarchy='):] in (versions['omarchy'], versions['omarchy'].rsplit('-', 1)[0])
@@ -422,6 +468,8 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
                       **({'source_repository': policy['package_sources'][p['name']]['repository']}
                          if origins[p['name']] == 'trusted-source' else {})} for p in packages],
     }
+    if target_profile != 'generic':
+        summary['image_target_profile'] = target_profile
     (destination / 'import.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
     for path in destination.iterdir():
         path.chmod(0o444)
@@ -456,6 +504,8 @@ def main(argv=None):
     for command in (imported, described):
         command.add_argument('--trust-dir', type=Path, default=TRUST,
                              help='operator-controlled policy.json and public.asc directory')
+    profiled = commands.add_parser('target-profile')
+    profiled.add_argument('--name', choices=IMAGE_TARGET_PROFILES, required=True)
     frozen = commands.add_parser('freeze-trust')
     frozen.add_argument('--input', type=Path, required=True)
     frozen.add_argument('--output', type=Path, required=True)
@@ -463,6 +513,9 @@ def main(argv=None):
     frozen.add_argument('--public-key-sha256')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'target-profile':
+            print(json.dumps(IMAGE_TARGET_PROFILES[args.name], sort_keys=True))
+            return 0
         if args.command == 'freeze-trust':
             identities = freeze_trust(args.input, args.output, args.policy_sha256, args.public_key_sha256)
             for key, value in identities.items():
@@ -479,6 +532,8 @@ def main(argv=None):
     for key in ('set', 'source_commit', 'signer', 'receipt_sha256', 'manifest_sha256', 'set_sha256',
                 'candidate_trust_policy_sha256', 'candidate_trust_public_key_sha256'):
         print(f'{key}={summary[key]}')
+    if 'image_target_profile' in summary:
+        print('image_target_profile=' + summary['image_target_profile'])
     return 0
 
 

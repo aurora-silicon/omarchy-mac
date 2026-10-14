@@ -643,5 +643,31 @@ class TestImagePinTest(unittest.TestCase):
             fixtures.test_image_pin.render(b"[core]\n", ["omarchy"])
 
 
+class NeoStage1InspectionTest(unittest.TestCase):
+    def test_common_stage1_exact_bytes_and_unfilled_role(self):
+        import struct
+        from types import SimpleNamespace
+        c = inspection.candidate_set
+        bare = b"bare Aura" + c.STAGE1_MAGIC + c.STAGE1_BODY.pack(1, 0, b"", b"") + struct.pack("<I", 0) + b"STACKBOT"
+        candidate = SimpleNamespace(member=lambda package, path: bare)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed = root / c.STAGE1_PATH
+            staged = root / "boot/efi/aurora/stage1.bin"
+            for path in (installed, staged):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(bare)
+            report = {}
+            inspection.check_common_stage1(root, candidate, report)
+            self.assertEqual(report["common_stage1"]["sha256"], hashlib.sha256(bare).hexdigest())
+            staged.write_bytes(bare + b"patched")
+            with self.assertRaisesRegex(inspection.InspectionError, "ESP common Stage1"):
+                inspection.check_common_stage1(root, candidate, {})
+            staged.unlink()
+            staged.symlink_to(installed)
+            with self.assertRaises(inspection.limine.ContractError):
+                inspection.check_common_stage1(root, candidate, {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,23 @@ class CandidateSetTest(unittest.TestCase):
         directory = self.work / "variant"
         return directory, fixtures.make_set(directory, self.signer, **changes)
 
+    def test_trusted_neo_profile_is_recorded_and_requires_bare_stage1(self):
+        import struct
+        trust = self.work / "neo-trust"
+        shutil.copytree(self.signer.trust, trust)
+        policy = json.loads((trust / "policy.json").read_text())
+        policy["image_target_profile"] = "neo-j700"
+        (trust / "policy.json").write_text(json.dumps(policy))
+        with self.assertRaisesRegex(ValueError, "common Stage1"):
+            c.snapshot(self.input, self.work / "missing-stage1", self.receipt, fixtures.SOURCE, trust=trust)
+        contents = fixtures.default_contents()
+        contents["m1n1-aurora"][c.STAGE1_PATH] = (b"bare Aura" + c.STAGE1_MAGIC
+            + c.STAGE1_BODY.pack(1, 0, b"", b"") + struct.pack("<I", 0) + b"STACKBOT")
+        directory, receipt = self.variant(contents=contents)
+        summary = c.snapshot(directory, self.work / "neo-output", receipt, fixtures.SOURCE, trust=trust)
+        self.assertEqual(summary["image_target_profile"], "neo-j700")
+        self.assertEqual(summary["candidate_trust_policy_sha256"], c.digest(trust / "policy.json"))
+
     def test_signed_set_creates_readonly_snapshot(self):
         summary = self.verify()
         self.assertEqual(len(summary["packages"]), 9)
@@ -463,6 +480,28 @@ class CandidateSetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pins another omarchy"):
             self.verify(directory, receipt)
 
+    def test_matching_desktop_source_version_allows_independent_package_releases(self):
+        directory, receipt = self.variant(versions={"omarchy": "4.0.4-2", "omarchy-settings": "4.0.4-6"})
+        summary = self.verify(directory, receipt)
+        versions = {package["name"]: package["version"] for package in summary["packages"]}
+        self.assertEqual(versions["omarchy"], "4.0.4-2")
+        self.assertEqual(versions["omarchy-settings"], "4.0.4-6")
+
+    def test_different_desktop_source_version_is_refused(self):
+        directory, receipt = self.variant(versions={"omarchy": "4.0.4-2", "omarchy-settings": "4.0.5-6"})
+        with self.assertRaisesRegex(ValueError, "mixed desktop versions"):
+            self.verify(directory, receipt)
+
+    def test_independent_package_releases_still_require_compatible_settings_dependency(self):
+        original = fixtures.depends
+        try:
+            fixtures.depends = lambda name, versions: ["omarchy-settings=4.0.4-2"] if name == "omarchy" else original(name, versions)
+            directory, receipt = self.variant(versions={"omarchy": "4.0.4-2", "omarchy-settings": "4.0.4-6"})
+        finally:
+            fixtures.depends = original
+        with self.assertRaisesRegex(ValueError, "incompatible settings version pin"):
+            self.verify(directory, receipt)
+
     def apple_layout(self, directory, lists):
         contents = fixtures.default_contents()
         install = "usr/share/omarchy/install/"
@@ -522,6 +561,33 @@ class VercmpTest(unittest.TestCase):
             with self.subTest(a=a, b=b):
                 self.assertEqual(c.vercmp(a, b), expected)
                 self.assertEqual(c.vercmp(b, a), -expected)
+
+
+class ImageTargetProfileTest(unittest.TestCase):
+    def test_policy_selects_only_known_target_profiles(self):
+        self.assertEqual(c.image_target_profile({}), "generic")
+        self.assertEqual(c.image_target_profile({"image_target_profile": "neo-j700"}), "neo-j700")
+        self.assertEqual(c.IMAGE_TARGET_PROFILES["neo-j700"]["supported_fw"], ["26.6.2"])
+        for value in ("j614s", "j700", None, {}, "generic;command"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                c.image_target_profile({"image_target_profile": value})
+
+    def test_bare_stage1_role_rejects_filled_crc_or_stage2_bytes(self):
+        import struct
+        bare = b"bare Aura" + c.STAGE1_MAGIC + c.STAGE1_BODY.pack(1, 0, b"", b"") + struct.pack("<I", 0) + b"STACKBOT"
+        self.assertEqual(c.bare_stage1(bare), __import__("hashlib").sha256(bare).hexdigest())
+        filled = b"bare Aura" + c.STAGE1_MAGIC + c.STAGE1_BODY.pack(1, 0, b"target-uuid", b";m1n1/boot.bin") + struct.pack("<I", 123) + b"STACKBOT"
+        for data in (b"stage2", bare + c.STAGE1_MAGIC, bare[:-1], filled,
+                     b"bare Aura" + c.STAGE1_MAGIC + c.STAGE1_BODY.pack(1, 5000, b"", b"") + struct.pack("<I", 0) + b"STACKBOT"):
+            with self.subTest(data=data[:30]), self.assertRaises(ValueError):
+                c.bare_stage1(data)
+
+    def test_neo_payload_requires_package_owned_common_stage1(self):
+        payloads = {name: set(paths) for name, paths in fixtures.default_contents().items()}
+        with self.assertRaisesRegex(ValueError, "common Stage1"):
+            c.verify_payloads(payloads, "neo-j700")
+        payloads["m1n1-aurora"].add(c.STAGE1_PATH)
+        self.assertEqual(c.verify_payloads(payloads, "neo-j700")[c.STAGE1_PATH], "m1n1-aurora")
 
 
 if __name__ == "__main__":

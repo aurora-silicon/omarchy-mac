@@ -46,6 +46,7 @@ M1N1_OPTION = re.compile(r"(chosen\.[^=]*|display|mitigations)=.*")
 TARGET_FIELDS = ("format", "platform", "candidate_set", "candidate_source_commit", "builder_commit",
                  "builder_tree_clean", "image_profile", "package_set_sha256", "built")
 IDENTITY_FIELDS = ("package_set_sha256", "built")
+TARGET_PROFILE_FIELDS = ("image_target_profile", "board")
 # The candidate set's name and the build time, as the builder writes them.
 CANDIDATE_SET_NAME = re.compile(r"[A-Za-z0-9._-]+")
 BUILT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -211,6 +212,10 @@ def m1n1_stage2(root: Path, candidates: Candidates, report: dict) -> str:
     order, then the set's U-Boot gzipped, then m1n1 options only."""
     data = limine.regular(root / "boot/efi/m1n1/boot.bin")
     m1n1 = candidates.member("m1n1-aurora", "usr/lib/asahi-boot/m1n1.bin")
+    if candidates.summary.get("image_target_profile") == "neo-j700":
+        require(candidate_set.STAGE1_MAGIC not in m1n1, "the ESP Stage2 component carries a Stage1 config block")
+        require(any(PurePosixPath(path).name == "t8140-j700.dtb" for path in candidates.dtbs()),
+                "the Neo stage2 carries no package-owned J700 device tree")
     require(data.startswith(m1n1), "m1n1/boot.bin does not start with the set's m1n1")
     offset = len(m1n1)
     names = candidates.dtbs()
@@ -228,6 +233,18 @@ def m1n1_stage2(root: Path, candidates: Candidates, report: dict) -> str:
     report["m1n1_stage2"] = {"device_trees": len(names), "bytes": len(data),
                              "options": options.decode(errors="replace").splitlines()}
     return f"m1n1 + {len(names)} device trees (C order) + U-Boot, all from the set"
+
+
+def check_common_stage1(root: Path, candidates: Candidates, report: dict) -> str:
+    source = candidates.member("m1n1-aurora", candidate_set.STAGE1_PATH)
+    digest = candidate_set.bare_stage1(source)
+    require(limine.regular(root / candidate_set.STAGE1_PATH) == source,
+            "the installed bare Stage1 differs from the signed package")
+    staged = limine.regular(root / "boot/efi/aurora/stage1.bin")
+    require(staged == source, "the ESP common Stage1 differs from the signed package")
+    report["common_stage1"] = {"sha256": digest, "bytes": len(source),
+                              "config": "unfilled version 1; zero UUID/path and CRC sentinel"}
+    return "bare common Stage1 equals its package; installer fills UUID/path and CRC without changing its length"
 
 
 def m1n1_options(root: Path) -> bytes:
@@ -439,7 +456,7 @@ def read_image_target(path: Path) -> dict[str, str]:
             continue
         require("=" in line, f"/var/lib/omarchy/image/target is malformed: {line}")
         key, value = line.split("=", 1)
-        if key in TARGET_FIELDS:
+        if key in (*TARGET_FIELDS, *TARGET_PROFILE_FIELDS):
             require(key not in fields, f"/var/lib/omarchy/image/target names {key} twice")
             fields[key] = value
     missing = [key for key in TARGET_FIELDS if key not in fields]
@@ -449,7 +466,8 @@ def read_image_target(path: Path) -> dict[str, str]:
     return fields
 
 
-def check_image_target(root: Path, candidates: Candidates, profile: str, report: dict) -> str:
+def check_image_target(root: Path, candidates: Candidates, profile: str, report: dict,
+                       target_profile: str = "generic") -> str:
     directory = root / "var/lib/omarchy/image"
     root_owned(directory, 0o755)
     path = directory / "target"
@@ -468,7 +486,13 @@ def check_image_target(root: Path, candidates: Candidates, profile: str, report:
             "/var/lib/omarchy/image/target does not say whether the builder tree was clean")
     expected = image_profile(profile, candidates)
     require(fields["image_profile"] == expected, f"/var/lib/omarchy/image/target does not record the {expected} profile")
-    report["image_target"] = {key: fields[key] for key in TARGET_FIELDS
+    if target_profile == "generic":
+        require(not any(key in fields for key in TARGET_PROFILE_FIELDS), "generic image carries a board-specific target")
+    else:
+        require(fields.get("image_target_profile") == target_profile
+                and fields.get("board") == candidate_set.IMAGE_TARGET_PROFILES[target_profile]["board"],
+                "image target board/profile differs from operator policy")
+    report["image_target"] = {key: fields[key] for key in (*TARGET_FIELDS, *TARGET_PROFILE_FIELDS)
                               if key in fields and key not in ("format", "platform")}
     detail = (f"/var/lib/omarchy/image/target names {PLATFORM}, root-owned, {expected} image of "
               f"{fields['candidate_set']} from builder {fields['builder_commit'][:12]}")
@@ -574,6 +598,9 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
             trust: Path = candidate_set.TRUST, profile: str = "release") -> dict:
     policy = candidate_set.load_policy(trust)
     candidates = Candidates(candidates_dir)
+    target_profile = candidate_set.image_target_profile(policy)
+    require(candidates.summary.get("image_target_profile", "generic") == target_profile,
+            "candidate import image target differs from operator policy")
     trust_fields = {'candidate_trust_policy_sha256': candidate_set.digest(trust / 'policy.json'),
                     'candidate_trust_public_key_sha256': policy['public_key_sha256']}
     if any(key in candidates.summary for key in trust_fields):
@@ -603,12 +630,15 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
         ("embedded-initramfs", lambda: check_embedded_initramfs(root, report)),
         ("boot-splash", lambda: check_boot_splash(root, report)),
         ("boot-maintenance", lambda: check_maintenance(root)),
-        ("image-target", lambda: check_image_target(root, candidates, profile, report)),
+        ("image-target", lambda: check_image_target(root, candidates, profile, report, target_profile)),
         ("first-boot", lambda: check_first_boot(root, report)),
         ("snapshots", lambda: check_snapshots(root)),
         ("pacman-config", lambda: check_pacman_config(root, channel, candidates)),
         ("installed-system", lambda: check_installed_system(root, report)),
     ]
+    if target_profile != "generic":
+        report["image_target_profile"] = target_profile
+        checks.append(("common-stage1", lambda: check_common_stage1(root, candidates, report)))
     if factory is not None:
         checks.append(("factory", lambda: check_factory(factory, root, candidates)))
     for identifier, check in checks:

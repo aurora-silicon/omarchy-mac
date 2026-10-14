@@ -58,8 +58,11 @@ def package_set(packages) -> str:
 
 def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="passed", image_edit=None,
           profile=(), provenance_profile=None, name=None, inspection_digest=None, target_edit=None,
-          sources=(("omarchy", "a" * 40),), runtime_sources=None, provenance_edit=None, legacy=False) -> None:
+          sources=(("omarchy", "a" * 40),), runtime_sources=None, provenance_edit=None, legacy=False, target_profile="generic") -> None:
     """A build directory as build-mac-image writes it; LEGACY, as a build before builds recorded their identity."""
+    inputs = dict(INPUTS)
+    if target_profile != "generic":
+        inputs["image_target_profile"] = target_profile
     lab = "profile=lab" in profile
     name = name or (LAB_NAME if lab else NAME)
     payload = out / "payload"
@@ -80,14 +83,23 @@ def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="pas
     (payload / "esp/limine.conf").write_text("interface_branding: Omarchy Bootloader\n//linux-aurora\n"
                                              "  protocol: efi\n  path: boot():/EFI/Linux/omarchy_linux-aurora.efi\n")
     (payload / "esp/m1n1/boot.bin").write_bytes(b"m1n1" * 64)
+    if target_profile == "neo-j700":
+        c = check._module("candidate_set")
+        stage1 = payload / "esp/aurora/stage1.bin"
+        stage1.parent.mkdir()
+        stage1.write_bytes(b"bare Aura" + c.STAGE1_MAGIC + c.STAGE1_BODY.pack(1, 0, b"", b"")
+                          + struct.pack("<I", 0) + b"STACKBOT")
     shutil.copy(ROOT / "builder/omarchy-volume.icns", payload / "omarchy-volume.icns")
     zip_path = out / name
     subprocess.run(["bsdtar", "--format", "zip", "-cf", str(zip_path), "esp", "boot.img", "root.img",
                     "omarchy-volume.icns"], cwd=payload, check=True)
-    (out / "installer_data.json").write_text(json.dumps(check.expected_metadata(name)))
-    target = {"candidate_set": INPUTS["candidate_set"], "candidate_source_commit": INPUTS["candidate_source_commit"],
+    (out / "installer_data.json").write_text(json.dumps(check.expected_metadata(name, target_profile)))
+    target = {"candidate_set": inputs["candidate_set"], "candidate_source_commit": inputs["candidate_source_commit"],
               "builder_commit": "c" * 40, "builder_tree_clean": "true", "image_profile": "lab" if lab else "test",
               "package_set_sha256": package_set(packages), "built": BUILT}
+    if target_profile != "generic":
+        target["image_target_profile"] = target_profile
+        target["board"] = "apple,j700"
     if legacy:
         del target["package_set_sha256"], target["built"]
     if target_edit:
@@ -99,12 +111,14 @@ def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="pas
     if digest:
         report.update(profile="lab", lab_access_sha256=digest)
     (out / "INSPECTION").write_text(json.dumps(report))
-    (out / "inputs").write_text("format=2\n" + "".join(f"{k}={v}\n" for k, v in INPUTS.items()))
+    (out / "inputs").write_text("format=2\n" + "".join(f"{k}={v}\n" for k, v in inputs.items()))
     lines = ["format=2", "kind=mac-image", "lane=edge", "kernel=linux-aurora", "platform=apple-silicon",
              "builder_commit=" + "c" * 40, "builder_tree_clean=true", f"inputs_sha256={sha(out / 'inputs')}"]
-    lines += [f"input.{k}={v}" for k, v in INPUTS.items()]
+    lines += [f"input.{k}={v}" for k, v in inputs.items()]
     lines += [f"candidate={n}|{v}|{f}|{s}" for n, v, _, f, s in candidates]
     lines += [f"candidate_source={n}|{c}" for n, c in sources]
+    if target_profile != "generic":
+        lines += ["image_target_profile=" + target_profile]
     lines += ["hardware_setup=build", *(profile if provenance_profile is None else provenance_profile),
               f"package_set_sha256={package_set(packages)}", *([] if legacy else [f"built={BUILT}"]),
               f"package_count={len(packages)}"]
@@ -114,9 +128,9 @@ def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="pas
     if provenance_edit:
         lines = provenance_edit(lines)
     (out / "PROVENANCE").write_text("\n".join(lines) + "\n")
-    digests = check.check_payload("edge", zip_path, out / "installer_data.json", "lab" if name == LAB_NAME else "release")
+    digests = check.check_payload("edge", zip_path, out / "installer_data.json", "lab" if name == LAB_NAME else "release", target_profile)
     image = ["format=2", "lane=edge", "platform=apple-silicon", "builder_commit=" + "c" * 40, "builder_tree_clean=true",
-             *[f"{k}={v}" for k, v in INPUTS.items()],
+             *[f"{k}={v}" for k, v in inputs.items()],
              "hardware_setup=build", *profile, f"package_set_sha256={package_set(packages)}",
              *([] if legacy else [f"built={BUILT}"]),
              *[f"image_sha256={m}|{d}" for m, d in sorted(digests.items())], f"input_digest={sha(out / 'inputs')}"]
@@ -134,6 +148,15 @@ class BuildDirectoryTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_neo_profile_roundtrip_and_receipt_substitution_rejection(self):
+        build(self.out, target_profile="neo-j700")
+        check.check_descriptor("edge", self.out)
+        check.check_provenance("edge", self.out)
+        image = self.out / "IMAGE"
+        image.write_text(image.read_text().replace("image_target_profile=neo-j700\n", ""))
+        with self.assertRaisesRegex(check.CheckError, "target profile"):
+            check.check_descriptor("edge", self.out)
 
     def test_a_consistent_build_directory_passes(self):
         build(self.out)
