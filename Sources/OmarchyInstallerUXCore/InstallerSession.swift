@@ -79,7 +79,12 @@
     public var isSimulation: Bool { environment.isSimulation }
     public var canInspect: Bool { !isBusy && !isExecuting && !hasExecutionStarted }
     public var canChangeChannel: Bool {
-      recoveryAccount == nil && canInspect && !isEditingSize && credentialSheet.context == nil
+      recoveryAccount == nil && canOpenRemoval
+    }
+    /// An installation waiting for its Recovery step can still be removed:
+    /// that is the one the person may want gone.
+    public var canOpenRemoval: Bool {
+      canInspect && !isEditingSize && credentialSheet.context == nil
     }
     public var canEditPlan: Bool {
       guard case .awaitingInstall = phase else { return false }

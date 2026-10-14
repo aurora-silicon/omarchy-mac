@@ -194,7 +194,7 @@ struct OmarchyAppleInstallerApp: App {
       #endif
       CommandMenu("Installation") {
         Button("Remove Omarchy…") { showsRemoval = true }
-          .disabled(removalNeedsReview || showsRemoval || liveSession?.canChangeChannel != true)
+          .disabled(removalNeedsReview || showsRemoval || liveSession?.canOpenRemoval != true)
       }
       if InstallerBuildProfile.current.showsReleaseChannels {
         CommandMenu(PlainLanguage.channelMenuTitle) {
