@@ -25,7 +25,9 @@ add `developer_models`: groups of boards from the manifest's `developer`
 section, or supported Macs moved out of the main group, each group with its
 own metadata and its own or a shared payload. The main group and the moved
 Macs together still cover exactly every M1, M2 and M3 Mac. Channel publishing
-rejects a catalog with a developer board.
+rejects a catalog with a developer board. Explicit --developer-only-model BOARD
+seals only declared developer boards, omitting unused main assets; full input
+coverage validation and the default production/developer behavior stay intact.
 
 Usage:
   make-unsigned-catalog.py --base-url URL --assets-dir DIR --inputs FILE
@@ -360,7 +362,13 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="allow developer_models: for a developer build's sealed catalog only",
     )
+    parser.add_argument(
+        "--developer-only-model", action="append", default=[], metavar="BOARD",
+        help="seal only these declared developer boards; requires --developer (repeatable)",
+    )
     arguments = parser.parse_args()
+    if arguments.developer_only_model and not arguments.developer:
+        raise SystemExit("--developer-only-model requires --developer")
 
     if not arguments.base_url.startswith("https://"):
         raise SystemExit(f"--base-url must be https: {arguments.base_url}")
@@ -420,9 +428,24 @@ def model_group(inputs: dict, group: dict, assets: Path, base_url: str) -> tuple
 def main() -> None:
     arguments = parse_arguments()
     inputs = load_inputs(arguments.inputs, developer=arguments.developer)
-    models, parts = model_group(inputs, inputs, arguments.assets_dir, arguments.base_url)
+    selection = arguments.developer_only_model
+    if selection:
+        if len(set(selection)) != len(selection):
+            raise SystemExit("--developer-only-model contains duplicates")
+        declared = {board for group in inputs.get("developer_models", [])
+                    for board in group["device_identifiers"]}
+        if not set(selection) <= set(supported_models.developer_boards()) & declared:
+            raise SystemExit("--developer-only-model must name declared developer boards")
+        models, parts = [], 0
+    else:
+        models, parts = model_group(inputs, inputs, arguments.assets_dir, arguments.base_url)
     for group in inputs.get("developer_models", []):
-        models += model_group(inputs, group, arguments.assets_dir, arguments.base_url)[0]
+        if selection and not set(selection) & set(group["device_identifiers"]):
+            continue
+        group_models, group_parts = model_group(inputs, group, arguments.assets_dir, arguments.base_url)
+        models += [model for model in group_models
+                   if not selection or model["deviceIdentifier"] in selection]
+        parts += group_parts
 
     issued = issue_time(arguments.now)
     installer = inputs["installer"]

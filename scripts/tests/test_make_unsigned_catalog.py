@@ -43,6 +43,7 @@ class CatalogGeneratorTests(unittest.TestCase):
         document: dict | None = None,
         output: str = "catalog.json",
         developer: bool = False,
+        only: list[str] | None = None,
     ):
         return subprocess.run(
             [
@@ -59,6 +60,7 @@ class CatalogGeneratorTests(unittest.TestCase):
                 "--now",
                 NOW,
                 *(["--developer"] if developer else []),
+                *[item for board in (only or []) for item in ("--developer-only-model", board)],
             ],
             capture_output=True,
             text=True,
@@ -269,6 +271,40 @@ class CatalogGeneratorTests(unittest.TestCase):
         self.assertEqual(
             catalog["models"][0]["payloadDigest"], f"sha256:{digest}"
         )
+
+    def test_explicit_neo_only_catalog_needs_no_main_assets(self) -> None:
+        document = self.with_neo()
+        for key in ("metadata_name", "payload_name"):
+            (self.assets / document[key]).unlink()
+        result = self.generate(document, developer=True, only=["apple,j700"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        models = json.loads((self.directory / "catalog.json").read_text())["models"]
+        self.assertEqual([m["deviceIdentifier"] for m in models], ["apple,j700"])
+        self.assertEqual(models[0]["payloadArtifact"]["fileName"], "neo-os-package.zip")
+        self.assertEqual(len(models[0]["payloadArtifact"]["parts"]), 2)
+
+    def test_model_selection_requires_explicit_developer_mode(self) -> None:
+        result = self.generate(only=["apple,j700"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --developer", result.stderr)
+
+    def test_model_selection_rejects_undeclared_or_production_boards_and_duplicates(self) -> None:
+        for boards in (["apple,j700"], ["apple,j613"], ["apple,j700", "apple,j700"]):
+            document = self.inputs if boards == ["apple,j700"] else self.with_neo()
+            result = self.generate(document, developer=True, only=boards)
+            self.assertNotEqual(result.returncode, 0, boards)
+
+    def test_model_selection_keeps_input_coverage_and_selected_asset_validation(self) -> None:
+        document = self.with_neo()
+        document["device_identifiers"].remove("apple,j613")
+        result = self.generate(document, developer=True, only=["apple,j700"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing apple,j613", result.stderr)
+        document = self.with_neo()
+        (self.assets / "neo-os-package.zip").unlink()
+        result = self.generate(document, developer=True, only=["apple,j700"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe or missing asset", result.stderr)
 
     def test_a_developer_catalog_gives_the_neo_its_own_payload(self) -> None:
         result = self.generate(self.with_neo(), developer=True)
