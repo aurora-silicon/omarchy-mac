@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -201,6 +202,23 @@ class InspectionTest(unittest.TestCase):
         uki.write_bytes(data)
         menu = self.root / "boot/efi/limine.conf"
         menu.write_text(menu.read_text().split("#")[0] + "#" + hashlib.blake2b(data).hexdigest() + "\n")
+
+    def test_neo_uki_requires_wfxt_workaround_even_with_matching_defaults(self):
+        target = self.root / "var/lib/omarchy/image/target"
+        target.write_text(target.read_text() + "image_target_profile=neo-j700\n")
+        with self.assertRaisesRegex(inspection.limine.ContractError, "arm64.nowfxt"):
+            inspection.limine.validate_artifacts(self.root, inspection.KERNEL)
+
+        original = inspection.limine.regular(self.root / "etc/default/limine").decode()
+        cmdline = re.search(r'KERNEL_CMDLINE\[default\]="([^"\n]*)"', original)[1]
+        self.replace_uki(cmdline=cmdline + " arm64.nowfxt")
+        inspection.limine.validate_artifacts(self.root, inspection.KERNEL)
+        self.replace_uki(cmdline=cmdline + " arm64.nowfxt arm64.nowfxt")
+        with self.assertRaisesRegex(inspection.limine.ContractError, "arm64.nowfxt"):
+            inspection.limine.validate_artifacts(self.root, inspection.KERNEL)
+        self.replace_uki(cmdline=cmdline + " note=arm64.nowfxt")
+        with self.assertRaisesRegex(inspection.limine.ContractError, "arm64.nowfxt"):
+            inspection.limine.validate_artifacts(self.root, inspection.KERNEL)
 
     def test_boot_splash(self):
         bgrt = b"# Administrator customizations go in this file\n[Daemon]\nTheme=bgrt\n"
@@ -798,6 +816,41 @@ class TestImagePinTest(unittest.TestCase):
     def test_template_needs_one_options_section(self):
         with self.assertRaisesRegex(ValueError, "options"):
             fixtures.test_image_pin.render(b"[core]\n", ["omarchy"])
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "image finalizer requires GNU utilities")
+class FinalizerWfxtTest(unittest.TestCase):
+    def finalize(self, profile):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "root"
+            for path, value in {
+                "etc/locale.gen": "#en_US.UTF-8 UTF-8\n",
+                "etc/machine-id": "",
+                "usr/share/plymouth/themes/omarchy/omarchy.plymouth": "fixture\n",
+                "usr/share/zoneinfo/UTC": "fixture\n",
+                "var/lib/omarchy/image/target": "image_target_profile=" + profile + "\n",
+            }.items():
+                fixtures.write(root, path, value)
+            tools = base / "tools"
+            tools.mkdir()
+            # Theme/locale generation is outside this command-line fixture.
+            fixtures.write(tools, "chroot", "#!/bin/sh\nexit 0\n", 0o755)
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
+            command = ["bash", str(Path(__file__).resolve().parents[1] / "builder/finalize-root"), "--root", str(root)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            first = (root / "etc/default/grub").read_bytes()
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(first, (root / "etc/default/grub").read_bytes())
+            return re.search(rb'^GRUB_CMDLINE_LINUX="([^"\n]*)"$', first, re.M)[1].decode().split()
+
+    def test_neo_finalization_preserves_one_exact_wfxt_override(self):
+        self.assertEqual(self.finalize("neo-j700"), ["zswap.enabled=0", "rootfstype=btrfs", "arm64.nowfxt"])
+
+    def test_generic_finalization_keeps_existing_command_line(self):
+        self.assertEqual(self.finalize("generic"), ["zswap.enabled=0", "rootfstype=btrfs"])
 
 
 if __name__ == "__main__":
