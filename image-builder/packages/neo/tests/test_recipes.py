@@ -114,10 +114,28 @@ class RecipeContractTests(unittest.TestCase):
         self.assertIn('pkgver=26.3.0.devel.20261014.g524105a', text)
         self.assertIn("'cross_x86'", text)
         self.assertIn(hashlib.sha256((directory / 'cross_x86').read_bytes()).hexdigest(), text)
-        self.assertIn('echo "$_pkgver-arch$pkgrel" >VERSION', text)
+        self.assertIn('echo "$_overlay_build_version" >VERSION', text)
         self.assertNotIn('$epoch', text)
-        result = subprocess.check_output(['bash', '-c', 'source "$1"; printf "%s-arch%s" "$_pkgver" "$pkgrel"', 'fixture', str(directory / 'PKGBUILD')], text=True)
+        result = subprocess.check_output(['bash', '-c', 'source "$1"; printf "%s" "$_overlay_build_version"', 'fixture', str(directory / 'PKGBUILD')], text=True)
         self.assertEqual(result, '26.3.0-devel.20261014.g524105a-arch2')
+
+    def test_overlay_policy_is_generated_from_actual_output_bytes(self):
+        directory = ROOT / 'recipes/mesa-overlays'
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / 'mesa-x86_64.erofs'
+            image.write_bytes(b'fresh compiled image fixture')
+            subprocess.run(['bash', '-c', 'source "$1"; write_overlay_policy "$2" x86_64',
+                            'fixture', str(directory / 'PKGBUILD'), str(image)], check=True)
+            policy = json.loads(image.with_name(image.name + '.json').read_text())
+            self.assertEqual(policy, {'schema': 1, 'role': 'fex-guest-mesa-overlay',
+                'source_commit': '524105acd30b58c7581ae7e0a1920e5775f9f792',
+                'architecture': 'x86_64', 'build_version': '26.3.0-devel.20261014.g524105a-arch2',
+                'image_path': '/usr/share/fex-emu/overlays/mesa-x86_64.erofs',
+                'image_sha256': hashlib.sha256(image.read_bytes()).hexdigest()})
+            image.write_bytes(b'different clean build')
+            subprocess.run(['bash', '-c', 'source "$1"; write_overlay_policy "$2" x86_64',
+                            'fixture', str(directory / 'PKGBUILD'), str(image)], check=True)
+            self.assertNotEqual(json.loads(image.with_name(image.name + '.json').read_text())['image_sha256'], policy['image_sha256'])
 
     def test_actual_final_steam_support_is_checksum_bound(self):
         directory = ROOT / 'recipes/steam-native'

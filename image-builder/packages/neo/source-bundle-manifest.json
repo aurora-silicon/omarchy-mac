@@ -173,8 +173,8 @@
     },
     {
       "path": "recipes/mesa-overlays/PKGBUILD",
-      "sha256": "1520b28fd5980a6e25e3d85493b68d74ca6e4b0710078761442cdc762d8d7a92",
-      "bytes": 16844
+      "sha256": "06d5c00353cdfdd31397d57283ee7a8333599bd708d948aad0bac7afc097bcc1",
+      "bytes": 17801
     },
     {
       "path": "recipes/mesa-overlays/cross_x86",
@@ -278,8 +278,8 @@
     },
     {
       "path": "tests/test_recipes.py",
-      "sha256": "7b10bbf7b2d42020edbf84e8bfd3885a7e819e4093cabd9eaa9bffb652400ec3",
-      "bytes": 12297
+      "sha256": "929880eb5c73f14d27a79e0a94bd1b623e2c278084669b45fa8cec89a09b0885",
+      "bytes": 13654
     }
   ]
 }
