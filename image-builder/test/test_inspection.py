@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 import zlib
 
@@ -73,6 +74,64 @@ class InspectionTest(unittest.TestCase):
             inspection.check_stock_packages(self.root, policy, {})
         fixtures.local_package(self.root, 'fex-emu-rootfs-arch', '20260318-1', [])
         self.assertIn('1 operator-required stock', inspection.check_stock_packages(self.root, policy, {}))
+
+    def sep_order_fixture(self, missing=None):
+        source = fixtures.ROOT / 'firmware-ordering'
+        files = {
+            'usr/lib/modprobe.d/aurora-sep-firmware-order.conf': b'blacklist apple_sep\n',
+            'usr/lib/omarchy/initcpio/aurora-peripheral-firmware.sh': (source / 'aurora-peripheral-firmware.sh').read_bytes(),
+            'usr/lib/systemd/system/aurora-peripheral-firmware.service': (source / 'aurora-peripheral-firmware.service').read_bytes(),
+            'usr/lib/modprobe.d/aurora-firmware-order.conf': (source / 'aurora-firmware-order.conf').read_bytes(),
+            'usr/lib/omarchy/initcpio/aurora-vendor-order-cryptsetup.conf': (source / 'aurora-vendor-order-cryptsetup.conf').read_bytes(),
+            'usr/lib/systemd/system/omarchy-vendor-firmware.service.d/20-aurora-vendor-order.conf': (source / '20-aurora-vendor-order.conf').read_bytes(),
+            'usr/lib/systemd/system/aurora-sep.service.d/50-aurora-sep-vendor-firmware.conf': (source / '50-aurora-sep-vendor-firmware.conf').read_bytes(),
+        }
+        for path, content in files.items():
+            fixtures.write(self.root, path, content)
+        embedded = {name: b'#!/bin/sh\n' for name in inspection.limine.INITRD_FILES}
+        embedded.update(inspection.limine.INITRD_LINKS)
+        embedded.update({path: files[path] for path in (
+            'usr/lib/modprobe.d/aurora-sep-firmware-order.conf',
+            'usr/lib/omarchy/initcpio/aurora-peripheral-firmware.sh',
+            'usr/lib/systemd/system/aurora-peripheral-firmware.service',
+            'usr/lib/modprobe.d/aurora-firmware-order.conf')})
+        embedded['usr/lib/systemd/system/systemd-cryptsetup@.service.d/aurora-vendor-order.conf'] = \
+            files['usr/lib/omarchy/initcpio/aurora-vendor-order-cryptsetup.conf']
+        for target in ('sysinit.target', 'initrd-root-device.target'):
+            embedded[f'usr/lib/systemd/system/{target}.wants/aurora-peripheral-firmware.service'] = \
+                '../aurora-peripheral-firmware.service'
+        if missing:
+            embedded.pop(missing)
+        uki = self.root / 'boot/efi/EFI/Linux/omarchy_linux-aurora.efi'
+        sections = inspection.limine.pe_sections(uki)
+        sections['.initrd'] = fixtures.initramfs(embedded)
+        uki.write_bytes(fixtures.pe_image(sections))
+        return SimpleNamespace(packages={'aurora-sep': {}, 'omarchy-apple-firmware-order': {}},
+                               member=lambda package, path: files[path])
+
+    def test_neo_sep_firmware_order_matches_root_and_embedded_files_and_activation_graph(self):
+        candidates = self.sep_order_fixture()
+        self.assertIn('alias blacklist in root and UKI', inspection.check_sep_firmware_order(self.root, candidates, {}))
+
+    def test_neo_sep_firmware_order_refuses_missing_initrd_files_or_activation_links(self):
+        for missing in ('usr/lib/modprobe.d/aurora-sep-firmware-order.conf',
+                        'usr/lib/omarchy/initcpio/aurora-peripheral-firmware.sh',
+                        'usr/lib/systemd/system/sysinit.target.wants/aurora-peripheral-firmware.service',
+                        'usr/lib/systemd/system/initrd-root-device.target.wants/aurora-peripheral-firmware.service'):
+            with self.subTest(missing=missing):
+                candidates = self.sep_order_fixture(missing)
+                with self.assertRaisesRegex(inspection.InspectionError, 'UKI initramfs lacks'):
+                    inspection.check_sep_firmware_order(self.root, candidates, {})
+
+    def test_neo_sep_firmware_order_requires_normal_sep_package_and_vendor_dependency(self):
+        candidates = self.sep_order_fixture()
+        candidates.packages.pop('aurora-sep')
+        with self.assertRaisesRegex(inspection.InspectionError, 'requires the signed SEP package'):
+            inspection.check_sep_firmware_order(self.root, candidates, {})
+        candidates.packages['aurora-sep'] = {}
+        (self.root / 'usr/lib/systemd/system/aurora-sep.service.d/50-aurora-sep-vendor-firmware.conf').write_text('[Unit]\nAfter=local-fs.target\n')
+        with self.assertRaisesRegex(inspection.InspectionError, 'ordinary vendor firmware'):
+            inspection.check_sep_firmware_order(self.root, candidates, {})
 
     def test_direct_inspection_refuses_symlinked_trust_key(self):
         trust = self.root.parent / "symlinked-trust"
@@ -588,6 +647,35 @@ class InspectionTest(unittest.TestCase):
 
 class ClosureInspectionTest(unittest.TestCase):
     """A set that carries the Apple default set's closure from a channel."""
+
+    def test_sep_and_firmware_ordering_closure_files_remain_immutable(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch)
+            signer = fixtures.Signer(base / 'signer')
+            try:
+                contents = fixtures.default_contents()
+                names = ('aurora-sep', 'omarchy-apple-firmware-order')
+                for name in names:
+                    contents[name] = {f'usr/lib/{name}/guard': b'public package-owned guard\n'}
+                receipt = fixtures.make_set(base / 'set', signer, versions={name: '1-1' for name in names},
+                                            contents=contents, names=[*fixtures.VERSIONS, *names])
+                fixtures.import_set(base / 'set', base / 'candidates', signer, receipt)
+                root = base / 'root'
+                fixtures.make_root(root, base / 'candidates')
+                candidates = inspection.Candidates(base / 'candidates')
+                inspection.check_candidate_files(root, candidates, {})
+                for name in names:
+                    with self.subTest(name=name):
+                        guard = root / f'usr/lib/{name}/guard'
+                        guard.write_bytes(b'changed after install\n')
+                        with self.assertRaisesRegex(inspection.InspectionError, 'files differ from the set'):
+                            inspection.check_candidate_files(root, candidates, {})
+                        guard.write_bytes(contents[name][f'usr/lib/{name}/guard'])
+            finally:
+                signer.close()
+                for path in base.rglob('*'):
+                    if path.is_dir() and not path.is_symlink():
+                        path.chmod(0o700)
 
     def test_runtime_may_change_a_closure_packages_files(self):
         with tempfile.TemporaryDirectory() as scratch:

@@ -288,7 +288,9 @@ def check_candidate_files(root: Path, candidates: Candidates, report: dict) -> s
     versions and archives (candidate-versions, PROVENANCE): the runtime may
     change their files, as it restyles the Yaru icons."""
     counts, changed = 0, []
-    planned = sorted(name for name, p in candidates.packages.items() if p.get("group", "runtime") != "closure")
+    planned = sorted(name for name, p in candidates.packages.items()
+                     if p.get("group", "runtime") != "closure"
+                     or name in ('aurora-sep', 'omarchy-apple-firmware-order'))
     with tempfile.TemporaryDirectory(prefix="inspect-") as scratch:
         for name in planned:
             unpacked = extract(candidates, name, Path(scratch))
@@ -312,7 +314,10 @@ def check_candidate_files(root: Path, candidates: Candidates, report: dict) -> s
             subprocess.run(["rm", "-rf", str(unpacked)], check=True)
     report["candidate_files"] = counts
     require(not changed, f"{len(changed)} files differ from the set: " + ", ".join(sorted(changed)[:12]))
-    return f"all {counts} files and links of the {len(planned)} runtime and boot packages carry the set's bytes and modes"
+    family = 'runtime and boot'
+    if any(name in planned for name in ('aurora-sep', 'omarchy-apple-firmware-order')):
+        family = 'runtime, boot and firmware-ordering'
+    return f"all {counts} files and links of the {len(planned)} {family} packages carry the set's bytes and modes"
 
 
 def mtree_digests(root: Path, package: str) -> dict[str, str]:
@@ -356,6 +361,43 @@ def check_embedded_initramfs(root: Path, report: dict) -> str:
     count = limine.validate_initramfs(sections.get(".initrd") or b"")
     report["initramfs_members"] = count
     return f"{count} members, including the encryption and vendor firmware units and their activation links"
+
+
+def check_sep_firmware_order(root: Path, candidates: Candidates, report: dict) -> str:
+    require('aurora-sep' in candidates.packages, 'the Neo firmware-ordering package requires the signed SEP package')
+    alias = 'usr/lib/modprobe.d/aurora-sep-firmware-order.conf'
+    dropin = 'usr/lib/systemd/system/aurora-sep.service.d/50-aurora-sep-vendor-firmware.conf'
+    blacklist = limine.regular(root / alias)
+    require(b'blacklist apple_sep' in blacklist.splitlines(), 'the SEP alias blacklist is missing')
+    expected = b'[Unit]\nRequires=omarchy-vendor-firmware.service\nAfter=omarchy-vendor-firmware.service\n'
+    require(limine.regular(root / dropin) == expected, 'SEP does not follow ordinary vendor firmware extraction')
+    sections = limine.pe_sections(root / f'boot/efi/EFI/Linux/omarchy_{KERNEL}.efi')
+    embedded = sections.get('.initrd') or b''
+    expected_files = {alias: blacklist}
+    for path in ('usr/lib/omarchy/initcpio/aurora-peripheral-firmware.sh',
+                 'usr/lib/systemd/system/aurora-peripheral-firmware.service',
+                 'usr/lib/modprobe.d/aurora-firmware-order.conf'):
+        expected_files[path] = limine.regular(root / path)
+    cryptsetup = 'usr/lib/systemd/system/systemd-cryptsetup@.service.d/aurora-vendor-order.conf'
+    expected_files[cryptsetup] = limine.regular(root / 'usr/lib/omarchy/initcpio/aurora-vendor-order-cryptsetup.conf')
+    files = limine.initramfs_files(embedded, set(expected_files))
+    for path, expected_content in expected_files.items():
+        require(files.get(path) == expected_content, f'the UKI initramfs lacks installed firmware ordering: {path}')
+    links = {}
+    for line in limine.initramfs_listing(embedded):
+        fields = line.split(None, 8)
+        if len(fields) == 9 and fields[0].startswith('l') and ' -> ' in fields[8]:
+            name, destination = fields[8].split(' -> ', 1)
+            links[limine.unescape(name).removeprefix('./')] = limine.unescape(destination)
+    for target in ('sysinit.target', 'initrd-root-device.target'):
+        link = f'usr/lib/systemd/system/{target}.wants/aurora-peripheral-firmware.service'
+        require(links.get(link) == '../aurora-peripheral-firmware.service',
+                f'the UKI initramfs lacks firmware activation link: {link}')
+    root_dropin = 'usr/lib/systemd/system/omarchy-vendor-firmware.service.d/20-aurora-vendor-order.conf'
+    require(limine.regular(root / root_dropin) == candidates.member('omarchy-apple-firmware-order', root_dropin),
+            'the root vendor-firmware service lacks package-owned peripheral ordering')
+    report['sep_firmware_order'] = 'package-owned alias blacklist in root and UKI; ordinary SEP unit follows vendor firmware'
+    return report['sep_firmware_order']
 
 
 def plymouth_theme(config: bytes | None, defaults: bytes | None) -> str | None:
@@ -647,6 +689,8 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
     ]
     if candidate_set.stock_packages(policy):
         checks.append(("required-stock-packages", lambda: check_stock_packages(root, policy, report)))
+    if target_profile == 'neo-j700' and 'omarchy-apple-firmware-order' in candidates.packages:
+        checks.append(('sep-firmware-order', lambda: check_sep_firmware_order(root, candidates, report)))
     if target_profile != "generic":
         report["image_target_profile"] = target_profile
         checks.append(("common-stage1", lambda: check_common_stage1(root, candidates, report)))
