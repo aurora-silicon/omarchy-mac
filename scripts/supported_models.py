@@ -9,6 +9,10 @@ board that stays out and why. `developer` names each board only a developer
 build's sealed catalog may add, with its own image; channel catalogs never
 carry one, so check-catalog rejects it like any unknown board.
 
+board that stays out and why. `untested` marks the supported Macs that no
+image has been installed on yet (the M3 generation), with the note a catalog
+shows for each.
+
 Usage:
   supported_models.py check-catalog FILE   exit 1 unless FILE covers every Mac
 """
@@ -39,6 +43,20 @@ def developer_boards(path: Path = MANIFEST) -> dict[str, str]:
     """The boards only a developer build's sealed catalog may add, with why."""
     load(path)
     return dict(json.loads(path.read_text()).get("developer", {}))
+
+def untested(path: Path = MANIFEST) -> dict[str, str]:
+    """Supported Macs no Omarchy image has been installed on yet, each with
+    the note a catalog shows for it."""
+    supported, _ = load(path)
+    notes = json.loads(path.read_text()).get("untested", {})
+    if not isinstance(notes, dict) or not all(
+        isinstance(note, str) and note for note in notes.values()
+    ):
+        raise SystemExit(f"{path}: untested maps each Mac to a note")
+    stray = set(notes) - set(supported)
+    if stray:
+        raise SystemExit(f"{path}: untested names unsupported Macs: {', '.join(sorted(stray))}")
+    return notes
 
 
 def coverage_errors(identifiers: list[str]) -> list[str]:

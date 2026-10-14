@@ -1,0 +1,83 @@
+#!/bin/bash
+# Sign an installer app assembled by build-app.sh with OMARCHY_APP_SIGNING_IDENTITY=none,
+# inside-out: the helper under its own identifier, then the app. Never --deep:
+# each piece of code gets exactly its own signature and no entitlements.
+#
+# Usage: sign-app [--verify] APP IDENTITY [KEYCHAIN]
+#
+# IDENTITY is a Developer ID Application identity of the configured team (its
+# name or SHA-1 hash), signed with hardened runtime and a secure timestamp,
+# or - for the release workflow's dry run: ad hoc, hardened runtime, no
+# timestamp. KEYCHAIN restricts codesign to that keychain (the release job's
+# throwaway one). The result is verified with codesign --strict and the
+# helper's and app's designated requirements: the Developer ID team's for a
+# Developer ID, the identifiers for ad hoc. --verify only checks an app
+# already signed that way (the copy inside the .dmg).
+set -euo pipefail
+
+fail() {
+  echo "sign-app: $*" >&2
+  exit 1
+}
+
+verify_only=0
+if [[ ${1:-} == --verify ]]; then
+  verify_only=1
+  shift
+fi
+(( $# == 2 || $# == 3 )) || fail "usage: sign-app [--verify] APP IDENTITY [KEYCHAIN]"
+app=$1
+identity=$2
+keychain=${3:-}
+(( EUID != 0 )) || fail "never sign as root"
+
+# shellcheck source=../identity.conf
+source "$(cd "$(dirname "$0")/.." && pwd -P)/identity.conf"
+helper="$app/Contents/Library/LaunchServices/$INSTALLER_HELPER_IDENTIFIER"
+[[ $app == *.app && -d $app && ! -L $app ]] || fail "not an app bundle: $app"
+[[ -f $helper && ! -L $helper ]] || fail "the app carries no helper at ${helper#"$app"/}"
+
+team_requirement() {
+  printf 'anchor apple generic and identifier "%s" and certificate leaf[subject.OU] = "%s"' "$1" "$INSTALLER_TEAM_ID"
+}
+
+sign_arguments=(--force --sign "$identity" --options runtime)
+if [[ $identity == "-" ]]; then
+  sign_arguments+=(--timestamp=none)
+  helper_requirement="identifier \"$INSTALLER_HELPER_IDENTIFIER\""
+  app_requirement="identifier \"$INSTALLER_APP_IDENTIFIER\""
+else
+  sign_arguments+=(--timestamp)
+  helper_requirement=$(team_requirement "$INSTALLER_HELPER_IDENTIFIER")
+  app_requirement=$(team_requirement "$INSTALLER_APP_IDENTIFIER")
+fi
+[[ -z $keychain ]] || sign_arguments+=(--keychain "$keychain")
+
+if (( ! verify_only )); then
+  codesign "${sign_arguments[@]}" --identifier "$INSTALLER_HELPER_IDENTIFIER" "$helper"
+  codesign "${sign_arguments[@]}" "$app"
+fi
+
+codesign --verify --strict --deep --verbose=2 "$app"
+codesign --verify --strict -R="$helper_requirement" "$helper"
+codesign --verify --strict -R="$app_requirement" "$app"
+
+# The signature's shape: hardened runtime everywhere; a Developer ID of the
+# configured team with a secure timestamp, or ad hoc for a dry run.
+for code in "$helper" "$app"; do
+  details=$(codesign --display --verbose=4 "$code" 2>&1) || fail "cannot read the signature of $code"
+  [[ $details =~ flags=0x[0-9a-f]+\([^\)]*runtime ]] || fail "$code is not signed with the hardened runtime"
+  if [[ $identity == "-" ]]; then
+    [[ $details == *"Signature=adhoc"* ]] || fail "$code is not ad hoc signed"
+  else
+    [[ $details == *"Authority=Developer ID Application: "* ]] ||
+      fail "$code is not signed by a Developer ID Application certificate"
+    [[ $details == *"TeamIdentifier=$INSTALLER_TEAM_ID"* ]] || fail "$code is not signed by team $INSTALLER_TEAM_ID"
+    [[ $details == *"Timestamp="* ]] || fail "$code has no secure timestamp"
+  fi
+done
+if (( verify_only )); then
+  echo "sign-app: ${app##*/} is signed (${identity/#-/ad hoc})"
+else
+  echo "sign-app: signed ${app##*/} (${identity/#-/ad hoc})"
+fi

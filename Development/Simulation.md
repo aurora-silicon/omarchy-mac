@@ -35,6 +35,7 @@ All simulation controls live in the **Simulation** menu bar item. They are absen
 | Authorization | Missing helper; plan changes before approval; first credentials rejected | Respect the gate; permit back-navigation before submission; rejected dummy credentials can be retried |
 | Execution | Connection lost; empty reply; helper failure; interrupted live progress | Retain verified activity; uncertain outcomes cannot start another installation |
 | Engine refusal | Space shrinks before install | The engine refuses the approved 137 GB plan before any disk step; the page says no disk changes were made and offers **Check available space**, which returns to review with 133 GB, a size-change notice and a cleared acknowledgement; the next install succeeds |
+| Prepared resume | Prepared resume target changed | Explain earlier disk preparation, retain the saved checkpoint in Last verified activity, preserve the journal, and require reconciliation without offering a fresh install or blind retry |
 | Recovery | Recovery fails then retry succeeds; manual recovery required; shutdown request fails | Retry only the eligible Recovery path; keep instructions visible when shutdown fails |
 
 Click the size field to edit GB. Use the green checkmark or Return to apply; use the red cross or Escape to cancel. Invalid or out-of-range values cannot be applied. Installation is disabled until you apply or cancel.

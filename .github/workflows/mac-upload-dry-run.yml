@@ -1,0 +1,72 @@
+name: Mac image upload (dry run)
+
+# Runs the upload job end to end against GitHub with a small fake image and a
+# fixture evidence record: the same call shape the VM acceptance job will use,
+# with dry-run on and 1 MiB parts so the image is split. It uploads to a
+# dryrun- scratch draft release, verifies every file back, checks that an
+# identical re-upload writes nothing and a changed file is refused, and
+# deletes the scratch release. It runs only when dispatched, never for pull
+# requests.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: mac-upload-dry-run-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fixture:
+    name: Make a fake image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.make.outputs.name }}
+      sha256: ${{ steps.make.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Make the fake image and its evidence
+        id: make
+        run: |
+          set -euo pipefail
+          python3 -I scripts/tests/make-mac-upload-fixture.py --out "$RUNNER_TEMP/fixture/image" \
+            --evidence "$RUNNER_TEMP/fixture/evidence/acceptance-evidence.json" \
+            --seed "dry run $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.make.outputs.name }}
+          path: ${{ runner.temp }}/fixture/image
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mac-upload-fixture-evidence
+          path: ${{ runner.temp }}/fixture/evidence
+          if-no-files-found: error
+          retention-days: 3
+
+  upload:
+    name: Upload
+    needs: fixture
+    uses: ./.github/workflows/mac-upload.yml
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    with:
+      image-artifact: ${{ needs.fixture.outputs.name }}
+      image-sha256: ${{ needs.fixture.outputs.sha256 }}
+      dry-run: true
+      evidence-artifact: mac-upload-fixture-evidence
+      part-bytes: '1048576'

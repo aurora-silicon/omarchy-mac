@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""The app release guard: a public installer app carries nothing of the lab lane.
+
+Usage: release-guard PATH...
+
+Each PATH is an app bundle, a directory, a .dmg (mounted read-only; macOS
+only) or a single file. The guard exits 1 and lists every finding when any
+PATH carries one of the following, wherever it is and whatever it is called,
+inside .tar.gz, .tar and .zip archives too (the bundled engine):
+
+- get-task-allow: a debugging entitlement, as an XML or binary plist key or
+  DER, in any file, and in the signed entitlements of every Mach-O, archived
+  ones included (codesign, when available)
+- the lab catalog key (lab-catalog-key.ed25519.pub beside this script): raw,
+  hex or base64, or its SHA-256 fingerprint
+- the test candidate key (image-builder/builder/candidate-trust): its
+  fingerprint, long key ID or primary key packet
+- lab access: OpenSSH public or private keys, authorized_keys and id_* files,
+  passwordless sudo, the lab overlay's files (omarchy-lab, lab-thunderbolt)
+- lab hosts: the test Macs' host names, the lab Thunderbolt network, the lab
+  bootstrap server and tailnet (*.ts.net) names
+
+and, for every app bundle, when it is not the public product: an identifier
+other than Packaging/identity.conf's, a private test profile flag, a sealed
+catalog, catalogs outside the catalog base, or a helper or client code-signing
+requirement that is not anchored to the configured Developer ID team (the lab
+app pins cdhashes or identifiers only, or switches the client check off).
+
+The guard reads files; it never follows symbolic links (a .dmg's
+/Applications link is expected) and never changes what it scans.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import zipfile
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+IDENTITY = ROOT / "Packaging/identity.conf"
+LAB_CATALOG_KEY = HERE / "lab-catalog-key.ed25519.pub"
+CANDIDATE_TRUST = ROOT / "image-builder/builder/candidate-trust"
+# Archives are read into memory up to this size; larger ones are a finding.
+ARCHIVE_LIMIT = 512 << 20
+
+ENTITLEMENTS = (
+    b"<key>get-task-allow</key>",
+    b"<key>com.apple.security.get-task-allow</key>",
+    b"\x0c\x0eget-task-allow",
+    b"\x0c\x21com.apple.security.get-task-allow",
+)
+LAB_HOSTS = re.compile(
+    rb"omarchy-m[1-9](?:-[a-z0-9-]+)?(?![a-z0-9])"  # the test Macs' host names
+    rb"|(?<![0-9.])10\.77\.0\.[0-9]{1,3}(?![0-9])"  # the lab-thunderbolt bridge network
+    rb"|(?<![0-9.])192\.168\.0\.197(?![0-9])"  # the lab bootstrap server
+    rb"|(?:[a-z0-9-]+\.)+ts\.net(?![a-z0-9-])"  # a tailnet
+    rb"|lab-thunderbolt|omarchy-lab",
+    re.IGNORECASE,
+)
+LAB_ACCESS = re.compile(
+    rb"(?:ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com"
+    rb"|sk-ecdsa-sha2-nistp256@openssh\.com) AAAA[0-9A-Za-z+/]{16,}"
+    rb"|-----BEGIN (?:OPENSSH|RSA|DSA|EC) PRIVATE KEY-----"
+    rb"|NOPASSWD"
+)
+LAB_FILE_NAMES = re.compile(
+    r"^(?:authorized_keys.*|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?(?:\.pub)?|sudoers(?:\.d)?)$"
+)
+MACHO = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
+
+
+def identity() -> dict[str, str]:
+    """Packaging/identity.conf's NAME="value" lines."""
+    values = {}
+    for line in IDENTITY.read_text().splitlines():
+        match = re.fullmatch(r'(INSTALLER_[A-Z0-9_]+)="([^"]*)"', line)
+        if match:
+            values[match[1]] = match[2]
+    return values
+
+
+def dearmor(text: bytes) -> bytes:
+    lines = text.replace(b"\r", b"").split(b"\n")
+    body = lines[lines.index(b"") + 1:] if b"" in lines else lines
+    return base64.b64decode(b"".join(line for line in body if line and not line.startswith((b"=", b"-----"))))
+
+
+def first_packet_body(packets: bytes) -> bytes:
+    tag = packets[0]
+    if tag & 0x40:  # new format
+        first = packets[1]
+        if first < 192:
+            return packets[2:2 + first]
+        if first < 224:
+            return packets[3:3 + ((first - 192) << 8) + packets[2] + 192]
+        return packets[6:6 + int.from_bytes(packets[2:6], "big")]
+    width = (1, 2, 4)[tag & 0x03]
+    return packets[1 + width:1 + width + int.from_bytes(packets[1:1 + width], "big")]
+
+
+def key_patterns() -> dict[bytes, str]:
+    """Byte strings no public app may contain, with what each is."""
+    raw = LAB_CATALOG_KEY.read_bytes()
+    if len(raw) != 32:
+        raise SystemExit(f"release-guard: {LAB_CATALOG_KEY} is not a 32-byte Ed25519 key")
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    patterns = {
+        raw: "the lab catalog key",
+        raw.hex().encode(): "the lab catalog key (hex)",
+        raw.hex().upper().encode(): "the lab catalog key (hex)",
+        base64.b64encode(raw)[:43]: "the lab catalog key (base64)",
+        base64.urlsafe_b64encode(raw)[:43]: "the lab catalog key (base64)",
+        fingerprint.encode(): "the lab catalog key's fingerprint",
+        fingerprint.upper().encode(): "the lab catalog key's fingerprint",
+    }
+    policy = json.loads((CANDIDATE_TRUST / "policy.json").read_text())
+    for name in {policy["primary_fingerprint"], policy["signing_fingerprint"]}:
+        for form in (name.upper(), name.lower()):
+            patterns[form.encode()] = "the test candidate key's fingerprint"
+            patterns[form[-16:].encode()] = "the test candidate key's key ID"
+    patterns[first_packet_body(dearmor((CANDIDATE_TRUST / "public.asc").read_bytes()))] = "the test candidate key"
+    return patterns
+
+
+def binary_plist_allows_debugging(data: bytes) -> bool:
+    """A binary property list (an entitlements file) with a get-task-allow key."""
+    if not data.startswith(b"bplist00"):
+        return False
+    try:
+        value = plistlib.loads(data)
+    except Exception:
+        return False
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if any(str(key).endswith("get-task-allow") for key in item):
+                return True
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
+class Guard:
+    def __init__(self) -> None:
+        self.values = identity()
+        self.patterns = key_patterns()
+        self.findings: list[str] = []
+        self.scanned = 0
+
+    def find(self, where: str, what: str) -> None:
+        self.findings.append(f"{where}: {what}")
+
+    # ── contents ────────────────────────────────────────────────────────────
+    def scan_bytes(self, where: str, data: bytes) -> None:
+        self.scanned += 1
+        if any(pattern in data for pattern in ENTITLEMENTS) or binary_plist_allows_debugging(data):
+            self.find(where, "a get-task-allow entitlement")
+        if data[:4] in MACHO and "!" in where:
+            self.archived_entitlements(where, data)
+        for pattern, what in self.patterns.items():
+            if pattern in data:
+                self.find(where, what)
+        for match in {m.group(0).decode(errors="replace") for m in LAB_ACCESS.finditer(data)}:
+            self.find(where, f"lab access ({match[:40]})")
+        for match in {m.group(0).decode(errors="replace").lower() for m in LAB_HOSTS.finditer(data)}:
+            self.find(where, f"a lab host name ({match})")
+        self.scan_archive(where, data)
+
+    def scan_name(self, where: str, name: str) -> None:
+        lowered = name.lower()
+        if LAB_FILE_NAMES.match(lowered):
+            self.find(where, "a lab access file")
+        elif "omarchy-lab" in lowered or "lab-thunderbolt" in lowered:
+            self.find(where, "a lab file")
+
+    def scan_archive(self, where: str, data: bytes) -> None:
+        name = where.lower()
+        if name.endswith((".tar.gz", ".tgz", ".tar")):
+            try:
+                with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                    for member in archive:
+                        inner = f"{where}!{member.name}"
+                        self.scan_name(inner, Path(member.name).name)
+                        if member.isfile():
+                            if member.size > ARCHIVE_LIMIT:
+                                self.find(inner, "too large to scan")
+                                continue
+                            self.scan_bytes(inner, archive.extractfile(member).read())
+            except (tarfile.TarError, OSError, EOFError) as error:
+                self.find(where, f"an archive the guard cannot read ({error})")
+        elif name.endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    for info in archive.infolist():
+                        inner = f"{where}!{info.filename}"
+                        self.scan_name(inner, Path(info.filename).name)
+                        if not info.is_dir():
+                            if info.file_size > ARCHIVE_LIMIT:
+                                self.find(inner, "too large to scan")
+                                continue
+                            self.scan_bytes(inner, archive.read(info))
+            except (zipfile.BadZipFile, OSError) as error:
+                self.find(where, f"an archive the guard cannot read ({error})")
+
+    def scan_tree(self, top: Path, label: str) -> None:
+        for directory, subdirectories, files in os.walk(top, followlinks=False):
+            base = Path(directory)
+            for name in sorted(subdirectories + files):
+                path = base / name
+                where = f"{label}/{path.relative_to(top)}"
+                self.scan_name(where, name)
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if path.stat().st_size > ARCHIVE_LIMIT:
+                    self.find(where, "too large to scan")
+                    continue
+                data = path.read_bytes()
+                self.scan_bytes(where, data)
+                if data[:4] in MACHO:
+                    self.signed_entitlements(where, path)
+            for name in subdirectories:
+                if name.endswith(".app"):
+                    self.check_app(base / name, f"{label}/{(base / name).relative_to(top)}")
+
+    def archived_entitlements(self, where: str, data: bytes) -> None:
+        """An archived Mach-O's signed entitlements, read from a private copy."""
+        if not shutil.which("codesign"):
+            return
+        with tempfile.TemporaryDirectory(prefix="release-guard.") as directory:
+            copy = Path(directory) / "code"
+            copy.write_bytes(data)
+            self.signed_entitlements(where, copy)
+
+    def signed_entitlements(self, where: str, path: Path) -> None:
+        if not shutil.which("codesign"):
+            return
+        result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(path)],
+                                capture_output=True)
+        if b"get-task-allow" in result.stdout:
+            self.find(where, "a get-task-allow entitlement in its signature")
+
+    # ── the app's identity ──────────────────────────────────────────────────
+    def check_app(self, app: Path, label: str) -> None:
+        v = self.values
+        app_id, helper_id, team = (v["INSTALLER_APP_IDENTIFIER"], v["INSTALLER_HELPER_IDENTIFIER"],
+                                   v["INSTALLER_TEAM_ID"])
+        helper_requirement = (f'anchor apple generic and identifier "{helper_id}" '
+                              f'and certificate leaf[subject.OU] = "{team}"')
+        client_requirement = (f'anchor apple generic and identifier "{app_id}" '
+                              f'and certificate leaf[subject.OU] = "{team}"')
+        contents = app / "Contents"
+
+        def plist(path: Path) -> dict:
+            try:
+                with path.open("rb") as source:
+                    return plistlib.load(source)
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                self.find(f"{label}/{path.relative_to(app)}", "missing or unreadable")
+                return {}
+
+        info = plist(contents / "Info.plist")
+        if info.get("CFBundleIdentifier") != app_id:
+            self.find(label, f"bundle identifier {info.get('CFBundleIdentifier')!r} is not {app_id!r}")
+        for flag in ("OmarchyPrivatePlainTest", "OmarchyPrivateLimineTest"):
+            if flag in info:
+                self.find(label, f"the private test profile flag {flag}")
+        if info.get("SMPrivilegedExecutables") != {helper_id: helper_requirement}:
+            self.find(label, "SMPrivilegedExecutables does not pin the helper to the Developer ID team")
+        daemon = plist(contents / f"Library/LaunchDaemons/{helper_id}.plist")
+        client = daemon.get("EnvironmentVariables", {}).get("OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT")
+        if client != client_requirement:
+            self.find(label, f"the helper's client requirement {client!r} is not the Developer ID team's")
+        release = contents / "Resources/Release"
+        for entry in sorted(release.iterdir()) if release.is_dir() else []:
+            if entry.is_symlink():
+                self.find(label, f"a symbolic link Release/{entry.name}")
+        for name in ("catalog.json", "catalog.json.sig", "limine-inputs.json"):
+            if (release / name).exists() or (release / name).is_symlink():
+                self.find(label, f"a sealed private input Release/{name}")
+        try:
+            descriptor = json.loads((release / "release.json").read_text())
+        except (OSError, ValueError):
+            self.find(label, "Release/release.json is missing or unreadable")
+            return
+        if descriptor.get("helper_code_signing_requirement") != helper_requirement:
+            self.find(label, "release.json's helper requirement is not the Developer ID team's")
+        base = v["INSTALLER_CATALOG_BASE"] + "/"
+        stopgap = f"https://github.com/{v['INSTALLER_CATALOG_STOPGAP_REPO']}/releases/download"
+        for channel, entry in sorted(descriptor.get("channels", {}).items()):
+            url = entry.get("catalog_url", "") if isinstance(entry, dict) else ""
+            # The stopgap is accepted only as the channel's own catalog asset.
+            if url == f"{stopgap}/catalog-{channel}/catalog-{channel}.signed.json":
+                continue
+            if not url.startswith(base):
+                self.find(label, f"the {channel} catalog {url!r} is outside {base}")
+        try:
+            digest = hashlib.sha256((release / "trust-root.ed25519.pub").read_bytes()).hexdigest()
+        except OSError:
+            self.find(label, "Release/trust-root.ed25519.pub is missing")
+        else:
+            if descriptor.get("trust_root_fingerprint") != f"sha256:{digest}":
+                self.find(label, "release.json does not pin the bundled trust root")
+
+    # ── entry points ────────────────────────────────────────────────────────
+    def scan_path(self, path: Path) -> None:
+        if path.is_symlink():
+            self.find(str(path), "a symbolic link, not a build")
+        elif path.is_dir():
+            if path.name.endswith(".app"):
+                self.scan_name(str(path), path.name)
+                self.scan_tree(path, path.name)
+                self.check_app(path, path.name)
+            else:
+                self.scan_tree(path, path.name)
+        elif path.suffix == ".dmg":
+            self.scan_dmg(path)
+        elif path.is_file():
+            self.scan_name(str(path), path.name)
+            self.scan_bytes(path.name, path.read_bytes())
+        else:
+            self.find(str(path), "missing")
+
+    def scan_dmg(self, image: Path) -> None:
+        mount = Path(tempfile.mkdtemp(prefix="release-guard."))
+        attach = subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+                                 "-mountpoint", str(mount), str(image)], capture_output=True, text=True)
+        if attach.returncode != 0:
+            mount.rmdir()
+            self.find(image.name, f"hdiutil cannot attach it: {attach.stderr.strip()}")
+            return
+        try:
+            apps = [entry for entry in mount.iterdir() if entry.name.endswith(".app")]
+            if len(apps) != 1:
+                self.find(image.name, f"holds {len(apps)} apps, not one")
+            self.scan_tree(mount, image.name)
+        finally:
+            subprocess.run(["hdiutil", "detach", str(mount)], capture_output=True)
+            if mount.exists() and not any(mount.iterdir()):
+                mount.rmdir()
+
+
+def main(arguments: list[str]) -> int:
+    if not arguments or arguments[0].startswith("-"):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 64
+    guard = Guard()
+    for argument in arguments:
+        guard.scan_path(Path(argument))
+    if guard.findings:
+        for finding in guard.findings:
+            print(f"release-guard: {finding}", file=sys.stderr)
+        print(f"release-guard: refused: {len(guard.findings)} finding(s)", file=sys.stderr)
+        return 1
+    print(f"release-guard: clean ({guard.scanned} files scanned)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

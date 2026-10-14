@@ -1,0 +1,94 @@
+#!/bin/bash
+# Publish a signed, notarized installer .dmg and its sha256 for app version
+# VERSION. The release workflow's only publishing step; the destination is a
+# target so moving hosts changes one argument, not the workflow.
+#
+# Usage: publish-app --target TARGET --version VERSION DMG SHA256_FILE
+#
+# Targets:
+#   github-release  the stopgap: release v<VERSION> on $GITHUB_REPOSITORY
+#                   (gh, GH_TOKEN with contents: write), created as a draft
+#                   prerelease that is never marked latest; the owner
+#                   publishes it. The tag must exist and name RELEASE_COMMIT
+#                   (the commit the workflow built). A release that is no
+#                   longer a draft is refused. A file the draft already holds
+#                   is kept when its bytes are identical (a rerun after an
+#                   interrupted upload) and refused when they differ. Each
+#                   file is downloaded back and compared.
+#   r2              <catalog base>/installer/<VERSION>/<file> (identity.conf), immutable
+#                   (ticket 13; not implemented yet, so refused).
+set -euo pipefail
+
+fail() {
+  echo "publish-app: $*" >&2
+  exit 1
+}
+
+usage() {
+  fail "usage: publish-app --target github-release|r2 --version VERSION DMG SHA256_FILE"
+}
+
+target="" version=""
+while (( $# > 0 )); do
+  case $1 in
+    --target) target=${2:-}; shift 2 || usage ;;
+    --version) version=${2:-}; shift 2 || usage ;;
+    -*) usage ;;
+    *) break ;;
+  esac
+done
+(( $# == 2 )) && [[ -n $target && -n $version ]] || usage
+dmg=$1
+checksum=$2
+
+# shellcheck source=../identity.conf
+source "$(cd "$(dirname "$0")/.." && pwd -P)/identity.conf"
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*$ ]] || fail "not an app version: $version"
+[[ ${dmg##*/} == "$INSTALLER_FILE_STEM-$version.dmg" && -f $dmg && ! -L $dmg ]] ||
+  fail "the dmg must be $INSTALLER_FILE_STEM-$version.dmg"
+[[ ${checksum##*/} == "${dmg##*/}.sha256" && -f $checksum && ! -L $checksum ]] ||
+  fail "the checksum must be ${dmg##*/}.sha256"
+digest=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+[[ $(cat "$checksum") == "$digest  ${dmg##*/}" ]] || fail "${checksum##*/} does not match the dmg"
+
+publish_github_release() {
+  local repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY names the repository} tag="v$version" state assets file
+  local commit=${RELEASE_COMMIT:?RELEASE_COMMIT names the commit that was built} tagged missing=()
+  tagged=$(gh api "repos/$repo/commits/$tag" -q .sha) || fail "cannot resolve $tag on $repo"
+  [[ $tagged == "$commit" ]] || fail "$tag names $tagged, not the built commit $commit"
+  if state=$(gh release view "$tag" -R "$repo" --json isDraft -q .isDraft 2>&1); then
+    [[ $state == "true" ]] || fail "$tag on $repo is already published; a release is never changed"
+  elif [[ $state == *"release not found"* ]]; then
+    gh release create "$tag" -R "$repo" --verify-tag --draft --prerelease --latest=false \
+      --title "$INSTALLER_APP_NAME $version" \
+      --notes "Draft: notarized installer app $version. sha256 $digest. Publish after review; never mark latest without the owner." \
+      >/dev/null
+  else
+    fail "cannot read $tag on $repo: $state"
+  fi
+  assets=$(gh release view "$tag" -R "$repo" --json assets -q '.assets[].name')
+  back=$(mktemp -d)
+  trap 'rm -rf "$back"' EXIT
+  for file in "$dmg" "$checksum"; do
+    if grep -qxF "${file##*/}" <<<"$assets"; then
+      gh release download "$tag" -R "$repo" -p "${file##*/}" -D "$back/existing"
+      cmp -s "$file" "$back/existing/${file##*/}" ||
+        fail "$tag already holds a different ${file##*/}; published files are never replaced"
+      echo "publish-app: $tag already holds this ${file##*/}"
+    else
+      missing+=("$file")
+    fi
+  done
+  (( ${#missing[@]} == 0 )) || gh release upload "$tag" -R "$repo" "${missing[@]}"
+  gh release download "$tag" -R "$repo" -p "${dmg##*/}" -p "${checksum##*/}" -D "$back/check"
+  for file in "$dmg" "$checksum"; do
+    cmp -s "$file" "$back/check/${file##*/}" || fail "${file##*/} on $tag differs from what was uploaded"
+  done
+  echo "publish-app: $tag on $repo (draft) holds ${dmg##*/} ($digest)"
+}
+
+case $target in
+  github-release) publish_github_release ;;
+  r2) fail "the r2 target (${INSTALLER_CATALOG_BASE}/installer/$version/) arrives with ticket 13" ;;
+  *) usage ;;
+esac

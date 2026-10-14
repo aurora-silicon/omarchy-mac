@@ -252,6 +252,10 @@ published_size() {
 }
 
 banner "Omarchy MX Mac — cutover to channel distribution"
+warn "This wizard publishes to $PUBLIC_BASE. Apps built from Release/release.json"
+warn "read their catalogs from $INSTALLER_CATALOG_BASE instead, so they will not"
+warn "see what this wizard publishes until publishing moves there."
+pause
 
 # ── 1 ─────────────────────────────────────────────────────────────────────
 stage "Mint the long-lived signing key"
@@ -307,7 +311,6 @@ if [[ -f "$APP_DIR/Release/release.json" ]]; then
 else
   run "$APP_DIR/scripts/make-release-descriptor" \
     --public-key "$APP_DIR/Release/trust-root.ed25519.pub" \
-    --base-url "$PUBLIC_BASE" \
     --output "$APP_DIR/Release/release.json"
 fi
 echo
@@ -561,8 +564,8 @@ step "Confirm the BETA banner and badge appear, and the catalog verifies."
 step "Complete an install, boot Omarchy, then run: omarchy debug apple"
 step "Switch back to Stable and confirm it is not blocked as a rollback."
 echo
-warn "If an earlier installer package is installed, the app replaces its helper"
-warn "and removes the old app from Applications; confirm only this app remains."
+warn "A helper or app from an earlier com.omarchy.mx build stays installed beside"
+warn "this one; remove it as the README's upgrade note describes."
 echo
 if ! confirm "Did the M1 install succeed end to end?"; then
   say "Stopping before stable. Nothing users can reach has changed."

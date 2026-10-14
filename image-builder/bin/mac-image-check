@@ -6,6 +6,8 @@ payload     the zip and its installer_data.json: what the engine checks
             (omarchy_asahi.py _validate_full_os_package), the declared sizes,
             the fixed UUIDs, labels and ESP volume id, Limine in the U-Boot
             slot booting its UKI, and an empty esp/omarchy/ directory.
+            test/test_engine_contract.py holds this copy of the contract to
+            the engine's, from this repository.
 image       root.img, boot.img and the ESP tree: filesystems, UUIDs, the five
             subvolumes including a sealed @factory, the tree checks, then the
             boot inspection against the imported candidate set (--candidates),
@@ -19,6 +21,15 @@ descriptor  a build directory whose IMAGE names the lane, platform, builder
             commit, candidate set, package set digest, each payload member's
             sha256 and the inputs digest, matching the bytes and records
             beside it.
+name        a public build directory (descriptor, from a channel set): prints
+            the image's name, omarchy-mac-<lane>-<YYYY.MM.DD>-<package set id>,
+            the date its inputs were resolved (the payload's date) and the
+            first 12 hex digits of IMAGE's package_set_sha256.
+
+A channel build (its inputs record names channel_set=, builder/channel_set.py)
+names its channel set, signer and manifest and the channel database's sha256
+where a candidate build names its candidate set, and must be a public image:
+the release profile and no test image pin.
 
 image and tree refuse lab access (builder/lab_access.py) in every subvolume,
 @factory and the initramfs, unless --profile lab names an edge lab image; a lab
@@ -421,7 +432,16 @@ def check_sync_databases(root: Path) -> None:
                 f"the sync database {name} is not a regular, non-empty file")
 
 
-def check_state(root: Path) -> None:
+def runtime_providers(candidates: Path | None) -> dict[str, str]:
+    """The roles a set's runtime fills under another name (a channel set's
+    omarchy-dev fills omarchy), from its import.json."""
+    if candidates is None:
+        return {}
+    summary = json.loads((Path(candidates) / "import.json").read_text())
+    return {p["role"]: p["name"] for p in summary["packages"] if p.get("role", p["name"]) != p["name"]}
+
+
+def check_state(root: Path, providers: dict[str, str] | None = None) -> None:
     check_provisioning(root)
     check_pristine(root)
     first_boot = root / "etc/systemd/system/multi-user.target.wants/omarchy-first-boot.service"
@@ -432,6 +452,7 @@ def check_state(root: Path) -> None:
         require(path.is_symlink() and os.readlink(path) == destination, f"{link} is not the preset's enable link")
         require((root / destination.lstrip("/")).is_file(), f"{destination} is missing")
     packages = installed_packages(root)
+    packages |= {role for role, name in (providers or {}).items() if name in packages}
     missing = sorted(set(IMAGE_PACKAGES) - packages)
     require(not missing, f"the image lacks {missing}")
     require(not (root / "var/lib/systemd/random-seed").exists(), "the image keeps a random seed")
@@ -499,11 +520,12 @@ def check_initramfs_lab_access(root: Path) -> None:
     require(not found, "the initramfs carries " + "; ".join(f"{path} ({what})" for path, what, _ in found))
 
 
-def check_tree(root: Path, factory: Path | None = None, profile: str = "release") -> str:
+def check_tree(root: Path, factory: Path | None = None, profile: str = "release",
+               providers: dict[str, str] | None = None) -> str:
     require(root.is_dir(), f"{root} is not a directory")
     check_fstab(root)
     check_boot(root)
-    check_state(root)
+    check_state(root, providers)
     check_secret_material(root, "the image")
     digest = check_lab_access(root, "the image", profile)
     check_initramfs_lab_access(root)
@@ -580,7 +602,7 @@ def check_image(lane: str, root_image: Path, boot_image: Path, esp: Path, candid
             factory.mkdir()
             run("mount", "-o", "ro,subvol=@factory", root_loop, str(factory))
             mounts.append(str(factory))
-            digest = check_tree(tree, factory, profile)
+            digest = check_tree(tree, factory, profile, runtime_providers(candidates))
             for subvolume, point in (("@", tree), ("@home", tree / "home"), ("@log", tree / "var/log"),
                                      ("@pkg", tree / "var/cache/pacman/pkg"), ("@factory", factory)):
                 check_secret_material(point, subvolume)
@@ -702,21 +724,45 @@ def check_provenance(lane: str, directory: Path) -> None:
         sources[name] = commit
     require(sources and sources == report.get("runtime_sources"),
             "PROVENANCE's candidate sources do not match INSPECTION's runtime sources")
-    require(sources.get("omarchy") == fields.get("input.candidate_source_commit", [None])[0],
-            "PROVENANCE's runtime is not from the set's source commit")
+    channel = is_channel(fields, "input.")
+    if channel:
+        # The -dev runtime ships no source revision; the channel database and its archives name it.
+        require(report.get("set_kind") == "channel"
+                and [report.get("database_sha256")] == fields.get("input.omarchy_db_sha256")
+                and [report.get("set")] == fields.get("input.channel_set"),
+                "INSPECTION did not inspect the channel set PROVENANCE names")
+    else:
+        require(sources.get("omarchy") == fields.get("input.candidate_source_commit", [None])[0],
+                "PROVENANCE's runtime is not from the set's source commit")
     profile = check_recorded_profile(lane, fields, "PROVENANCE")
+    if channel:
+        check_public(fields, profile, "PROVENANCE")
     require(report.get("lab_access_sha256") == fields.get("lab_access_sha256", [None])[0],
             "INSPECTION's lab access digest does not match PROVENANCE")
-    check_image_target_record(report, fields, profile)
+    check_image_target_record(report, fields, profile, channel)
     check_payload(lane, payload, installer_data, profile)
 
 
-def check_image_target_record(report: dict, fields: dict[str, list[str]], profile: str) -> None:
+def is_channel(fields: dict[str, list[str]], prefix: str = "") -> bool:
+    """Whether a record's inputs name a channel set rather than a candidate set, never both."""
+    channel = f"{prefix}channel_set" in fields
+    require(channel != (f"{prefix}candidate_set" in fields), "the record names no single set")
+    return channel
+
+
+def check_public(fields: dict[str, list[str]], profile: str, where: str) -> None:
+    """A channel image is a public image: the release profile and no test image pin."""
+    require(profile == "release", f"{where} records a {profile} profile for a channel image")
+    require(fields.get("test_image_pin") == [""], f"{where} records a test image pin for a channel image")
+
+
+def check_image_target_record(report: dict, fields: dict[str, list[str]], profile: str, channel: bool = False) -> None:
     """The provenance the image's target manifest carries, as INSPECTION read it, is this build's."""
     target = report.get("image_target")
     require(isinstance(target, dict), "INSPECTION does not record the image target's provenance")
-    for key, field in (("candidate_set", "input.candidate_set"), ("candidate_source_commit", "input.candidate_source_commit"),
-                       ("builder_commit", "builder_commit"), ("builder_tree_clean", "builder_tree_clean")):
+    set_fields = ((("channel_set", "input.channel_set"), ("channel_db_sha256", "input.omarchy_db_sha256")) if channel
+                  else (("candidate_set", "input.candidate_set"), ("candidate_source_commit", "input.candidate_source_commit")))
+    for key, field in (*set_fields, ("builder_commit", "builder_commit"), ("builder_tree_clean", "builder_tree_clean")):
         require(target.get(key) is not None and [target[key]] == fields.get(field),
                 f"the image target's {key} does not match PROVENANCE")
     if "built" in fields:
@@ -727,7 +773,7 @@ def check_image_target_record(report: dict, fields: dict[str, list[str]], profil
         require("package_set_sha256" not in target and "built" not in target,
                 "the image target records a build identity that PROVENANCE does not")
     require((target.get("image_profile") == "lab") == (profile == "lab")
-            and target.get("image_profile") in ("lab", "test", "release"),
+            and target.get("image_profile") in (("release",) if channel else ("lab", "test", "release")),
             "the image target's profile does not match PROVENANCE")
 
 
@@ -747,6 +793,8 @@ def check_recorded_profile(lane: str, fields: dict[str, list[str]], where: str) 
 
 IMAGE_INPUTS = ("candidate_set", "candidate_source_commit", "candidate_signer", "candidate_receipt_sha256",
                 "candidate_manifest_sha256", "omarchy_channel")
+CHANNEL_IMAGE_INPUTS = ("channel_set", "channel_signer", "channel_manifest_sha256", "omarchy_channel",
+                        "omarchy_db_sha256")
 
 
 def check_descriptor(lane: str, directory: Path) -> None:
@@ -756,7 +804,9 @@ def check_descriptor(lane: str, directory: Path) -> None:
     require(fields.get("format") == ["2"], "IMAGE is not format=2")
     require(fields.get("lane") == [lane], f"IMAGE does not describe a {lane} image")
     require(fields.get("platform") == [PLATFORM], f"IMAGE does not describe an {PLATFORM} image")
-    for key in (*IMAGE_INPUTS, "input_digest", "package_set_sha256", "hardware_setup", "builder_commit",
+    channel = is_channel(fields)
+    image_inputs = CHANNEL_IMAGE_INPUTS if channel else IMAGE_INPUTS
+    for key in (*image_inputs, "input_digest", "package_set_sha256", "hardware_setup", "builder_commit",
                 "builder_tree_clean"):
         once(fields, key, "IMAGE")
     recorded_build_time(fields, "IMAGE")
@@ -765,7 +815,8 @@ def check_descriptor(lane: str, directory: Path) -> None:
     require(inputs.is_file() and provenance.is_file(), "the inputs record and PROVENANCE are not beside IMAGE")
     input_fields = parse_fields(inputs)
     provenance_fields = parse_fields(provenance)
-    for key in IMAGE_INPUTS:
+    require(is_channel(input_fields) == channel, "IMAGE and the inputs record name different kinds of set")
+    for key in image_inputs:
         require(input_fields.get(key) == fields[key], f"IMAGE {key} does not match the inputs record")
         require(provenance_fields.get(f"input.{key}") == fields[key], f"IMAGE {key} does not match PROVENANCE")
     require(fields["omarchy_channel"] == [lane], "IMAGE's lane is not its channel")
@@ -778,6 +829,9 @@ def check_descriptor(lane: str, directory: Path) -> None:
     profile = check_recorded_profile(lane, fields, "IMAGE")
     for key in ("profile", "lab_access_sha256"):
         require(provenance_fields.get(key) == fields.get(key), f"IMAGE {key} does not match PROVENANCE")
+    if channel:
+        check_public(fields, profile, "IMAGE")
+        check_public(provenance_fields, profile, "PROVENANCE")
     payload = payload_in(directory, lane)
     installer_data = directory / "installer_data.json"
     require(installer_data.is_file(), "installer_data.json is not beside IMAGE")
@@ -792,11 +846,33 @@ def check_descriptor(lane: str, directory: Path) -> None:
     require(recorded == digests, "IMAGE does not name each payload member's sha256")
 
 
+# A public image's name: its lane, the date its inputs were resolved, and its
+# package set id, the first 12 hex digits of package_set_sha256 (every installed
+# package's name, version and archive sha256), so a rebuild of the same package
+# set on the same day has the same name and any changed package changes it.
+PACKAGE_SET_ID_LENGTH = 12
+IMAGE_NAME = re.compile(r"^omarchy-mac-(edge|rc|stable)-\d{4}\.\d{2}\.\d{2}-[0-9a-f]{12}$")
+
+
+def image_name(lane: str, directory: Path) -> str:
+    check_descriptor(lane, directory)
+    fields = parse_fields(directory / "IMAGE")
+    require(is_channel(fields), "only a public image built from a channel set is named")
+    require(check_recorded_profile(lane, fields, "IMAGE") == "release", "a lab image is not named")
+    digest = once(fields, "package_set_sha256", "IMAGE")
+    require(re.fullmatch(r"[0-9a-f]{64}", digest) is not None, "IMAGE's package_set_sha256 is malformed")
+    date = re.match(r"^omarchy-(\d{4}\.\d{2}\.\d{2})-", payload_in(directory, lane).name).group(1)
+    name = f"omarchy-mac-{lane}-{date}-{digest[:PACKAGE_SET_ID_LENGTH]}"
+    require(IMAGE_NAME.fullmatch(name) is not None, f"{name} is not an image name")
+    return name
+
+
 USAGE = """Usage: mac-image-check payload <edge|rc|stable> PAYLOAD.zip INSTALLER_DATA.json [--profile lab]
        mac-image-check image <edge|rc|stable> ROOT.img BOOT.img ESP_DIR --candidates DIR [--report FILE] [--profile lab]
        mac-image-check tree <edge|rc|stable> ROOT_TREE [FACTORY_TREE] --candidates DIR [--report FILE] [--profile lab]
        mac-image-check provenance <edge|rc|stable> BUILD_DIR
-       mac-image-check descriptor <edge|rc|stable> BUILD_DIR"""
+       mac-image-check descriptor <edge|rc|stable> BUILD_DIR
+       mac-image-check name <edge|rc|stable> BUILD_DIR"""
 
 
 def main(argv: list[str]) -> int:
@@ -816,7 +892,7 @@ def main(argv: list[str]) -> int:
                 options[arg[2:]] = Path(value)
         else:
             rest.append(arg)
-    arity = {"payload": 2, "image": 3, "tree": None, "provenance": 1, "descriptor": 1}
+    arity = {"payload": 2, "image": 3, "tree": None, "provenance": 1, "descriptor": 1, "name": 1}
     if len(rest) < 3 or rest[0] not in arity or rest[1] not in LANES:
         print(USAGE, file=sys.stderr)
         return 64
@@ -840,10 +916,13 @@ def main(argv: list[str]) -> int:
         elif mode == "tree":
             factory = Path(paths[1]) if len(paths) == 2 else None
             check_profile(lane, profile)
-            digest = check_tree(Path(paths[0]), factory, profile)
+            digest = check_tree(Path(paths[0]), factory, profile, runtime_providers(options["candidates"]))
             inspect_tree(lane, Path(paths[0]), factory, options["candidates"], options.get("report"), digest, profile)
         elif mode == "provenance":
             check_provenance(lane, Path(paths[0]))
+        elif mode == "name":
+            print(image_name(lane, Path(paths[0])))
+            return 0
         else:
             check_descriptor(lane, Path(paths[0]))
     except CheckError as error:

@@ -89,7 +89,7 @@
         )
       ) {
         XCTAssertEqual(
-          $0 as? ClosedEngineHandoffError,
+          ($0 as? InstallerPreSubmissionFailure)?.underlying as? ClosedEngineHandoffError,
           .artifactDigestMismatch("engine")
         )
       }
@@ -209,7 +209,7 @@
         )
       ) {
         XCTAssertEqual(
-          $0 as? ClosedEngineHandoffError,
+          ($0 as? InstallerPreSubmissionFailure)?.underlying as? ClosedEngineHandoffError,
           .assetBindingMismatch
         )
       }
@@ -272,7 +272,7 @@
         )
       ) {
         XCTAssertEqual(
-          $0 as? ClosedEngineHandoffError,
+          ($0 as? InstallerPreSubmissionFailure)?.underlying as? ClosedEngineHandoffError,
           .unsafeArtifact("payload")
         )
       }

@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""The release guard: a public Apple Silicon image carries nothing of the lab lane.
+
+The lab lane (test candidate sets, lab test images, the ad hoc lab app) shares
+this builder with public images. The guard is the last check before a build's
+outputs are kept for publishing, independent of how the build was asked for:
+
+records  BUILD_DIR   its records (mac-image-check provenance and descriptor)
+                     describe a public image: built from a channel set signed
+                     by the Omarchy package key, the release profile, no lab
+                     access digest, no test image pin, a release payload name
+                     and an inspection that read a release image target.
+tree     ROOT...     each ROOT (an image subvolume, boot tree or ESP) carries
+                     none of the findings below.
+build    BUILD_DIR   records, then unpacks the payload, mounts root.img (every
+                     subvolume, @factory included) and boot.img read-only and
+                     scans them, the ESP and the UKI's command line and
+                     initramfs. Needs root.
+
+Findings, wherever they are and whatever they are called:
+- lab access: authorized_keys files and sshd overrides that read other keys,
+  passwordless sudo for every command, polkit rules granting every action, sshd
+  enabled, the lab overlay's files (builder/lab_access.py's scan),
+  passwordless sudo for a shell, Tailscale state (/var/lib/tailscale), which
+  only a lab Mac enrolls, and configuration it cannot read whole (a link loop or
+  one out of the image, or a file too large); a link inside the image is read
+  where it points
+- lab hosts: the lab's host names (omarchy-m1-pro, omarchy-m2-…), its
+  Thunderbolt bridge network (10.77.0.x), its bootstrap server, a tailnet
+  (*.ts.net) or the lab-thunderbolt profile, in configuration, home and state
+  files, the ESP, the boot tree and the UKI
+- the lab catalog key: the Ed25519 key the lab app's catalogs are signed with
+  (builder/lab-catalog-key.ed25519.pub), raw, hex or base64, or its fingerprint,
+  in any file
+- the test candidate key (builder/candidate-trust/public.asc): its fingerprint or
+  its key packet, binary or armored, in any file
+- test candidate pins: the test image pin's marked block or an IgnorePkg of the
+  runtime in pacman.conf, an [omarchy-candidates] repository, or an image target
+  manifest naming a candidate set or a test or lab profile
+- get-task-allow: a debugging entitlement, as a plist key or DER, in any file
+"""
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import mmap
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+LAB_CATALOG_KEY = ROOT / "builder/lab-catalog-key.ed25519.pub"
+TRUST = ROOT / "builder/candidate-trust"
+KERNEL = "linux-aurora"
+CHUNK = 4 << 20
+# Configuration, home and state files are read whole up to this size for lab hosts.
+TEXT_LIMIT = 16 << 20
+LAB_HOSTS = re.compile(
+    rb"omarchy-m[1-9](?:-[a-z0-9-]+)?(?![a-z0-9])"  # the test Macs' host names
+    rb"|(?<![0-9.])10\.77\.0\.[0-9]{1,3}(?![0-9])"  # the lab-thunderbolt bridge network
+    rb"|192\.168\.0\.197(?![0-9])"  # the lab bootstrap server
+    rb"|(?:[a-z0-9-]+\.)+ts\.net(?![a-z0-9-])"  # a tailnet
+    rb"|lab-thunderbolt|omarchy-lab",
+    re.IGNORECASE,
+)
+# Where an image keeps configuration and state; the rest of an OS root is package files.
+HOST_SCAN_DIRS = ("etc", "root", "home", "var/lib", "var/log", "var/spool", "usr/local", "opt", "srv", "boot")
+RUNTIME_PACKAGES = ("omarchy", "omarchy-settings", "omarchy-mac", "omarchy-mac-boot", "omarchy-dev",
+                    "omarchy-settings-dev")
+# A command after NOPASSWD that is a shell, or su, sudo or env, which run one.
+PASSWORDLESS_SHELL = re.compile(r"NOPASSWD:.*(?:^|[\s,:/])(?:ba|z|da|fi|c|k|tc)?sh(?:$|[\s,])"
+                                r"|NOPASSWD:.*/(?:su|sudo|env)(?:$|[\s,])")
+TARGET_MANIFESTS = ("var/lib/omarchy/image/target", "var/lib/omarchy/image/target.booted")
+ENTITLEMENTS = (b"<key>get-task-allow</key>", b"<key>com.apple.security.get-task-allow</key>",
+                b"\x0c\x0eget-task-allow", b"\x0c\x21com.apple.security.get-task-allow")
+ARMOR_BEGIN = b"-----BEGIN PGP PUBLIC KEY BLOCK-----"
+# A key block's body is bounded, so a header without an end costs one bounded look ahead.
+ARMOR = re.compile(rb"-----BEGIN PGP PUBLIC KEY BLOCK-----\r?\n(.{0,1048576}?)-----END PGP PUBLIC KEY BLOCK-----", re.S)
+
+
+class GuardError(Exception):
+    pass
+
+
+def load(name: str, path: Path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+lab_access = load("lab_access", ROOT / "builder/lab_access.py")
+test_image_pin = load("test_image_pin", ROOT / "builder/test_image_pin.py")
+
+
+# ── the keys ───────────────────────────────────────────────────────────────
+def dearmor(text: bytes) -> bytes:
+    """The packets of an ASCII-armored block's body (headers and checksum dropped)."""
+    lines = text.replace(b"\r", b"").split(b"\n")
+    if b"" in lines:  # armor headers end at the first blank line
+        lines = lines[lines.index(b"") + 1:]
+    body = b"".join(line for line in lines if line and not line.startswith(b"="))
+    return base64.b64decode(body)
+
+
+def first_packet_body(packets: bytes) -> bytes:
+    """The body of the first OpenPGP packet (the primary key), old or new format."""
+    tag = packets[0]
+    if not tag & 0x80:
+        raise GuardError("not an OpenPGP key")
+    if tag & 0x40:  # new format
+        first = packets[1]
+        if first < 192:
+            return packets[2:2 + first]
+        if first < 224:
+            return packets[3:3 + ((first - 192) << 8) + packets[2] + 192]
+        return packets[6:6 + int.from_bytes(packets[2:6], "big")]
+    kind = tag & 0x03
+    width = (1, 2, 4)[kind]
+    length = int.from_bytes(packets[1:1 + width], "big")
+    return packets[1 + width:1 + width + length]
+
+
+def key_patterns() -> dict[bytes, str]:
+    """Byte strings no public image may contain, with what each is."""
+    raw = LAB_CATALOG_KEY.read_bytes()
+    if len(raw) != 32:
+        raise GuardError(f"{LAB_CATALOG_KEY} is not a 32-byte Ed25519 public key")
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    patterns = {
+        raw: "the lab catalog key",
+        raw.hex().encode(): "the lab catalog key (hex)",
+        raw.hex().upper().encode(): "the lab catalog key (hex)",
+        base64.b64encode(raw)[:43]: "the lab catalog key (base64)",
+        base64.urlsafe_b64encode(raw)[:43]: "the lab catalog key (base64)",
+        fingerprint.encode(): "the lab catalog key's fingerprint",
+    }
+    policy = json.loads((TRUST / "policy.json").read_text())
+    test_key = policy["primary_fingerprint"].upper()
+    if test_key == policy["channel"]["primary_fingerprint"].upper():
+        raise GuardError("the candidate test key is the channel key")
+    patterns[test_key.encode()] = "the test candidate key's fingerprint"
+    patterns[test_key.lower().encode()] = "the test candidate key's fingerprint"
+    patterns[test_key_packet()] = "the test candidate key"
+    for entitlement in ENTITLEMENTS:
+        patterns[entitlement] = "a get-task-allow entitlement"
+    return patterns
+
+
+def test_key_packet() -> bytes:
+    text = (TRUST / "public.asc").read_bytes()
+    match = ARMOR.search(text)
+    if not match:
+        raise GuardError("the test candidate key is not armored")
+    body = first_packet_body(dearmor(match.group(1)))
+    if len(body) < 32:
+        raise GuardError("the test candidate key has no key packet")
+    return body
+
+
+# ── the scan ───────────────────────────────────────────────────────────────
+def regular_files(root: Path):
+    """Every regular file below ROOT, root-relative, never following links (an image's /proc, /tmp and friends
+    are plain directories, scanned like any other)."""
+    for directory, subdirectories, files in os.walk(root):
+        relative = os.path.relpath(directory, root)
+        subdirectories.sort()
+        for name in sorted(files):
+            path = Path(directory, name)
+            try:
+                if stat.S_ISREG(path.lstat().st_mode):
+                    yield ("" if relative == "." else relative + "/") + name, path
+            except OSError:
+                continue
+
+
+def armored_findings(data: bytes) -> set[str]:
+    """The test candidate key in any armored key block of DATA."""
+    packet = test_key_packet()
+    for match in ARMOR.finditer(data):
+        try:
+            if packet in dearmor(match.group(1)):
+                return {"the test candidate key (armored)"}
+        except (binascii.Error, ValueError):
+            continue
+    return set()
+
+
+def bytes_findings(data: bytes, patterns: dict[bytes, str]) -> set[str]:
+    found = {what for pattern, what in patterns.items() if pattern in data}
+    return found | (armored_findings(data) if ARMOR_BEGIN in data else set())
+
+
+def file_findings(path: Path, patterns: dict[bytes, str]) -> set[str]:
+    """What PATH's bytes hold, read in overlapping chunks, and any armored key block in it."""
+    overlap = max(len(pattern) for pattern in patterns) - 1
+    found: set[str] = set()
+    armored = False
+    tail = b""
+    try:
+        with open(path, "rb") as stream:
+            while chunk := stream.read(CHUNK):
+                window = tail + chunk
+                found |= {what for pattern, what in patterns.items() if pattern in window}
+                armored = armored or ARMOR_BEGIN in window
+                tail = window[-overlap:]
+        if armored:
+            with open(path, "rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                found |= armored_findings(data)
+    except OSError as error:
+        raise GuardError(f"cannot read {path}: {error}") from None
+    return found
+
+
+def host_findings(data: bytes) -> set[str]:
+    return {match.group(0).decode(errors="replace").lower() for match in LAB_HOSTS.finditer(data)}
+
+
+def resolve(root: Path, path: Path) -> Path | None:
+    """PATH with its links followed inside the image ROOT (an absolute target is the image's), or None for a
+    link loop or one that leaves the image."""
+    top = os.path.normpath(root)
+    for _ in range(16):
+        if not path.is_symlink():
+            return path
+        target = os.readlink(path)
+        path = Path(os.path.normpath(Path(top, target.lstrip("/")) if target.startswith("/") else path.parent / target))
+        if os.path.commonpath([top, path]) != top:
+            return None
+    return None
+
+
+def read_config(root: Path, path: Path) -> bytes | None:
+    """The bytes of the configuration file PATH, links followed inside the image; b"" when it (or a link's
+    target) is absent, None when the guard cannot read it: a link loop or out of the image, not a regular
+    file, or larger than lab_access reads."""
+    real = resolve(root, path)
+    if real is None:
+        return None
+    if not real.exists():
+        return b""
+    info = real.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > lab_access.SECRET_SCAN_LIMIT:
+        return None
+    return real.read_bytes()
+
+
+def config_findings(root: Path) -> list[tuple[str, str]]:
+    """Configuration the scans read whole must be readable, so none hides from them: a link's target inside
+    the image is scanned as lab_access scans the file itself (systemd ships sshd_config.d drop-ins as links),
+    and anything else lab_access would read as empty is a finding. No sudo rule may run a shell without a
+    password."""
+    found = []
+    configs = [root / "etc/sudoers", *sorted((root / "etc/sudoers.d").glob("*")),
+               root / "etc/ssh/sshd_config", *sorted((root / "etc/ssh/sshd_config.d").glob("*")),
+               root / "etc/pacman.conf", *sorted((root / "etc/pacman.d").glob("*.conf")),
+               *(root / manifest for manifest in TARGET_MANIFESTS)]
+    with tempfile.TemporaryDirectory(prefix="mac-release-guard-links-") as scratch:
+        linked = Path(scratch)
+        for config in configs:
+            if not (config.exists() or config.is_symlink()):
+                continue
+            where = str(config.relative_to(root))
+            body = read_config(root, config)
+            if body is None:
+                found.append((where, "configuration the guard cannot read (a link loop or out of the image, "
+                                     "not a file, or too large)"))
+                continue
+            if config.is_symlink():
+                (linked / where).parent.mkdir(parents=True, exist_ok=True)
+                (linked / where).write_bytes(body)
+            if where == "etc/sudoers" or where.startswith("etc/sudoers.d/"):
+                for line in lab_access.config_lines(body):
+                    if "NOPASSWD" in line and PASSWORDLESS_SHELL.search(line):
+                        found.append((where, "a passwordless sudo grant of a shell"))
+        found += [(f"{path} (linked)", what) for path, what, _ in lab_access.findings(linked)]
+    return found
+
+
+def pin_findings(root: Path) -> list[tuple[str, str]]:
+    found = []
+    configs = [root / "etc/pacman.conf", *sorted((root / "etc/pacman.d").glob("*.conf"))]
+    for config in configs:
+        body = (read_config(root, config) or b"").decode(errors="replace")
+        where = str(config.relative_to(root))
+        if test_image_pin.MARK in body:
+            found.append((where, "the test image pin"))
+        for line in body.splitlines():
+            words = line.split("#", 1)[0].replace("=", " ").split()
+            if words[:1] == ["IgnorePkg"] and set(words[1:]) & set(RUNTIME_PACKAGES):
+                found.append((where, f"a pin of the runtime ({line.strip()})"))
+            if line.strip() == "[omarchy-candidates]":
+                found.append((where, "the candidate repository"))
+    for manifest in TARGET_MANIFESTS:
+        body = (read_config(root, root / manifest) or b"").decode(errors="replace")
+        fields = dict(line.split("=", 1) for line in body.splitlines() if "=" in line)
+        if "candidate_set" in fields or "candidate_source_commit" in fields:
+            found.append((manifest, "an image target naming a candidate set"))
+        if fields.get("image_profile", "release") != "release":
+            found.append((manifest, f"an image target with the {fields['image_profile']} profile"))
+    return found
+
+
+def scan_tree(root: Path, patterns: dict[bytes, str] | None = None) -> list[tuple[str, str]]:
+    """Every finding in ROOT as (path, what). An OS root (with etc/) is scanned for lab hosts where it keeps
+    configuration and state; any other tree (the ESP, the boot tree, a home) everywhere."""
+    patterns = patterns or key_patterns()
+    if not root.is_dir() or root.is_symlink():
+        raise GuardError(f"{root} is not a directory")
+    found = [(path, what) for path, what, _ in lab_access.findings(root)]
+    tailscale = root / "var/lib/tailscale"
+    if tailscale.is_dir() and any(tailscale.iterdir()):
+        found.append(("var/lib/tailscale", "Tailscale state"))
+    found += config_findings(root)
+    found += pin_findings(root)
+    os_root = (root / "etc").is_dir()
+    for relative, path in regular_files(root):
+        found += [(relative, what) for what in sorted(file_findings(path, patterns))]
+        # lab_access's scan leaves out tmp, run and friends; here they are plain image directories.
+        if relative.split("/")[0] in lab_access.SKIPPED:
+            if path.name.lower().startswith("authorized_keys"):
+                found.append((relative, "an authorized_keys file"))
+            if "omarchy-lab" in relative.lower() or "lab-thunderbolt" in relative.lower():
+                found.append((relative, "a lab file"))
+        if os_root and not any(relative == top or relative.startswith(top + "/") for top in HOST_SCAN_DIRS):
+            continue
+        if path.stat().st_size <= TEXT_LIMIT:
+            found += [(relative, f"a lab host ({host})") for host in sorted(host_findings(path.read_bytes()))]
+    return sorted(set(found))
+
+
+def initramfs_findings(members: list[str], contents: bytes, patterns: dict[bytes, str]) -> list[tuple[str, str]]:
+    found = [(member, what) for member, what, _ in lab_access.initramfs_findings(members, contents)]
+    found += [("initramfs", what) for what in sorted(bytes_findings(contents, patterns))]
+    found += [("initramfs", f"a lab host ({host})") for host in sorted(host_findings(contents))]
+    return found
+
+
+def uki_findings(uki: Path, patterns: dict[bytes, str]) -> list[tuple[str, str]]:
+    limine = load("apple_limine", ROOT / "builder/apple_limine.py")
+    try:
+        sections = limine.pe_sections(uki)
+        chunks = limine.initramfs_archives(sections.get(".initrd") or b"")
+        members = [m for chunk in chunks for m in limine._bsdtar(chunk, "-t").decode(errors="replace").splitlines()]
+        contents = b"".join(limine._bsdtar(chunk, "-xO") for chunk in chunks)
+    except (limine.ContractError, OSError, ValueError) as error:
+        raise GuardError(f"cannot read the UKI's initramfs: {error}") from None
+    found = [(f"{uki.name} {where}", what) for where, what in initramfs_findings(members, contents, patterns)]
+    cmdline = sections.get(".cmdline") or b""
+    found += [(f"{uki.name} .cmdline", f"a lab host ({host})") for host in sorted(host_findings(cmdline))]
+    return found
+
+
+# ── the records ────────────────────────────────────────────────────────────
+def records_findings(directory: Path) -> list[str]:
+    check = load("mac_image_check", ROOT / "bin/mac-image-check")
+    image = directory / "IMAGE"
+    if not image.is_file():
+        return [f"{directory} has no IMAGE"]
+    try:
+        fields = check.parse_fields(image)
+        lane = check.once(fields, "lane", "IMAGE")
+        if lane not in check.LANES:
+            return [f"IMAGE names no lane ({lane})"]
+        check.check_provenance(lane, directory)
+        check.check_descriptor(lane, directory)
+        payload = check.payload_in(directory, lane)
+        provenance = check.parse_fields(directory / "PROVENANCE")
+        inputs = check.parse_fields(directory / "inputs")
+        report = json.loads((directory / "INSPECTION").read_text())
+    except (check.CheckError, OSError, ValueError) as error:
+        return [str(error)]
+    found = []
+    channel = json.loads((TRUST / "policy.json").read_text())["channel"]["primary_fingerprint"]
+    for where, record, prefix in (("IMAGE", fields, ""), ("PROVENANCE", provenance, "input."), ("inputs", inputs, "")):
+        if f"{prefix}channel_set" not in record or any(key.startswith(f"{prefix}candidate_") for key in record):
+            found.append(f"{where} names a candidate set: a test image, not one built from the channel")
+        if record.get(f"{prefix}channel_signer") != [channel]:
+            found.append(f"{where}'s set is not signed by the Omarchy package key {channel}")
+    for where, record in (("IMAGE", fields), ("PROVENANCE", provenance)):
+        if "profile" in record or "lab_access_sha256" in record:
+            found.append(f"{where} records a lab image")
+        if record.get("test_image_pin") != [""]:
+            found.append(f"{where} records a test image pin")
+    if "-lab-" in payload.name:
+        found.append(f"{payload.name} is a lab payload")
+    target = report.get("image_target") or {}
+    if report.get("profile") is not None or report.get("lab_access_sha256") is not None:
+        found.append("INSPECTION inspected a lab image")
+    if target.get("image_profile") != "release" or "candidate_set" in target:
+        found.append("INSPECTION read an image target that is not a public image's")
+    return found
+
+
+# ── build ──────────────────────────────────────────────────────────────────
+def run(*command: str) -> str:
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise GuardError(f"{' '.join(command)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def build_findings(directory: Path) -> list[str]:
+    found = records_findings(directory)
+    if found:
+        return found
+    if os.geteuid() != 0:
+        raise GuardError("build mounts the payload's images and needs root")
+    check = load("mac_image_check", ROOT / "bin/mac-image-check")
+    lane = check.once(check.parse_fields(directory / "IMAGE"), "lane", "IMAGE")
+    payload = check.payload_in(directory, lane)
+    patterns = key_patterns()
+    mounts: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="mac-release-guard-") as scratch:
+        unpacked = Path(scratch, "payload")
+        unpacked.mkdir()
+        run("bsdtar", "-xf", str(payload), "-C", str(unpacked))
+        trees: list[tuple[str, Path]] = [("esp", unpacked / "esp")]
+        try:
+            top = Path(scratch, "root")
+            top.mkdir()
+            run("mount", "-o", "loop,ro", str(unpacked / "root.img"), str(top))
+            mounts.append(str(top))
+            subvolumes = sorted(path.name for path in top.iterdir() if path.is_dir())
+            if "@" not in subvolumes or "@factory" not in subvolumes:
+                return [f"root.img holds {subvolumes}, not @ and @factory"]
+            trees += [(f"root.img {name}", top / name) for name in subvolumes]
+            boot = Path(scratch, "boot")
+            boot.mkdir()
+            run("mount", "-o", "loop,ro", str(unpacked / "boot.img"), str(boot))
+            mounts.append(str(boot))
+            trees.append(("boot.img", boot))
+            for where, tree in trees:
+                print(f"mac-release-guard: scanning {where}", file=sys.stderr)
+                found += [f"{where}: /{path} ({what})" for path, what in scan_tree(tree, patterns)]
+            uki = unpacked / f"esp/EFI/Linux/omarchy_{KERNEL}.efi"
+            found += [f"esp: {where} ({what})" for where, what in uki_findings(uki, patterns)]
+        finally:
+            for mount in reversed(mounts):
+                subprocess.run(["umount", mount], check=False)
+    return found
+
+
+USAGE = """Usage: mac-release-guard records BUILD_DIR
+       mac-release-guard tree ROOT...
+       mac-release-guard build BUILD_DIR"""
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3 or argv[1] not in ("records", "tree", "build") or (argv[1] != "tree" and len(argv) != 3):
+        print(USAGE, file=sys.stderr)
+        return 64
+    mode, paths = argv[1], [Path(path) for path in argv[2:]]
+    try:
+        if mode == "records":
+            found = records_findings(paths[0])
+        elif mode == "tree":
+            patterns = key_patterns()
+            found = [f"{root}: /{path} ({what})" for root in paths for path, what in scan_tree(root, patterns)]
+        else:
+            found = build_findings(paths[0])
+    except GuardError as error:
+        print(f"mac-release-guard: {error}", file=sys.stderr)
+        return 2
+    for finding in found:
+        print(f"mac-release-guard: {finding}", file=sys.stderr)
+    if found:
+        print(f"mac-release-guard: refused, {len(found)} finding(s): not a public image", file=sys.stderr)
+        return 1
+    print(f"ok - the release guard found nothing of the lab lane ({mode})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

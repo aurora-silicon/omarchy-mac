@@ -473,14 +473,30 @@ struct OmarchyRemovalSheet: View {
       submitted = false
       message = PlainLanguage.removalNotStarted
     } catch {
+      let helperRetired = await RemovalOutcomeProbe.helperRetired()
+      let helperStays = RemovalOutcomeProbe.helperStaysAfterRemoval(
+        appCanInstallHelper: InstallerHelperSetup.canInstall)
+      // A helper that stays is asked: only its records show the removal
+      // completed and set aside the earlier installation's journals.
+      let keptHelper =
+        helperRetired
+        ? nil
+        : await RemovalOutcomeProbe.finalization {
+          await client.removalFinalization(ticket: ticket.id)
+        }
       let outcome = RemovalConnectionLoss(
-        helperRetired: await RemovalOutcomeProbe.helperRetired(),
+        helperRetired: helperRetired, helperStays: helperStays, keptHelper: keptHelper,
         macOSContainerBytes: RemovalOutcomeProbe.macOSContainerBytes(),
         macOSBytesAfter: ticket.macOSBytesAfter, reclaimBytes: ticket.reclaimBytes)
       switch outcome {
       case .completed:
         completed = true
-        message = PlainLanguage.removalCompletedWithoutReply(freeSpace: ticket.kind == .freeSpace)
+        message = PlainLanguage.removalCompletedWithoutReply(
+          freeSpace: ticket.kind == .freeSpace, serviceStays: !helperRetired)
+      case .spaceReclaimedUnconfirmed:
+        onRequiresReview()
+        message = PlainLanguage.removalSpaceBackUnconfirmed(
+          freeSpace: ticket.kind == .freeSpace, finalization: keptHelper)
       case .unknown:
         connectionLost()
       }

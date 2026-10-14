@@ -1,0 +1,306 @@
+name: Mac image upload
+
+# Uploads one image build's artifact (mac-image.yml) to the release host:
+# for now a draft prerelease on this repository named after the image, with
+# the zip in parts under 2 GiB; later R2 (ticket 13), behind the same
+# scripts/mac-upload.py destination interface. A published path is never
+# overwritten (identical re-uploads are a no-op) and every file is downloaded
+# back and checked after upload. See docs/mac-upload.md.
+#
+# A real upload runs only on main, in the `publish` environment, and refuses
+# without a passing acceptance evidence record for the image's sha256
+# (docs/mac-acceptance-evidence.md) attested by mac-acceptance.yml on main,
+# and without the image's build attestation from mac-image.yml on main. A dry run (the default) writes only to a
+# `dryrun-` scratch draft release that it deletes afterwards.
+#
+# With make-public, a real upload then publishes the draft as a prerelease
+# (never latest) so the catalog can pin its download URLs, and outputs the
+# catalog's payload and installer-data inputs and the evidence it checked.
+#
+# Callers grant contents: write, actions: read and attestations: read. Never
+# call this from a pull_request workflow; the job refuses to run for one.
+
+on:
+  workflow_call:
+    inputs:
+      image-artifact:
+        description: Name of the image build's artifact, which is the image name (omarchy-mac-<lane>-<YYYY.MM.DD>-<set id>)
+        type: string
+        required: true
+      image-sha256:
+        description: Expected sha256 of the image zip
+        type: string
+        required: true
+      image-run-id:
+        description: Run that uploaded the image artifact (empty for this run)
+        type: string
+        required: false
+        default: ''
+      dry-run:
+        description: Upload to a scratch release and delete it afterwards
+        type: boolean
+        required: false
+        default: true
+      evidence-artifact:
+        description: Artifact holding acceptance-evidence.json from the VM acceptance job (required unless dry-run)
+        type: string
+        required: false
+        default: ''
+      evidence-run-id:
+        description: Run that uploaded the evidence artifact (empty for this run)
+        type: string
+        required: false
+        default: ''
+      part-bytes:
+        description: Dry run only, a smaller part size to exercise splitting with a small image
+        type: string
+        required: false
+        default: ''
+      make-public:
+        description: After a real upload, publish the draft as a prerelease (never latest) so the catalog can pin its URLs
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      release:
+        description: The release the image was uploaded to (deleted again after a dry run)
+        value: ${{ jobs.upload.outputs.release }}
+      payload:
+        description: Real upload only, the catalog's payload input {url, fileName, sizeBytes, sha256, parts?}
+        value: ${{ jobs.upload.outputs.payload }}
+      installer-data:
+        description: Real upload only, the catalog's installer-data input {url, fileName, sizeBytes, sha256}
+        value: ${{ jobs.upload.outputs.installer-data }}
+      evidence:
+        description: Real upload only, the acceptance evidence record the upload checked (compact JSON)
+        value: ${{ jobs.upload.outputs.evidence }}
+  workflow_dispatch:
+    inputs:
+      image-artifact:
+        description: Name of the image build's artifact, which is the image name
+        type: string
+        required: true
+      image-sha256:
+        description: Expected sha256 of the image zip
+        type: string
+        required: true
+      image-run-id:
+        description: Run that uploaded the image artifact
+        type: string
+        required: true
+      dry-run:
+        description: Upload to a scratch release and delete it afterwards
+        type: boolean
+        default: true
+      evidence-artifact:
+        description: Artifact holding acceptance-evidence.json (required unless dry-run)
+        type: string
+        default: ''
+      evidence-run-id:
+        description: Run that uploaded the evidence artifact
+        type: string
+        default: ''
+      part-bytes:
+        description: Dry run only, a smaller part size
+        type: string
+        default: ''
+      make-public:
+        description: After a real upload, publish the draft as a prerelease (never latest)
+        type: boolean
+        default: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  upload:
+    name: ${{ inputs.dry-run && 'Upload (dry run)' || 'Upload' }}
+    if: >-
+      github.repository == 'omacom/omarchy-mac-installer' &&
+      github.event_name != 'pull_request' &&
+      github.event_name != 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    # The publish environment only deploys from main. A dry run needs no
+    # environment: it touches nothing real.
+    environment: ${{ !inputs.dry-run && 'publish' || '' }}
+    concurrency:
+      group: mac-upload-${{ inputs.image-artifact }}${{ inputs.dry-run && format('-dryrun-{0}', github.run_id) || '' }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # create the draft release and upload its assets
+      actions: read # read runs and download their artifacts
+      attestations: read # verify the image's build attestation
+    outputs:
+      release: ${{ steps.inputs.outputs.release }}
+      payload: ${{ steps.describe.outputs.payload }}
+      installer-data: ${{ steps.describe.outputs.installer-data }}
+      evidence: ${{ steps.describe.outputs.evidence }}
+    env:
+      IMAGE: ${{ inputs.image-artifact }}
+      IMAGE_SHA256: ${{ inputs.image-sha256 }}
+      IMAGE_RUN_ID: ${{ inputs.image-run-id }}
+      EVIDENCE_ARTIFACT: ${{ inputs.evidence-artifact }}
+      EVIDENCE_RUN_ID: ${{ inputs.evidence-run-id }}
+      PART_BYTES: ${{ inputs.part-bytes }}
+      DRY_RUN: ${{ inputs.dry-run }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Check the inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          dry=()
+          [[ $DRY_RUN == "true" ]] && dry=(--dry-run)
+          python3 -I scripts/mac-upload.py check-inputs --image "$IMAGE" --sha256 "$IMAGE_SHA256" \
+            --run-id "$IMAGE_RUN_ID" --run-id "$EVIDENCE_RUN_ID" --part-bytes "$PART_BYTES" "${dry[@]}"
+          if [[ -n $EVIDENCE_ARTIFACT && ! $EVIDENCE_ARTIFACT =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::invalid evidence artifact name"
+            exit 1
+          fi
+          # The publish environment enforces this too; this keeps it in code.
+          if [[ $DRY_RUN != "true" && $GITHUB_REF != "refs/heads/main" ]]; then
+            echo "::error::refusing to upload: a real upload runs only from main, not $GITHUB_REF"
+            exit 1
+          fi
+          if [[ $DRY_RUN != "true" && -z $EVIDENCE_ARTIFACT ]]; then
+            echo "::error::refusing to upload: no acceptance evidence for this image"
+            exit 1
+          fi
+          if [[ $DRY_RUN == "true" ]]; then
+            release="dryrun-$IMAGE-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          else
+            release=$IMAGE
+          fi
+          echo "release=$release" >>"$GITHUB_OUTPUT"
+          echo "WORK=$RUNNER_TEMP/mac-upload" >>"$GITHUB_ENV"
+
+      - name: Check the runs are main's
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/${IMAGE_RUN_ID:-$GITHUB_RUN_ID}" >"$WORK/image-run.json"
+          python3 -I scripts/mac-upload.py check-run --run-json "$WORK/image-run.json" --repository "$GITHUB_REPOSITORY" --role image --current-run-id "$GITHUB_RUN_ID"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/${EVIDENCE_RUN_ID:-$GITHUB_RUN_ID}" >"$WORK/evidence-run.json"
+          python3 -I scripts/mac-upload.py check-run --run-json "$WORK/evidence-run.json" --repository "$GITHUB_REPOSITORY" --role evidence --current-run-id "$GITHUB_RUN_ID"
+
+      - name: Download the image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.image-artifact }}
+          path: ${{ runner.temp }}/mac-upload/image
+          # Without a token the action reads this run's artifacts.
+          github-token: ${{ inputs.image-run-id != '' && github.token || '' }}
+          run-id: ${{ inputs.image-run-id }}
+
+      - name: Download the acceptance evidence
+        if: inputs.evidence-artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.evidence-artifact }}
+          path: ${{ runner.temp }}/mac-upload/evidence
+          github-token: ${{ inputs.evidence-run-id != '' && github.token || '' }}
+          run-id: ${{ inputs.evidence-run-id }}
+
+      - name: Verify the image's build attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=("$WORK"/image/*.zip)
+          (( ${#zips[@]} == 1 )) || { echo "::error::the artifact holds ${#zips[@]} image zips, not one"; exit 1; }
+          if gh attestation verify "${zips[0]}" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/mac-image.yml" \
+            --source-ref refs/heads/main --deny-self-hosted-runners >"$WORK/attestation.log" 2>&1; then
+            echo "the image was built by mac-image.yml on main"
+          elif [[ $DRY_RUN == "true" ]]; then
+            cat "$WORK/attestation.log"
+            echo "::warning::the image has no build attestation from mac-image.yml on main; a real upload would refuse it"
+          else
+            cat "$WORK/attestation.log"
+            echo "::error::refusing to upload: the image has no build attestation from mac-image.yml on main"
+            exit 1
+          fi
+
+      - name: Verify the evidence's attestation
+        if: inputs.evidence-artifact != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          record=$WORK/evidence/acceptance-evidence.json
+          [[ -f $record ]] || { echo "::error::$EVIDENCE_ARTIFACT holds no acceptance-evidence.json"; exit 1; }
+          if gh attestation verify "$record" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/mac-acceptance.yml" \
+            --source-ref refs/heads/main --deny-self-hosted-runners >"$WORK/evidence-attestation.log" 2>&1; then
+            echo "the evidence record was attested by mac-acceptance.yml on main"
+          elif [[ $DRY_RUN == "true" ]]; then
+            cat "$WORK/evidence-attestation.log"
+            echo "::warning::the evidence record has no attestation from mac-acceptance.yml on main; a real upload would refuse it"
+          else
+            cat "$WORK/evidence-attestation.log"
+            echo "::error::refusing to upload: the evidence record has no attestation from mac-acceptance.yml on main"
+            exit 1
+          fi
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.inputs.outputs.release }}
+        run: |
+          set -euo pipefail
+          args=(publish --artifact "$WORK/image" --image "$IMAGE" --sha256 "$IMAGE_SHA256"
+            --destination "github-release:$GITHUB_REPOSITORY" --release "$RELEASE" --target "$GITHUB_SHA"
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --report "$WORK/report.json")
+          [[ $DRY_RUN == "true" ]] && args+=(--dry-run)
+          [[ -n $PART_BYTES ]] && args+=(--part-bytes "$PART_BYTES")
+          if [[ -n $EVIDENCE_ARTIFACT ]]; then
+            [[ -f $WORK/evidence/acceptance-evidence.json ]] || { echo "::error::$EVIDENCE_ARTIFACT holds no acceptance-evidence.json"; exit 1; }
+            args+=(--evidence "$WORK/evidence/acceptance-evidence.json"
+              --evidence-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/${EVIDENCE_RUN_ID:-$GITHUB_RUN_ID}")
+          fi
+          TMPDIR=$RUNNER_TEMP python3 -I scripts/mac-upload.py "${args[@]}"
+          {
+            if [[ $DRY_RUN == "true" ]]; then echo "### Dry-run upload of \`$IMAGE\`"; else echo "### Upload of \`$IMAGE\`"; fi
+            echo '```'
+            jq -r '"destination \(.destination)", "uploaded    \(.uploaded | length) of \(.files | length) files", (.files[] | "\(.sha256)  \(.name) (\(.size) bytes)")' "$WORK/report.json"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the draft as a prerelease
+        if: inputs.dry-run == false && inputs.make-public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.inputs.outputs.release }}
+        run: python3 -I scripts/mac-upload.py make-public --destination "github-release:$GITHUB_REPOSITORY" --release "$RELEASE"
+
+      # The catalog's inputs, from what this job uploaded and verified, and the
+      # evidence record it checked. Only meaningful once the files are public.
+      - name: Describe the upload for the catalog
+        id: describe
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.inputs.outputs.release }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/mac-upload.py catalog-inputs --report "$WORK/report.json" \
+            --destination "github-release:$GITHUB_REPOSITORY" --release "$RELEASE" | tee -a "$GITHUB_OUTPUT"
+          echo "evidence=$(jq -c . "$WORK/evidence/acceptance-evidence.json")" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Delete the scratch release
+        if: always() && inputs.dry-run && steps.inputs.outputs.release != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.inputs.outputs.release }}
+        run: python3 -I scripts/mac-upload.py discard --destination "github-release:$GITHUB_REPOSITORY" --release "$RELEASE"

@@ -48,52 +48,99 @@
   }
 
   /// What a lost connection after a submitted removal means. It counts as
-  /// done only when the outcome shows on disk: the helper has retired
-  /// completely (it deletes its job file, binary and state only after a
-  /// completed removal) and the macOS container has reached its planned size
-  /// after removal, by the helper's own completion tolerance. Anything less
-  /// stays unknown, including a helper briefly absent while another build
-  /// reinstalls it.
+  /// done only when the outcome is proven: a helper the app installed itself
+  /// has retired completely (it deletes its job file, binary and state only
+  /// after a completed removal) and the macOS container has reached its
+  /// planned size after removal, by the helper's own completion tolerance; or
+  /// a helper an installer package put in place, which stays after a
+  /// removal, confirms from its records that the removal completed and set
+  /// aside the earlier installation's journals. The container size alone
+  /// can't show that, so with a kept helper that doesn't confirm it, a
+  /// reclaimed container means only that macOS has its space back. Anything
+  /// less stays unknown, including a helper briefly absent while another
+  /// build reinstalls it.
   public enum RemovalConnectionLoss: Equatable, Sendable {
     case completed
+    /// macOS has its space back, but the kept helper didn't confirm the
+    /// removal finished; installing stays blocked until its records do.
+    case spaceReclaimedUnconfirmed
     case unknown
 
     /// - Parameters:
     ///   - helperRetired: the helper's job file, binary and state directory
     ///     are all gone, in two looks a moment apart.
+    ///   - helperStays: the registered helper is one an installer package put
+    ///     in place, which never retires.
+    ///   - keptHelper: what that helper's records say about this removal, nil
+    ///     when it wasn't asked or didn't answer.
     ///   - macOSContainerBytes: the macOS APFS container's size now, if known.
     ///   - macOSBytesAfter: its size once removal completes, from the plan.
     ///   - reclaimBytes: the space removal returns to it, from the plan.
     public init(
-      helperRetired: Bool, macOSContainerBytes: UInt64?, macOSBytesAfter: UInt64,
-      reclaimBytes: UInt64
+      helperRetired: Bool, helperStays: Bool = false, keptHelper: RemovalFinalization? = nil,
+      macOSContainerBytes: UInt64?, macOSBytesAfter: UInt64, reclaimBytes: UInt64
     ) {
-      guard helperRetired, let macOSContainerBytes, reclaimBytes > 0,
-        macOSBytesAfter >= reclaimBytes
-      else {
-        self = .unknown
-        return
-      }
       // The helper's own test that macOS took the space back: within 1 MiB
       // of its planned size, and not beyond it.
       let tolerance: UInt64 = 1_048_576
-      let reclaimed =
-        macOSContainerBytes <= macOSBytesAfter
-        && macOSBytesAfter - macOSContainerBytes <= tolerance
-      self = reclaimed ? .completed : .unknown
+      var reclaimed = false
+      if let macOSContainerBytes, reclaimBytes > 0, macOSBytesAfter >= reclaimBytes {
+        reclaimed =
+          macOSContainerBytes <= macOSBytesAfter
+          && macOSBytesAfter - macOSContainerBytes <= tolerance
+      }
+      if helperRetired {
+        self = reclaimed ? .completed : .unknown
+      } else if keptHelper == .finalized {
+        // Only a helper that stays answers this: one that retires does so
+        // before its reply leaves, and from then on answers nothing.
+        self = .completed
+      } else if helperStays, reclaimed {
+        self = .spaceReclaimedUnconfirmed
+      } else {
+        self = .unknown
+      }
     }
   }
 
   extension PlainLanguage {
-    /// Shown when the reply was lost but the helper's retirement proves the
-    /// removal completed.
-    public static func removalCompletedWithoutReply(freeSpace: Bool) -> String {
+    /// Shown when the reply was lost but the disk, with the helper's
+    /// retirement or a helper that stays by design, proves the removal
+    /// completed.
+    /// - Parameter serviceStays: the helper an installer package put in place
+    ///   is still registered, as it stays after a removal.
+    public static func removalCompletedWithoutReply(
+      freeSpace: Bool, serviceStays: Bool = false
+    ) -> String {
       let result =
         freeSpace
         ? "The free space is now part of macOS."
         : "Omarchy and its data have been removed. The freed space is now part of macOS."
       return result
-        + " The removal service finished and removed itself before this window heard back, as can happen if the Mac sleeps."
+        + (serviceStays
+          ? " The removal service finished before this window heard back, as can happen if the Mac sleeps."
+          : " The removal service finished and removed itself before this window heard back, as can happen if the Mac sleeps.")
+    }
+
+    /// Shown when the reply was lost, macOS has its space back, but the
+    /// helper that stays after a removal didn't confirm the removal finished.
+    public static func removalSpaceBackUnconfirmed(
+      freeSpace: Bool, finalization: RemovalFinalization?
+    ) -> String {
+      let result =
+        (freeSpace ? "The free space is back in macOS" : "Omarchy’s space is back in macOS")
+        + ", but the removal service didn’t confirm that the removal finished before this window heard back, as can happen if the Mac sleeps."
+      switch finalization {
+      case .installRecordUncleared:
+        return result
+          + " It couldn’t yet set aside its record of the earlier installation. It tries again before the next installation and won’t install until that works."
+      case .unfinished:
+        return result
+          + " Its removal record stops before the end, so the installer won’t install again until that record is checked. Don’t start removal again; keep the record in \(InstallerProductIdentity.helperWorkingDirectory) for support."
+      default:
+        return result
+          + " The installer checks its removal record before the next installation and won’t install until it shows the removal finished."
+      }
     }
 
     public static let removalCredentialsFirst =

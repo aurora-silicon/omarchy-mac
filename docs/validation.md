@@ -19,7 +19,7 @@ The read-only live physical-Mac inspection test explicitly skips `VirtualMac` ho
 
 Both jobs record the checked-out commit and tool versions and retain logs as Actions artifacts for 14 days, including failures. Pull requests test GitHub's proposed merge revision. GitHub Actions are pinned to commit hashes; tool updates should change the pin and its version comment together. Explicit Bash execution enables `errexit` and `pipefail`, so collecting logs through `tee` does not hide test failures.
 
-CI uses hosted runners, read-only repository access and no release secrets. It performs source checks and fixture tests; app assembly with an authenticated engine, production signing, visual review and physical installation remain separate validation steps. Require both named checks along with the existing independent review before merging to `main`.
+These checks use hosted runners, read-only repository access and no release secrets. The release secrets live only in the `macos-release` environment, which only the app release workflow's sign job uses after a second maintainer approves (see `Packaging/README.md`, Release workflow). It performs source checks and fixture tests; app assembly with an authenticated engine, production signing, visual review and physical installation remain separate validation steps. Require both named checks along with the existing independent review before merging to `main`.
 
 ## Local evidence
 

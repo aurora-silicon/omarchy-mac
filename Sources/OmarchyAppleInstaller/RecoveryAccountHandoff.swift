@@ -51,8 +51,8 @@
       // one with the helper, while the package leaves the app in /Applications.
       let fm = FileManager.default
       let found = [
-        InstallerProductIdentity.installedRecoveryTemplateDirectory + "/Omarchy Installer.app",
-        "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/Omarchy Installer.app",
+        InstallerProductIdentity.installedRecoveryTemplateDirectory + "/" + InstallerProductIdentity.recoveryAppBundleName,
+        "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppBundleName)",
       ].map { URL(fileURLWithPath: $0) }.first { fm.fileExists(atPath: $0.path) }
       guard let source = found else {
         throw AccountSetupFailure(
@@ -70,7 +70,7 @@
       }
       _ = try AccountNativeCommand.checked("/sbin/mount", ["-u", "-w", mount])
       let system = URL(fileURLWithPath: mount, isDirectory: true)
-      let destination = system.appendingPathComponent("Omarchy Installer.app", isDirectory: true)
+      let destination = system.appendingPathComponent(InstallerProductIdentity.recoveryAppBundleName, isDirectory: true)
       let oldResources = destination.appendingPathComponent("Contents/Resources", isDirectory: true)
       let configuration = try RecoveryAccountInstaller.protectedRead(
         oldResources.appendingPathComponent("install-config.json"), limit: 65536)
@@ -94,7 +94,7 @@
       try fm.createDirectory(
         at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
       defer { try? fm.removeItem(at: scratch) }
-      let candidate = scratch.appendingPathComponent("Omarchy Installer.app", isDirectory: true)
+      let candidate = scratch.appendingPathComponent(InstallerProductIdentity.recoveryAppBundleName, isDirectory: true)
       try fm.copyItem(at: source, to: candidate)
       let resources = candidate.appendingPathComponent("Contents/Resources", isDirectory: true)
       try configuration.write(
@@ -327,7 +327,7 @@
         throw AccountSetupFailure("Couldn’t mount the completed installation.")
       }
       let path = URL(fileURLWithPath: mount).appendingPathComponent(
-        "Omarchy Installer.app/Contents/Resources/install-config.json")
+        "\(InstallerProductIdentity.recoveryAppBundleName)/Contents/Resources/install-config.json")
       let configBytes = try RecoveryAccountInstaller.protectedRead(path, limit: 65536)
       guard let config = try JSONSerialization.jsonObject(with: configBytes) as? [String: Any],
         config["schema"] as? Int == 2,

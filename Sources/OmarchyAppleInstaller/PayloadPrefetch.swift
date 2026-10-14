@@ -354,20 +354,30 @@
         return
       }
       let stream = network.updates()
-      try await withThrowingTaskGroup(of: Void.self) { group in
-        group.addTask { try await work() }
+      try await withThrowingTaskGroup(of: Bool.self) { group in
+        group.addTask {
+          try await work()
+          try Task.checkCancellation()
+          return true
+        }
         group.addTask {
           for await path in stream {
             if Task.isCancelled {
-              return
+              return false
             }
             if !path.allowsPrefetch {
               throw PayloadPrefetchError.meteredNetwork
             }
           }
+          return false
         }
         do {
-          try await group.next()
+          // A stopped path observer is not proof that the file was staged.
+          // Only the work task can establish successful verification.
+          while let workFinished = try await group.next() {
+            if workFinished { break }
+          }
+          try Task.checkCancellation()
           group.cancelAll()
         } catch {
           group.cancelAll()
@@ -541,7 +551,8 @@
 
     private var generation = UUID()
     private var controller: PayloadPrefetchController?
-    private var runningDigest: String?
+    private var runningArtifact: PinnedInstallerArtifact?
+    private var runningDestination: URL?
     private var latest: PayloadPrefetchState = .idle
     private var observers: [UUID: @Sendable (PayloadPrefetchState) -> Void] = [:]
     private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
@@ -594,7 +605,9 @@
       let parent = canonical.deletingLastPathComponent()
 
       let reuse = lock.withLock { () -> Bool in
-        if runningDigest == artifact.expectedDigest {
+        if runningArtifact == artifact,
+          runningDestination == canonical.standardizedFileURL
+        {
           switch latest {
           case .failed, .cancelled:
             return false
@@ -613,7 +626,8 @@
       lock.lock()
       predecessor = controller
       controller = nil
-      runningDigest = artifact.expectedDigest
+      runningArtifact = artifact
+      runningDestination = canonical.standardizedFileURL
       generation = UUID()
       self.generation = generation
       latest = .idle
@@ -697,7 +711,11 @@
               }
             }
           }
-          try self.promote(staged.fileURL, to: canonical)
+          try Task.checkCancellation()
+          try self.lock.withLock {
+            guard self.generation == generation else { throw CancellationError() }
+            try self.promote(staged.fileURL, to: canonical)
+          }
           try? FileManager.default.removeItem(at: work)
         }
       }
@@ -781,7 +799,8 @@
     public func cancel() {
       lock.lock()
       latest = .idle
-      runningDigest = nil
+      runningArtifact = nil
+      runningDestination = nil
       cancelEpoch &+= 1
       let existing = controller
       controller = nil

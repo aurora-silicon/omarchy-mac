@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+"""Decide whether an edge publish changed anything the Mac image installs.
+
+omarchy-pkgs' edge publish sends a repository dispatch (edge-mac-changed)
+naming the aarch64 packages it just published into edge's omarchy.db. This
+compares them with the Omarchy packages the image would install, derived the
+way the builder derives its set rather than from a list kept here:
+
+  - the channel set: the trust policy's channel runtime and boot packages, as
+    the edge omarchy.db names them (builder/channel_set.py);
+  - the builder's own package arrays in bin/build-mac-image (BOOTSTRAP,
+    PLATFORM_PACKAGES, APPLE_AUDIO);
+  - the runtime's base, aarch64 and Apple package lists, read from the edge
+    runtime archive itself (omarchy-dev on edge), as the builder reads them;
+  - what those pull in through dependencies, resolved like the builder's
+    pacman: the set first, then the repositories in the order the runtime's
+    Apple pacman template for the channel names them (build-mac-image's
+    read_repository_order: default/pacman/aarch64-apple/pacman-edge.conf in
+    the omarchy-settings role's archive, [omarchy] first on edge), versions
+    compared as pacman's vercmp does. A name an earlier repository carries at
+    a version that meets the dependency comes from there, a dependency an
+    included package already meets adds nothing (omarchy-dev provides
+    omarchy), and a virtual dependency takes the providers of the first
+    repository that has any.
+
+Without the other repositories' databases (--repos), every dependency is
+looked up in omarchy.db alone, which can only over-match. When the payload
+reports a different omarchy.db sha256 than the one read here, the publish
+counts as relevant. Over-matching costs a build; nothing here publishes
+anything.
+
+  edge-dispatch-filter runtime --db FILE
+      prints "<role> <filename> <sha256>" for the runtime archives to download:
+      the omarchy role (its package lists) and the omarchy-settings role (its
+      pacman template)
+  edge-dispatch-filter fetch-repos DIR
+      downloads asahi-alarm.db, core.db, extra.db, alarm.db and aur.db from
+      the servers bin/mac-image-inputs resolves from into the empty DIR
+  edge-dispatch-filter decide --db FILE --runtime ARCHIVE --settings ARCHIVE --payload FILE
+                             [--repos DIR] [--builder FILE]
+      prints a JSON decision: relevant, matched, published, image_packages
+"""
+import argparse
+import importlib.util
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+BUILDER_ARRAYS = ('BOOTSTRAP', 'PLATFORM_PACKAGES', 'APPLE_AUDIO')
+APPLE_LISTS = ('omarchy-aarch64-apple', 'omarchy-apple-silicon', 'omarchy-apple')
+LISTS = 'usr/share/omarchy/install/'
+# The repositories the inputs pin besides omarchy, and build-mac-image's
+# repository_order for a candidate set ([omarchy] last).
+OTHER_REPOS = ('asahi-alarm', 'core', 'extra', 'alarm', 'aur')
+PINNED_ORDER = OTHER_REPOS + ('omarchy',)
+# read_repository_order's template, in the archive filling the omarchy-settings role.
+TEMPLATE = 'usr/share/omarchy/default/pacman/aarch64-apple/pacman-{channel}.conf'
+SECTION = re.compile(r'^[ \t\r\f\v]*\[([^]]*)\][ \t\r\f\v]*$', re.MULTILINE)
+NAME = re.compile(r'[A-Za-z0-9@._+-]+')
+HEX64 = re.compile(r'[0-9a-f]{64}')
+MAX_PACKAGES = 2000
+
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'builder' / f'{name}.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+channel_set = _load('channel_set')
+require = channel_set.require
+
+
+def bash_value(path, variable):
+    """VARIABLE's value in the Bash script PATH: an array's words, or a scalar's one word."""
+    text = path.read_text()
+    array = re.search(rf'^{variable}=\((.*?)\)', text, re.MULTILINE | re.DOTALL)
+    if array:
+        words = '\n'.join(line.split('#', 1)[0] for line in array.group(1).splitlines()).split()
+    else:
+        scalar = re.search(rf"^{variable}='?([^'\s]+)'?$", text, re.MULTILINE)
+        words = [scalar.group(1)] if scalar else []
+    require(words, f'{path.name} defines no {variable}')
+    return words
+
+
+def builder_arrays(builder):
+    names = [name for array in BUILDER_ARRAYS for name in bash_value(builder, array)]
+    require(all(NAME.fullmatch(n) for n in names), f'{builder.name} has an unreadable package array')
+    return names
+
+
+def db_url(server, repository):
+    return server.replace('$arch', 'aarch64').replace('$repo', repository) + f'/{repository}.db'
+
+
+def fetch_repos(directory, inputs=ROOT / 'bin/mac-image-inputs'):
+    """The databases the builder resolves against besides omarchy.db, into the empty DIRECTORY."""
+    directory.mkdir(parents=True, exist_ok=True)
+    require(not any(directory.iterdir()), f'{directory} is not empty')
+    servers = {'asahi-alarm': bash_value(inputs, 'DEFAULT_ASAHI_ALARM_SERVER')[0]}
+    servers.update({r: bash_value(inputs, 'DEFAULT_ALARM_SERVER')[0] for r in OTHER_REPOS[1:]})
+    for repository, server in servers.items():
+        url = db_url(server, repository)
+        require(url.startswith('https://'), f'{repository} is not served over https')
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=120) as response:
+                    require(response.geturl().startswith('https://'), f'{repository} redirected off https')
+                    (directory / f'{repository}.db').write_bytes(response.read())
+                break
+            except OSError:
+                if attempt == 2:
+                    raise
+                time.sleep(5)
+
+
+def read_repo(path):
+    """name -> {VERSION, PROVIDES, DEPENDS, GROUPS, ...} for a repository database, read leniently:
+    only names, versions and relations matter here. An entry's fields are in its desc and, in the
+    older layout Arch Linux ARM still uses, its depends file."""
+    entries = {}
+    with tempfile.TemporaryDirectory(prefix='edge-repo-') as scratch:
+        extracted = subprocess.run(['bsdtar', '-xf', str(path), '-C', scratch], capture_output=True)
+        require(extracted.returncode == 0, f'{path.name} is not a repository database')
+        for directory in sorted(Path(scratch).iterdir()):
+            fields = {}
+            for part in ('desc', 'depends'):
+                file = directory / part
+                if file.is_file() and not file.is_symlink():
+                    key = None
+                    for line in file.read_text(errors='replace').splitlines():
+                        if line.startswith('%') and line.endswith('%') and len(line) > 2:
+                            key = line.strip('%')
+                            fields.setdefault(key, [])
+                        elif line and key:
+                            fields[key].append(line)
+            if fields.get('NAME') and fields.get('VERSION'):
+                entries[fields['NAME'][0]] = fields
+    return entries
+
+
+def member(archive, path):
+    """PATH's text in ARCHIVE when it is a regular file there, else None (a link reads as empty)."""
+    listing = subprocess.run(['bsdtar', '-tvf', str(archive), path], capture_output=True, text=True)
+    if listing.returncode != 0 or not listing.stdout.startswith('-'):
+        return None
+    return subprocess.run(['bsdtar', '-xOf', str(archive), path], capture_output=True, text=True,
+                          check=True).stdout
+
+
+def list_names(text):
+    return [line.split()[0] for line in text.splitlines() if line.split() and not line.lstrip().startswith('#')]
+
+
+def runtime_lists(archive):
+    """The runtime's base, aarch64 and Apple list names, as build-mac-image reads them."""
+    base = member(archive, LISTS + 'omarchy-base.packages')
+    require(base is not None, 'the runtime ships no omarchy-base.packages')
+    names = list_names(base) + list_names(member(archive, LISTS + 'omarchy-aarch64.packages') or '')
+    for apple in APPLE_LISTS:
+        text = member(archive, LISTS + f'{apple}.packages')
+        if text is not None:
+            require(list_names(text), f'the runtime\'s {apple}.packages names no package')
+            return names + list_names(text)
+    raise ValueError('the runtime ships no Apple package list')
+
+
+def rpmvercmp(a, b):
+    """libalpm's rpmvercmp: -1, 0 or 1 as version string A is older than, equal to or newer than B."""
+    if a == b:
+        return 0
+    i = j = 0
+    while i < len(a) and j < len(b):
+        si, sj = i, j
+        while i < len(a) and not a[i].isalnum():
+            i += 1
+        while j < len(b) and not b[j].isalnum():
+            j += 1
+        if i >= len(a) or j >= len(b):
+            break
+        if i - si != j - sj:
+            return -1 if i - si < j - sj else 1
+        ei, ej = i, j
+        test = str.isdigit if a[i].isdigit() else str.isalpha
+        while ei < len(a) and test(a[ei]):
+            ei += 1
+        while ej < len(b) and test(b[ej]):
+            ej += 1
+        one, two = a[i:ei], b[j:ej]
+        if not two:
+            return 1 if test is str.isdigit else -1
+        if test is str.isdigit:
+            one, two = one.lstrip('0'), two.lstrip('0')
+            if len(one) != len(two):
+                return 1 if len(one) > len(two) else -1
+        if one != two:
+            return -1 if one < two else 1
+        i, j = ei, ej
+    if i >= len(a) and j >= len(b):
+        return 0
+    if (i >= len(a) and not (j < len(b) and b[j].isalpha())) or (i < len(a) and a[i].isalpha()):
+        return -1
+    return 1
+
+
+def split_evr(version):
+    epoch, _, rest = version.rpartition(':') if re.match(r'[0-9]+:', version) else ('0', '', version)
+    version, _, release = rest.rpartition('-') if '-' in rest else (rest, '', None)
+    return epoch or '0', version, release
+
+
+def vercmp(a, b):
+    """pacman's vercmp: epoch, then version, then release when both have one."""
+    (ea, va, ra), (eb, vb, rb) = split_evr(a), split_evr(b)
+    return rpmvercmp(ea, eb) or rpmvercmp(va, vb) or (rpmvercmp(ra, rb) if ra and rb else 0)
+
+
+DEPENDENCY = re.compile(r'([^<>=]+)(?:(>=|<=|=|<|>)(.+))?')
+ORDER = {'=': (0,), '>=': (0, 1), '<=': (-1, 0), '>': (1,), '<': (-1,)}
+
+
+def parse_dependency(text):
+    """(name, operator or None, version or None) of a pacman dependency, without a description."""
+    match = DEPENDENCY.fullmatch(text.split(': ', 1)[0].strip())
+    return (match.group(1), match.group(2), match.group(3)) if match else (text.strip(), None, None)
+
+
+def meets(version, operator, wanted):
+    """VERSION (None for an unversioned provide) meets OPERATOR WANTED, as pacman decides it."""
+    if operator is None:
+        return True
+    return version is not None and vercmp(version, wanted) in ORDER[operator]
+
+
+def provisions(name, entry):
+    """(name, version or None) for the package ENTRY and each name it provides."""
+    yield name, entry['VERSION'][0]
+    for value in entry.get('PROVIDES', []):
+        provided, operator, version = parse_dependency(value)
+        yield provided, version if operator == '=' else None
+
+
+def resolve(repositories, chosen_first, targets):
+    """(repository, name) pairs pacman installs for TARGETS beside the set CHOSEN_FIRST (names in the
+    omarchy repository), searching REPOSITORIES [(name, entries)] in order, the way libalpm's
+    resolvedeps does: every target is resolved first (a literal name from the first repository
+    that has it, else a provider, else the group of that name) and is preferred over any search;
+    then each target's dependencies, depth first and in order, skip what an installed or preferred
+    package already meets at the right version and otherwise take a literal name that meets it from
+    the first repository that has one, else the providers that do from the first repository with
+    any (all of them: pacman keeps one, so this can only over-match)."""
+    omarchy = dict(repositories)['omarchy']
+    indexes = []
+    for _, entries in repositories:
+        index = {}
+        for name, entry in entries.items():
+            for provided, version in provisions(name, entry):
+                if provided != name:
+                    index.setdefault(provided, []).append((name, version))
+        indexes.append(index)
+
+    def find(name, operator, version):
+        for repository, entries in repositories:
+            entry = entries.get(name)
+            if entry is not None and meets(entry['VERSION'][0], operator, version):
+                return [(repository, name, entry)]
+        for (repository, entries), index in zip(repositories, indexes):
+            found = [(repository, n, entries[n]) for n, v in index.get(name, []) if meets(v, operator, version)]
+            if found:
+                return sorted(found, key=lambda f: f[1])
+        return []
+
+    def group(name):
+        found, seen = [], set()
+        for repository, entries in repositories:
+            for member, entry in sorted(entries.items()):
+                if name in entry.get('GROUPS', []) and member not in seen:
+                    seen.add(member)
+                    found.append((repository, member, entry))
+        return found
+
+    preferred = [('omarchy', name, omarchy[name]) for name in chosen_first]
+    for target in targets:
+        name, operator, version = parse_dependency(target)
+        if name and not any(n == name for _, n, _ in preferred):
+            preferred += find(name, operator, version) or group(name)
+    satisfiers = {}
+    for _, name, entry in preferred:
+        for provided, version in provisions(name, entry):
+            satisfiers.setdefault(provided, []).append(version)
+
+    chosen, visiting = set(), set()
+
+    def install(repository, name, entry):
+        if (repository, name) in chosen or (repository, name) in visiting:
+            return
+        visiting.add((repository, name))
+        for dependency in entry.get('DEPENDS', []):
+            wanted, operator, version = parse_dependency(dependency)
+            if not wanted or any(meets(v, operator, version) for v in satisfiers.get(wanted, [])):
+                continue
+            for found in find(wanted, operator, version):
+                install(*found)
+        visiting.discard((repository, name))
+        # Like libalpm, a package joins the transaction (and starts meeting dependencies) only once
+        # its own dependencies are resolved, so its provides never satisfy its own subtree.
+        if (repository, name) not in chosen:
+            chosen.add((repository, name))
+            for provided, provided_version in provisions(name, entry):
+                satisfiers.setdefault(provided, []).append(provided_version)
+
+    for package in preferred:
+        install(*package)
+    return chosen
+
+
+def read_payload(path):
+    """The dispatch's client_payload, checked: schema 1, edge, aarch64, a list of {name, version}."""
+    try:
+        payload = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError(f'unreadable payload: {error}') from None
+    require(isinstance(payload, dict), 'the payload is not an object')
+    require(type(payload.get('schema')) is int and payload['schema'] == 1, 'the payload is not schema 1')
+    require(payload.get('channel') == 'edge' and payload.get('arch') == 'aarch64',
+            'the payload is not for edge aarch64')
+    packages = payload.get('packages')
+    require(isinstance(packages, list) and len(packages) <= MAX_PACKAGES, 'the payload names no package list')
+    for package in packages:
+        require(isinstance(package, dict) and isinstance(package.get('name'), str)
+                and NAME.fullmatch(package['name']) and isinstance(package.get('version'), str)
+                and len(package['version']) <= 128, 'the payload names a malformed package')
+    sha = payload.get('database_sha256')
+    require(sha is None or (isinstance(sha, str) and HEX64.fullmatch(sha)), 'the payload has a malformed database hash')
+    return payload
+
+
+def role_entry(entries, channel, role):
+    """The edge database entry that fills runtime ROLE (omarchy-dev for omarchy on edge)."""
+    name = channel['runtime_packages'][role]
+    entry = entries.get(name)
+    require(entry is not None, f'the edge database does not list the runtime {name}')
+    return entry
+
+
+def check_archive(path, entry):
+    require(path.stat().st_size == int(entry['CSIZE'][0]) and channel_set.digest(path) == entry['SHA256SUM'][0],
+            f"{path.name} is not the {entry['NAME'][0]} archive the edge database lists")
+
+
+def repository_order(settings, channel='edge'):
+    """The repositories in the order the runtime's Apple template for CHANNEL names them, as
+    build-mac-image's read_repository_order reads it: exactly the pinned ones, servers ignored."""
+    template = TEMPLATE.format(channel=channel)
+    text = member(settings, template)
+    require(text is not None, f'the runtime ships no Apple pacman template for the channel ({template})')
+    order = [name for name in SECTION.findall(text) if name != 'options']
+    require(sorted(order) == sorted(PINNED_ORDER),
+            f"the runtime's {template.rsplit('/', 1)[1]} names the repositories {' '.join(order)}, "
+            f"not the pinned {' '.join(PINNED_ORDER)}")
+    return order
+
+
+def decide(database, runtime, settings, payload_path, repos=None, builder=ROOT / 'bin/build-mac-image',
+           trust=channel_set.TRUST):
+    payload = read_payload(payload_path)
+    policy, channel = channel_set.load_policy(trust)
+    entries = channel_set.read_database(database)
+    entry = role_entry(entries, channel, 'omarchy')
+    check_archive(runtime, entry)
+    check_archive(settings, role_entry(entries, channel, 'omarchy-settings'))
+    chosen = [e['NAME'][0] for _, _, e in channel_set.resolve(entries, policy, channel)]
+    order = repository_order(settings)
+    repositories = [(r, entries if r == 'omarchy' else read_repo(repos / f'{r}.db')) for r in order] \
+        if repos else [('omarchy', entries)]
+    seeds = builder_arrays(builder) + runtime_lists(runtime)
+    image = sorted(name for repository, name in resolve(repositories, chosen, seeds) if repository == 'omarchy')
+    published = sorted({p['name'] for p in payload['packages']})
+    matched = sorted(set(published) & set(image))
+    database_sha256 = channel_set.digest(database)
+    # A database other than the one the publish wrote (a newer publish since, or a stale copy) may
+    # not show what the published packages pull in, so it never rules a publish out.
+    reported = payload.get('database_sha256')
+    other_database = bool(published) and reported is not None and reported != database_sha256
+    return {
+        'relevant': bool(matched) or other_database,
+        'reason': 'matched' if matched else 'other-database' if other_database else 'unrelated',
+        'matched': matched,
+        'published': published,
+        'image_packages': image,
+        'repository_order': order,
+        'resolved_against': [r for r, _ in repositories],
+        'database_sha256': database_sha256,
+        'payload_database_sha256': reported,
+        'runtime': entry['FILENAME'][0],
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest='command', required=True)
+    runtime = commands.add_parser('runtime')
+    runtime.add_argument('--db', type=Path, required=True)
+    fetch = commands.add_parser('fetch-repos')
+    fetch.add_argument('directory', type=Path)
+    decision = commands.add_parser('decide')
+    decision.add_argument('--db', type=Path, required=True)
+    decision.add_argument('--runtime', type=Path, required=True)
+    decision.add_argument('--settings', type=Path, required=True)
+    decision.add_argument('--payload', type=Path, required=True)
+    decision.add_argument('--repos', type=Path)
+    decision.add_argument('--builder', type=Path, default=ROOT / 'bin/build-mac-image')
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'runtime':
+            _, channel = channel_set.load_policy()
+            entries = channel_set.read_database(args.db)
+            for role in ('omarchy', 'omarchy-settings'):
+                entry = role_entry(entries, channel, role)
+                print(role, entry['FILENAME'][0], entry['SHA256SUM'][0])
+        elif args.command == 'fetch-repos':
+            fetch_repos(args.directory)
+        else:
+            print(json.dumps(decide(args.db, args.runtime, args.settings, args.payload, args.repos, args.builder),
+                             indent=2))
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        print(f'edge-dispatch-filter: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -387,7 +387,8 @@
   /// The shipping housekeeping: asks the freshly installed helper to remove
   /// the app the installer package left behind, and logs what it did.
   public struct SystemInstallerHelperHousekeeping: InstallerHelperHousekeeping {
-    private static let logger = Logger(subsystem: "com.omarchy.installer", category: "helper")
+    private static let logger = Logger(
+      subsystem: InstallerProductIdentity.appIdentifier, category: "helper")
     private let submitter: @Sendable () throws -> AuthenticatedEngineXPCSubmitter
 
     public init(

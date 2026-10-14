@@ -67,9 +67,8 @@
     }
 
     /// The descriptor this repository ships: edge by default, and every
-    /// channel inside the release stream, away from the MX Mac feeds at the
-    /// root of the same host.
-    func testTheShippedDescriptorDefaultsToEdgeInsideTheReleaseStream() throws {
+    /// channel's catalog at the configured catalog base.
+    func testTheShippedDescriptorDefaultsToEdgeAtTheCatalogBase() throws {
       let release = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Release")
@@ -83,10 +82,9 @@
       for channel in ReleaseChannel.allCases {
         XCTAssertEqual(
           configuration.catalogURL(for: channel).absoluteString,
-          "\(InstallerBuildConfiguration.publicBase)/\(InstallerBuildConfiguration.streamPath)/channels/\(channel.rawValue)/catalog.signed.json"
+          "\(InstallerBuildConfiguration.catalogBase)/catalog-\(channel.rawValue).signed.json"
         )
       }
-      XCTAssertFalse(InstallerBuildConfiguration.streamPath.isEmpty)
     }
 
     func testSchemaTwoDescriptorIsRejected() throws {

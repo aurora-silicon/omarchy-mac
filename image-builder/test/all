@@ -20,15 +20,19 @@ export PYTHONPYCACHEPREFIX=$tests_temp/pycache
 for script in bin/build-mac-image bin/mac-image-inputs builder/finalize-root test/all test/*.sh; do
   bash -n "$script"
 done
-for script in bin/mac-image-check builder/*.py test/*.py; do
+for script in bin/mac-image-check bin/mac-release-guard bin/edge-dispatch-filter builder/*.py test/*.py; do
   python3 -m py_compile "$script"
 done
 echo "ok - shell syntax and Python compilation"
 
 python3 test/test_candidate_set.py
+python3 test/test_channel_set.py
 python3 test/test_inspection.py
 python3 test/test_mac_image_check.py
 python3 test/test_lab_access.py
+python3 test/test_release_guard.py
+python3 test/test_engine_contract.py
+python3 test/test_edge_dispatch_filter.py
 for test_file in test/*-test.sh; do
   "$BASH" "$test_file"
 done

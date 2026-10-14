@@ -54,19 +54,7 @@ app_name="$INSTALLER_APP_NAME.app"
 app_executable_name="OmarchyAppleInstallerApp"
 daemon_plist_name="$helper_identifier.plist"
 read -r engine_file_name engine_digest engine_size < <(
-  python3 - "$package_directory/Sources/OmarchyAppleInstaller/ValidationEngineArtifact.swift" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1]).read_text()
-name = re.search(r'public static let fileName = "(installer-[A-Za-z0-9.-]+\.tar\.gz)"', source)
-digest = re.search(r'public static let expectedDigest\s*=\s*"sha256:([0-9a-f]{64})"', source)
-size = re.search(r'public static let expectedSizeBytes: UInt64 = ([0-9_]+)', source)
-if not all((name, digest, size)):
-    raise SystemExit("Cannot read the runtime validation-engine identity")
-print(name[1], digest[1], int(size[1].replace("_", "")))
-PY
+  python3 "$script_directory/read-validation-engine.py"
 )
 
 if [[ $signing_identity == "-" ]]; then
@@ -78,7 +66,11 @@ else
     || fail "OMARCHY_TEAM_ID is required for named signing identities"
   client_requirement="anchor apple generic and identifier \"$app_identifier\" and certificate leaf[subject.OU] = \"$team_identifier\""
   helper_requirement="anchor apple generic and identifier \"$helper_identifier\" and certificate leaf[subject.OU] = \"$team_identifier\""
-  if [[ $signing_identity == "Developer ID Application:"* ]]; then
+  if [[ $signing_identity == "none" ]]; then
+    # Assembled for a Developer ID of this team, left unsigned: the release
+    # workflow signs it in a separate job (Packaging/release/sign-app).
+    timestamp_arguments=()
+  elif [[ $signing_identity == "Developer ID Application:"* ]]; then
     timestamp_arguments=(--timestamp)
   elif [[ $signing_identity =~ ^[0-9A-Fa-f]{40}$ ]] \
     && security find-identity -p codesigning -v \
@@ -392,27 +384,31 @@ if grep -q REPLACED_DURING_PACKAGING \
   fail "a packaging placeholder was left in the app"
 fi
 
-codesign --force --sign "$signing_identity" \
-  "${timestamp_arguments[@]}" \
-  --options runtime \
-  --identifier "$helper_identifier" \
-  "$helper_path"
-codesign --force --sign "$signing_identity" \
-  "${timestamp_arguments[@]}" \
-  --options runtime \
-  "$assembled_app"
+if [[ $signing_identity != "none" ]]; then
+  codesign --force --sign "$signing_identity" \
+    "${timestamp_arguments[@]}" \
+    --options runtime \
+    --identifier "$helper_identifier" \
+    "$helper_path"
+  codesign --force --sign "$signing_identity" \
+    "${timestamp_arguments[@]}" \
+    --options runtime \
+    "$assembled_app"
 
-codesign --verify --deep --strict --verbose=2 "$assembled_app"
-codesign --verify --strict \
-  -R="$helper_requirement" \
-  "$helper_path"
+  codesign --verify --deep --strict --verbose=2 "$assembled_app"
+  codesign --verify --strict \
+    -R="$helper_requirement" \
+    "$helper_path"
+fi
 embedded_version="$(launchctl plist __TEXT,__info_plist "$helper_path" 2>/dev/null \
   | awk -F'"' '/"CFBundleVersion"/ {print $4}')"
 [[ $embedded_version == "$build_number" ]] \
   || fail "the helper does not carry its build number (got '${embedded_version:-none}')"
-codesign --verify --strict \
-  -R="$client_requirement" \
-  "$assembled_app"
+if [[ $signing_identity != "none" ]]; then
+  codesign --verify --strict \
+    -R="$client_requirement" \
+    "$assembled_app"
+fi
 
 mv "$assembled_app" "$final_app"
 echo "$final_app"

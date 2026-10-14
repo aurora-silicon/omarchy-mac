@@ -11,9 +11,9 @@
   }
 
   public struct AcceptedCatalogIdentityStore: Sendable {
-    /// State files of the MX Mac installer, which shares this workspace. They
-    /// hold another stream's floors, so this stream never reads, writes or
-    /// removes them.
+    /// State files of the MX Mac installer, which shared this workspace while
+    /// both used the same app identifier. They hold another stream's floors,
+    /// so this stream never reads, writes or removes them.
     public static let mxMacFileNames = [
       "accepted-catalog.json",
       "accepted-catalog-stable.json",
@@ -33,8 +33,9 @@
     /// Each channel of this release stream keeps its own accepted sequence.
     /// Without this, a tester who accepted a rc catalog could never go back to
     /// stable: the older stable sequence would look like a rollback. The
-    /// stream name keeps the MX Mac installer's floors, in the same workspace,
-    /// from blocking this stream's first catalogs and the other way round.
+    /// stream name keeps the MX Mac installer's floors, should they share a
+    /// workspace, from blocking this stream's first catalogs and the other way
+    /// round.
     public static func fileName(for channel: ReleaseChannel) -> String {
       "accepted-catalog-\(InstallerBuildConfiguration.streamPath)-\(channel.rawValue).json"
     }

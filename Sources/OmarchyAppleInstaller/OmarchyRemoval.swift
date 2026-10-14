@@ -80,6 +80,27 @@
     }
   }
 
+  /// What a kept helper's records say about a removal, for an app whose
+  /// removal reply was lost. Only the helper can tell that a removal both
+  /// completed and set aside the install journals of the installation it
+  /// removed; the disk alone shows neither.
+  public enum RemovalFinalization: String, Codable, Equatable, Sendable {
+    /// Completed, and the earlier installation's journals are set aside:
+    /// installing again is safe.
+    case finalized
+    /// The removal's record stops before it completed. Installing stays
+    /// blocked until the record and the disk layout are checked.
+    case unfinished
+    /// Completed, but the earlier installation's journals couldn't be set
+    /// aside yet. Each later request tries again; installing stays blocked
+    /// until that works.
+    case installRecordUncleared = "install-record-uncleared"
+    /// The helper is running a job, perhaps still this removal.
+    case busy
+    /// No record of this removal, or the helper can't tell.
+    case unknown
+  }
+
   struct RemovalFailure: LocalizedError, Sendable {
     let message: String
     /// The message already says what changed, so nothing is appended to it.

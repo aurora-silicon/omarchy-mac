@@ -1,0 +1,153 @@
+name: Mac promote (parked)
+
+# PARKED: rc and stable promotion waits for the kernel work. Every run is a
+# dry run unless dry-run is off AND confirm is `promote-<channel>` AND
+# source-sha256 pins the source catalog; the owner then approves the run in
+# the promote environment and again in catalog-release, where the key is.
+# Do not run a real promotion until the kernel work has landed and the owner
+# has unparked promotion (docs/catalog-release.md, "Promotion").
+#
+# Writes a signed rc or stable catalog over exactly the bytes a published
+# channel catalog already pins: nothing is built and nothing new is uploaded.
+#
+#   prepare  no secrets: fetches the source channel's signed catalog from the
+#            catalog host, verifies it against Release/trust-root.ed25519.pub
+#            (and the pinned sha256), keeps every model, pin and digest,
+#            bumps only sequence and issuedAt, re-reads every pinned artifact
+#            to check it still serves its digest, and checks the new sequence
+#            follows the target channel's published one
+#   approve  the promote environment (main only, the owner approves): the
+#            promotion decision, after reading prepare's summary
+#   release  mac-catalog-sign.yml, the catalog workflow's signing path: signs
+#            in catalog-release after re-checking the promotion against its
+#            signed source, then publishes from a job with a write token and
+#            no key. A dry run signs and publishes to a scratch directory only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel to write (promotion is parked)
+        type: choice
+        options: [rc, stable]
+        default: rc
+      source:
+        description: Channel whose published catalog is promoted
+        type: choice
+        options: [edge, rc]
+        default: edge
+      source-sha256:
+        description: sha256 of the source's signed catalog (source_catalog_sha256 of a dry run); required for a real promotion
+        type: string
+        default: ''
+      dry-run:
+        description: Sign and publish to a scratch directory only
+        type: boolean
+        default: true
+      confirm:
+        description: Real promotion only (parked) - type promote-<channel>
+        type: string
+        default: ''
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Build the promoted catalog
+    if: ${{ github.repository == 'omacom/omarchy-mac-installer' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      catalog-sha256: ${{ steps.build.outputs.catalog-sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Run the catalog checks
+        run: python3 -m unittest discover -s scripts/tests -p 'test_catalog_release.py'
+
+      - name: Build the promoted catalog
+        id: build
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE: ${{ inputs.source }}
+          SOURCE_SHA256: ${{ inputs.source-sha256 }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          inputs=$RUNNER_TEMP/catalog-inputs
+          mkdir -p "$inputs"
+          mode=()
+          [[ $DRY_RUN == true ]] || mode=(--real --confirm "$CONFIRM")
+          {
+            git rev-parse HEAD
+            openssl version
+            python3 --version
+            echo "dry_run=$DRY_RUN"
+          } | tee "$inputs/toolchain.txt"
+          python3 scripts/catalog_release.py promote --channel "$CHANNEL" --source "$SOURCE" \
+            --source-sha256 "$SOURCE_SHA256" "${mode[@]}" --verify-remote --check-live \
+            --host github-release --out "$inputs" | tee "$inputs/prepare.log"
+          echo "catalog-sha256=$(sed -n 's/^catalog_sha256=//p' "$inputs/prepare.log")" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Promote $SOURCE to $CHANNEL ($([[ $DRY_RUN == true ]] && echo dry run || echo REAL))"
+            echo 'Promotion is parked until the kernel work lands.'
+            echo '```'
+            cat "$inputs/prepare.log"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: catalog-unsigned
+          path: ${{ runner.temp }}/catalog-inputs/
+          if-no-files-found: error
+          retention-days: 14
+
+  approve:
+    name: Approve the promotion
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: promote
+    permissions: {}
+    steps:
+      - name: Check a real promotion was asked for explicitly
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE: ${{ inputs.source }}
+          SOURCE_SHA256: ${{ inputs.source-sha256 }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          CONFIRM: ${{ inputs.confirm }}
+          CATALOG_SHA256: ${{ needs.prepare.outputs.catalog-sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ $DRY_RUN != true ]]; then
+            if [[ $CONFIRM != "promote-$CHANNEL" || ! $SOURCE_SHA256 =~ ^[0-9a-f]{64}$ ]]; then
+              echo "refused: promotion is parked; a real run needs confirm=promote-$CHANNEL and source-sha256" >&2
+              exit 1
+            fi
+          fi
+          echo "approved: $SOURCE to $CHANNEL, dry_run=$DRY_RUN, catalog sha256 $CATALOG_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Sign and publish
+    needs: [prepare, approve]
+    uses: ./.github/workflows/mac-catalog-sign.yml
+    permissions:
+      contents: write # only its publish job, skipped in a dry run, uses it
+    with:
+      channel: ${{ inputs.channel }}
+      catalog-sha256: ${{ needs.prepare.outputs.catalog-sha256 }}
+      gate: promotion
+      source-sha256: ${{ inputs.source-sha256 }}
+      dry-run: ${{ inputs.dry-run }}
+    secrets: inherit

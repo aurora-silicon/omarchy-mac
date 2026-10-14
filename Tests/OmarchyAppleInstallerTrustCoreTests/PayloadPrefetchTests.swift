@@ -21,6 +21,53 @@
       XCTAssertEqual(downloader.starts, 1)
     }
 
+    func testFinishedNetworkMonitorDoesNotVerifyUnfinishedWork() async throws {
+      let controller = PayloadPrefetchController(
+        network: FinishedNetworkPath(),
+        freeSpace: MockFreeSpace(bytes: 100),
+        keepAwake: MockKeepAwake()
+      )
+      await controller.start(requiredBytes: 1) {
+        try await Task.sleep(for: .milliseconds(30))
+        throw ArtifactStageError.sizeMismatch(expected: 10, actual: 5)
+      }
+      do {
+        try await controller.waitUntilVerified()
+        XCTFail("A finished network monitor is not a verified download")
+      } catch {
+        XCTAssertEqual(error as? ArtifactStageError, .sizeMismatch(expected: 10, actual: 5))
+      }
+    }
+
+    func testSamePayloadInANewReleaseGetsItsOwnCanonicalFile() async throws {
+      let data = Data("same-payload-two-releases".utf8)
+      let artifact = try pinnedPayload(data)
+      let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      defer { try? FileManager.default.removeItem(at: root) }
+      let orchestrator = PayloadPrefetchOrchestrator(
+        makeNetwork: { MockNetworkPath(Self.unmetered) },
+        makeKeepAwake: { MockKeepAwake() },
+        makeFreeSpace: { _ in MockFreeSpace(bytes: 8_000_000_000) },
+        matchesPinned: { VerifiedArtifactStager().matches($0, at: $1) },
+        requiredFreeBytes: { $0 },
+        stage: { artifact, directory, _ in
+          let file = directory.appendingPathComponent(artifact.fileName)
+          try data.write(to: file)
+          return StagedInstallerArtifact(
+            artifact: artifact, fileURL: file, reusedExistingFile: false)
+        }
+      )
+      for release in ["first", "second"] {
+        let destination = root.appendingPathComponent(release).appendingPathComponent(
+          artifact.fileName)
+        orchestrator.begin(
+          payload: StagedInstallerArtifact(
+            artifact: artifact, fileURL: destination, reusedExistingFile: false))
+        try await orchestrator.waitUntilVerified { _ in }
+        XCTAssertEqual(try Data(contentsOf: destination), data)
+      }
+    }
+
     func testDownloadsThenVerifiesOnUnmeteredPath() async throws {
       let network = MockNetworkPath(
         InstallerNetworkPathSnapshot(isSatisfied: true, isExpensive: false, isConstrained: false)
@@ -805,6 +852,15 @@
       for continuation in pending {
         continuation.yield(snapshot)
       }
+    }
+  }
+
+  private struct FinishedNetworkPath: InstallerNetworkPathObserving {
+    func current() -> InstallerNetworkPathSnapshot {
+      InstallerNetworkPathSnapshot(isSatisfied: true, isExpensive: false, isConstrained: false)
+    }
+    func updates() -> AsyncStream<InstallerNetworkPathSnapshot> {
+      AsyncStream { $0.finish() }
     }
   }
 

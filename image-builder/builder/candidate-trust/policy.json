@@ -3,7 +3,7 @@
   "primary_fingerprint": "E11E851AF82E02AEF54C8794599A6024E3D35379",
   "signing_fingerprint": "E11E851AF82E02AEF54C8794599A6024E3D35379",
   "public_key_sha256": "19ff58f4c32bafa20482ff8609555ddfecc0b9e86ae54491b084f431f84170d9",
-  "source_repository": "omacom/omarchy-mac",
+  "source_repositories": ["omacom/omarchy", "omacom/omarchy-mac"],
   "platform_repositories": ["omacom/omarchy-mac-pkgs", "omacom/omarchy-mac"],
   "boot_repository": "omacom/omarchy-pkgs",
   "runtime_packages": ["omarchy", "omarchy-settings", "omarchy-mac", "omarchy-mac-boot"],
@@ -14,5 +14,19 @@
   "minimum_versions": {
     "omarchy-mac-boot": "20260921-10",
     "limine-mkinitcpio-hook": "1.39.0-2"
+  },
+  "channel": {
+    "lanes": ["edge"],
+    "repository": "omarchy",
+    "primary_fingerprint": "40DFB630FF42BCFFB047046CF0134EE680CAC571",
+    "signing_fingerprint": "40DFB630FF42BCFFB047046CF0134EE680CAC571",
+    "public_key": "omarchy-channel.asc",
+    "public_key_sha256": "15d6aac44df688165b2ea35fe0b23af239bbc66a6909c10a5c219e8d94b707de",
+    "runtime_packages": {
+      "omarchy": "omarchy-dev",
+      "omarchy-settings": "omarchy-settings-dev",
+      "omarchy-mac": "omarchy-mac",
+      "omarchy-mac-boot": "omarchy-mac-boot"
+    }
   }
 }

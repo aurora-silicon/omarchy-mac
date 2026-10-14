@@ -1,0 +1,131 @@
+name: Edge publish filter
+
+# omacom/omarchy-pkgs' publish job sends repository_dispatch edge-mac-changed
+# after it publishes aarch64 packages into edge, naming them in
+# client_payload.packages. This decides whether any of them is a package the
+# Mac image installs (image-builder/bin/edge-dispatch-filter: the channel set,
+# the builder's own packages, the edge runtime's package lists and their
+# dependencies, resolved in the repository order the runtime's Apple pacman
+# template gives, as build-mac-image's read_repository_order does) and, only then,
+# starts the Mac release pipeline (mac-release-pipeline.yml, dry-run=false) on
+# the default branch: build, VM acceptance, upload, and a catalog the owner
+# approves. An unrelated publish ends here, successfully. This workflow builds
+# nothing at all.
+#
+# A repository_dispatch run always uses the default branch's workflow and
+# code, so a payload can never choose what runs. The payload is read only
+# from the event file, never interpolated into a script.
+
+on:
+  repository_dispatch:
+    types: [edge-mac-changed]
+
+permissions: {}
+
+# Deliberately no concurrency group: a group keeps one queued run and drops
+# the rest, which could drop a relevant publish behind an unrelated one.
+# Runs are independent; the pipeline serializes the builds.
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  filter:
+    name: Decide whether the image changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write # gh workflow run mac-release-pipeline.yml
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          command -v bsdtar >/dev/null || { sudo apt-get update -q && sudo apt-get install --yes -q libarchive-tools; }
+
+      - name: Read the payload
+        run: |
+          set -euo pipefail
+          WORK=$RUNNER_TEMP/edge-filter
+          echo "WORK=$WORK" >>"$GITHUB_ENV"
+          mkdir -p "$WORK"
+          jq '.client_payload' "$GITHUB_EVENT_PATH" >"$WORK/payload.json"
+          jq -c '{packages: [.packages[]? | "\(.name) \(.version)"], database_sha256, source}' "$WORK/payload.json"
+
+      - name: Fetch the edge database, the runtime and the other repositories
+        run: |
+          set -euo pipefail
+          filter=image-builder/bin/edge-dispatch-filter
+          # Past the CDN's copy, and retried until it is the database the publish
+          # reported (when it reported one). A different one still counts as
+          # relevant in the decision; this only gives the publish's a chance.
+          want=$(jq -r '.database_sha256 // empty' "$WORK/payload.json")
+          for attempt in 1 2 3 4 5 6; do
+            curl -fsSL --proto '=https' --retry 3 -H 'Cache-Control: no-cache' -o "$WORK/omarchy.db" \
+              "https://pkgs.omarchy.org/edge/aarch64/omarchy.db?$(date +%s)"
+            have=$(sha256sum "$WORK/omarchy.db" | cut -d' ' -f1)
+            [[ -z $want || $have == "$want" ]] && break
+            echo "omarchy.db is $have, the publish reported $want (attempt $attempt)"
+            sleep 10
+          done
+          # The omarchy role's archive (its package lists) and the omarchy-settings
+          # role's (its Apple pacman template, which orders the repositories).
+          described=$(python3 "$filter" runtime --db "$WORK/omarchy.db")
+          while read -r role file sha; do
+            curl -fsSL --proto '=https' --retry 3 -o "$WORK/$file" "https://pkgs.omarchy.org/edge/aarch64/$file"
+            echo "$sha  $WORK/$file" | sha256sum -c -
+            case $role in
+              omarchy) echo "RUNTIME=$WORK/$file" >>"$GITHUB_ENV" ;;
+              omarchy-settings) echo "SETTINGS=$WORK/$file" >>"$GITHUB_ENV" ;;
+            esac
+          done <<<"$described"
+          # Without them every dependency resolves in omarchy.db, which only over-matches.
+          if python3 "$filter" fetch-repos "$WORK/repos"; then
+            echo "REPOS=--repos=$WORK/repos" >>"$GITHUB_ENV"
+          else
+            echo "::warning::could not fetch the other repositories' databases; matching against omarchy.db alone"
+          fi
+
+      - name: Decide
+        id: decide
+        run: |
+          set -euo pipefail
+          python3 image-builder/bin/edge-dispatch-filter decide --db "$WORK/omarchy.db" --runtime "$RUNTIME" \
+            --settings "$SETTINGS" --payload "$WORK/payload.json" ${REPOS:-} >"$WORK/decision.json"
+          jq 'del(.image_packages)' "$WORK/decision.json"
+          relevant=$(jq -r .relevant "$WORK/decision.json")
+          echo "relevant=$relevant" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Edge publish: $( [[ $relevant == true ]] && echo 'the Mac image may have changed' || echo 'nothing the Mac image installs') ($(jq -r .reason "$WORK/decision.json"))"
+            echo
+            echo "- published: $(jq -r '.published | join(", ")' "$WORK/decision.json")"
+            echo "- matched: $(jq -r '.matched | if length == 0 then "none" else join(", ") end' "$WORK/decision.json")"
+            echo "- image packages from omarchy.db: $(jq -r '.image_packages | length' "$WORK/decision.json") (resolved against $(jq -r '.resolved_against | join(", ")' "$WORK/decision.json"))"
+            echo "- edge omarchy.db: $(jq -r .database_sha256 "$WORK/decision.json") (publish reported $(jq -r '.payload_database_sha256 // "none"' "$WORK/decision.json"))"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Start the Mac release pipeline
+        if: steps.decide.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Until the pipeline lands on the default branch there is nothing to
+          # start. Only a 404 means that; any other failure fails this run.
+          if ! error=$(gh api "repos/$REPOSITORY/contents/.github/workflows/mac-release-pipeline.yml?ref=$DEFAULT_BRANCH" --silent 2>&1); then
+            if [[ $error == *"HTTP 404"* ]]; then
+              echo "::notice::mac-release-pipeline.yml is not on $DEFAULT_BRANCH yet; nothing started"
+              exit 0
+            fi
+            echo "::error::could not check for mac-release-pipeline.yml: $error"
+            exit 1
+          fi
+          gh workflow run mac-release-pipeline.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" -f dry-run=false
+          echo "Started mac-release-pipeline.yml (dry-run=false) on $DEFAULT_BRANCH" | tee -a "$GITHUB_STEP_SUMMARY"

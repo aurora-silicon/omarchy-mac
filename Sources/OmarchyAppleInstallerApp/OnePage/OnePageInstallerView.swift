@@ -194,6 +194,7 @@ struct OnePageInstallerView: View {
       DownloadPanel(update: update)
 
     case .planReview(let plan, let acknowledged):
+      planIdentity(plan)
       DiskSplitPanel(
         plan: plan,
         editable: plan.isResizable,
@@ -226,6 +227,7 @@ struct OnePageInstallerView: View {
       acknowledgement(acknowledged, resizesMacOS: plan.fixedMacOSBytes == nil)
 
     case .awaitingInstall(let plan, let helper, _):
+      planIdentity(plan)
       DiskSplitPanel(plan: plan, editable: false, isBusy: false, onSizeChosen: { _ in })
       PrefetchStrip(
         state: session.prefetchState,
@@ -493,6 +495,16 @@ struct OnePageInstallerView: View {
       ForEach(handoff.steps) { step in
         RecoveryStepRow(step: step)
       }
+      Button("Copy setup steps") {
+        let steps = handoff.steps.map { step in
+          "\(step.number). \(step.title)" + (step.detail.map { "\n\($0)" } ?? "")
+        }
+        let text = ([handoff.headline] + [handoff.warning].compactMap { $0 } + steps)
+          .joined(separator: "\n\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+      }
+      .omarchySecondaryButton()
       if let message = session.shutdownMessage {
         Text(message).font(OmarchyTheme.body).foregroundStyle(OmarchyTheme.caution)
       }
@@ -521,6 +533,16 @@ struct OnePageInstallerView: View {
   }
 
   // MARK: Plumbing
+
+  private func planIdentity(_ plan: PlanDisplay) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text(plan.releaseDescription)
+      Text(plan.targetDescription)
+    }
+    .font(OmarchyTheme.body)
+    .foregroundStyle(OmarchyTheme.secondaryText)
+    .fixedSize(horizontal: false, vertical: true)
+  }
 
   private var approvedSize: String? {
     guard case .awaitingInstall(let plan, _, _) = session.phase else { return nil }

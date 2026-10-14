@@ -21,8 +21,10 @@
     case deviceUnsupported = 3
     /// The plan, request, or identity failed an integrity check.
     case planIntegrity = 4
+    /// A resumed run could not reconcile its checkpointed APFS target.
+    case preparedResumeMismatch = 5
 
-    /// Exact final-exception messages raised before the first mutation by
+    /// Exact final-exception messages raised by admission or resume checks in
     /// `omarchy_execution.admit_execution`, `omarchy_runtime` and the Asahi
     /// adapter preflight. Anything not listed stays unclassified.
     static func classify(exception: String, message: String) -> EngineFailureReason {
@@ -37,6 +39,8 @@
         "approved candidate is unavailable", "system store changed during resume",
         "inventory changed during resume":
         return .diskLayoutChanged
+      case "prepared resume target does not match checkpoint":
+        return .preparedResumeMismatch
       case "device is explicitly unsupported":
         return .deviceUnsupported
       case "plan digest mismatch", "helper environment binding mismatch",

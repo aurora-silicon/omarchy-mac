@@ -42,5 +42,18 @@
   },
   "developer": {
     "apple,j700": "MacBook Neo (A18 Pro, T8140): boots its own J700 m1n1 and Stage 1 from its own image; developer builds only"
+  },
+  "untested": {
+    "apple,j433": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j434": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j504": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j613": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j615": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j514s": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j514c": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j514m": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j516s": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j516c": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs",
+    "apple,j516m": "Untested: Omarchy Mac previews are not yet qualified on M3 Macs"
   }
 }

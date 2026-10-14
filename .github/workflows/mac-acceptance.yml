@@ -1,0 +1,431 @@
+name: Mac image acceptance
+
+# VM acceptance of one image build: the omarchy-mac-pkgs VM harness
+# (tools/acceptance/mac-image/run, pinned to HARNESS_COMMIT) boots and
+# installs the exact image zip in KVM guests and the job writes its evidence
+# record (docs/mac-acceptance-evidence.md). The release pipeline
+# (mac-release-pipeline.yml) calls it after the image build; it can also be
+# dispatched by hand for an image artifact of an earlier run.
+#
+#   guard       GitHub-hosted. Refuses pull requests, any ref but main and
+#               malformed inputs before a job reaches the VM runner.
+#   acceptance  The VM runner (the `runner` input). Downloads the image
+#               artifact, checks its zip against image-sha256 and its build
+#               attestation (mac-image.yml on main, as mac-upload.yml checks
+#               it), runs the harness on it, always writes and keeps
+#               acceptance-evidence.json, fails unless the record passes, and
+#               removes the image, the run's disks and its loop devices.
+#   attest      GitHub-hosted, only after a passing record: re-checks it and
+#               attests it, so only this job holds id-token. mac-upload.yml
+#               refuses a real upload of a record without that attestation.
+#
+# The contract the pipeline depends on:
+#   inputs   image-artifact (the image name), image-sha256 (its zip's sha256),
+#            image-run-id (the run that uploaded the artifact; empty for this
+#            run), runner, scenarios
+#   artifact acceptance-evidence: acceptance-evidence.json for that sha256,
+#            passing or failing, whose run_url is this run
+#   outputs  result (pass only when the record passes mac-upload.py
+#            check-evidence), evidence-artifact, evidence-run-id
+#   failure  the workflow fails unless the record passes and is attested, so
+#            the pipeline stops
+#
+# Runner: until Namespace's Apple-backed Linux ARM64 runners are enabled for
+# Omacom, the default is the M2 Max lab Mac registered as an ephemeral
+# self-hosted runner for one job (docs/mac-acceptance-runner.md). Moving to
+# Namespace changes only the `runner` default. No secrets: the job's token
+# reads this repository's artifacts and attestations and nothing else.
+
+on:
+  workflow_call:
+    inputs:
+      image-artifact:
+        description: The image build's artifact, which is the image name
+        type: string
+        required: true
+      image-sha256:
+        description: The image zip's sha256
+        type: string
+        required: true
+      image-run-id:
+        description: Run that uploaded the image artifact (empty for this run)
+        type: string
+        required: false
+        default: ''
+      runner:
+        description: The VM job's runs-on as JSON; empty for the default (the M2 lab runner until Namespace replaces it)
+        type: string
+        required: false
+        default: '["self-hosted","linux","ARM64","omarchy-m2-lab"]'
+      scenarios:
+        description: Harness scenarios, comma-separated (fresh-install is first-boot, conversion and second-boot)
+        type: string
+        required: false
+        default: fresh-install
+    outputs:
+      result:
+        description: pass or fail
+        value: ${{ jobs.acceptance.outputs.result }}
+      evidence-artifact:
+        description: The artifact holding acceptance-evidence.json
+        value: ${{ jobs.acceptance.outputs.evidence-artifact }}
+      evidence-run-id:
+        description: The run that uploaded the evidence artifact (this run)
+        value: ${{ jobs.acceptance.outputs.evidence-run-id }}
+  workflow_dispatch:
+    inputs:
+      image-artifact:
+        description: The image build's artifact, which is the image name
+        type: string
+        required: true
+      image-sha256:
+        description: The image zip's sha256
+        type: string
+        required: true
+      image-run-id:
+        description: Run that uploaded the image artifact (a mac-image.yml or pipeline run on main)
+        type: string
+        required: true
+      runner:
+        description: The VM job's runs-on as JSON (the M2 lab runner until Namespace replaces it)
+        type: string
+        default: '["self-hosted","linux","ARM64","omarchy-m2-lab"]'
+      scenarios:
+        description: Harness scenarios, comma-separated
+        type: string
+        default: fresh-install
+
+permissions: {}
+
+env:
+  HARNESS_REPOSITORY: omacom/omarchy-mac-pkgs
+  # omarchy-mac-pkgs main, 2026-10-14 (Merge pull request #34). Bump by hand
+  # after the harness changes; the evidence record names it.
+  HARNESS_COMMIT: 222f7a8599bbdd287ac6a95362cd51c5b024baae
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  guard:
+    name: Guard
+    if: github.repository == 'omacom/omarchy-mac-installer'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      runner: ${{ steps.check.outputs.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Refuse anything but a main run
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          IMAGE: ${{ inputs.image-artifact }}
+          IMAGE_SHA256: ${{ inputs.image-sha256 }}
+          IMAGE_RUN_ID: ${{ inputs.image-run-id }}
+          RUNNER_INPUT: ${{ inputs.runner }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          # The M2 lab Mac's ephemeral runner; Namespace replaces it.
+          DEFAULT_RUNNER: '["self-hosted","linux","ARM64","omarchy-m2-lab"]'
+        run: |
+          set -euo pipefail
+          if [[ $EVENT == pull_request || $EVENT == pull_request_target ]]; then
+            echo "::error::VM acceptance never runs for pull requests"
+            exit 1
+          fi
+          if [[ $GITHUB_REF != refs/heads/main ]]; then
+            echo "::error::VM acceptance runs only from main, not $GITHUB_REF"
+            exit 1
+          fi
+          python3 -I scripts/mac-upload.py check-inputs --image "$IMAGE" --sha256 "$IMAGE_SHA256" --run-id "$IMAGE_RUN_ID"
+          if [[ ! $SCENARIOS =~ ^[a-z][a-z-]{0,39}(,[a-z][a-z-]{0,39}){0,9}$ ]]; then
+            echo "::error::scenarios must be comma-separated harness scenario names"
+            exit 1
+          fi
+          runner=$(python3 -I - "${RUNNER_INPUT:-$DEFAULT_RUNNER}" <<'PY'
+          import json, re, sys
+          try:
+              value = json.loads(sys.argv[1])
+          except ValueError:
+              sys.exit("::error::runner is not JSON")
+          labels = [value] if isinstance(value, str) else value
+          if not (isinstance(labels, list) and 0 < len(labels) <= 10 and all(
+                  isinstance(label, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", label) for label in labels)):
+              sys.exit("::error::runner must be a runner label or a JSON array of labels")
+          print(json.dumps(labels, separators=(",", ":")))
+          PY
+          )
+          echo "runner=$runner" | tee -a "$GITHUB_OUTPUT"
+
+  acceptance:
+    name: VM acceptance
+    needs: guard
+    runs-on: ${{ fromJSON(needs.guard.outputs.runner) }}
+    # No secrets in it; give it a deployment branch policy of main alone.
+    environment: acceptance
+    timeout-minutes: 300
+    concurrency:
+      group: mac-acceptance-vm
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read # the image artifact of another run
+      attestations: read # the image's build attestation
+    outputs:
+      result: ${{ steps.gate.outputs.result }}
+      evidence-artifact: acceptance-evidence
+      evidence-run-id: ${{ github.run_id }}
+    env:
+      IMAGE: ${{ inputs.image-artifact }}
+      IMAGE_SHA256: ${{ inputs.image-sha256 }}
+      SCENARIOS: ${{ inputs.scenarios }}
+      RUNNER_LABELS: ${{ needs.guard.outputs.runner }}
+      # Run-scoped, short enough for the harness's serial socket path, and
+      # removed at the end whatever happened.
+      ROOT: /var/tmp/omarchy-mac-acceptance/${{ github.run_id }}-${{ github.run_attempt }}
+      VM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      RECORD: /var/tmp/omarchy-mac-acceptance/${{ github.run_id }}-${{ github.run_attempt }}/record/acceptance-evidence.json
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        id: checkout
+        with:
+          persist-credentials: false
+
+      - name: Check the runner
+        id: runner
+        run: |
+          set -euo pipefail
+          for tool in gh git python3 sha256sum findmnt losetup dmsetup; do
+            command -v "$tool" >/dev/null || { echo "::error::the runner lacks $tool"; exit 1; }
+          done
+          [[ -r /dev/kvm ]] || { echo "::error::/dev/kvm is not readable"; exit 1; }
+          sudo -n true || { echo "::error::the harness needs passwordless sudo"; exit 1; }
+          # Only an earlier try of this same run attempt can have left it.
+          [[ ! -e $ROOT ]] || sudo -n rm -rf -- "$ROOT"
+          mkdir -p "$ROOT/image" "$ROOT/state" "$ROOT/evidence" "$ROOT/record"
+          free=$(df --output=avail -B1G "$ROOT" | tail -1 | tr -d ' ')
+          echo "$(uname -n) $(uname -r), runner $RUNNER_NAME ($RUNNER_LABELS), $(nproc) CPUs, ${free} GiB free under $ROOT"
+          # The harness needs about 60 GB and leaves 10 GiB for the host.
+          (( free >= 70 )) || { echo "::error::$ROOT has ${free} GiB free, not 70"; exit 1; }
+
+      - name: Download the image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.image-artifact }}
+          path: ${{ env.ROOT }}/image
+          # Without a token the action reads this run's artifacts.
+          github-token: ${{ inputs.image-run-id != '' && github.token || '' }}
+          run-id: ${{ inputs.image-run-id }}
+
+      # The artifact is the image producer's output directory, which is what
+      # the harness's --image takes: the payload zip, IMAGE, PROVENANCE,
+      # INSPECTION, installer_data.json and inputs (plus logs it ignores).
+      - name: Check the image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=("$ROOT"/image/*.zip)
+          (( ${#zips[@]} == 1 )) || { echo "::error::the artifact holds ${#zips[@]} image zips, not one"; exit 1; }
+          actual=$(sha256sum "${zips[0]}" | cut -d' ' -f1)
+          if [[ $actual != "$IMAGE_SHA256" ]]; then
+            echo "::error::the image zip's sha256 is $actual, not $IMAGE_SHA256"
+            exit 1
+          fi
+          # The same check as mac-upload.yml's.
+          if ! gh attestation verify "${zips[0]}" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/mac-image.yml" \
+            --source-ref refs/heads/main --deny-self-hosted-runners; then
+            echo "::error::the image has no build attestation from mac-image.yml on main"
+            exit 1
+          fi
+          echo "$(basename "${zips[0]}") is $IMAGE_SHA256, built by mac-image.yml on main"
+
+      - name: Fetch the harness
+        id: harness
+        run: |
+          set -euo pipefail
+          [[ $HARNESS_COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "::error::HARNESS_COMMIT is not a full commit"; exit 1; }
+          git init -q "$ROOT/harness"
+          git -C "$ROOT/harness" fetch -q --depth 1 "https://github.com/$HARNESS_REPOSITORY" "$HARNESS_COMMIT"
+          git -C "$ROOT/harness" -c advice.detachedHead=false checkout -q FETCH_HEAD
+          [[ $(git -C "$ROOT/harness" rev-parse HEAD) == "$HARNESS_COMMIT" ]] ||
+            { echo "::error::the harness checkout is not $HARNESS_COMMIT"; exit 1; }
+
+      - name: Run the harness
+        id: vm
+        timeout-minutes: 240
+        env:
+          OMARCHY_VM_CPUS: 8
+          OMARCHY_VM_MEMORY_MB: 8192
+          OMARCHY_VM_RUN_ID: ${{ env.VM_RUN_ID }}
+          OMARCHY_VM_IMAGE_STATE_DIR: ${{ env.ROOT }}/state
+          OMARCHY_VM_EVIDENCE_DIR: ${{ env.ROOT }}/evidence
+        run: |
+          # The bash shell runs with -e; this step must reach its end.
+          set +e -uo pipefail
+          "$ROOT/harness/tools/acceptance/mac-image/run" --image "$ROOT/image" --scenario "$SCENARIOS" &
+          pid=$!
+          # Cleanup removes the udev rule the harness names after its PID.
+          echo "HARNESS_PID=$pid" >>"$GITHUB_ENV"
+          wait "$pid"
+          status=$?
+          echo "status=$status" >>"$GITHUB_OUTPUT"
+          echo "the harness exited $status"
+
+      - name: Write the evidence record
+        id: record
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          RUNNER_OUTCOME: ${{ steps.runner.outcome }}
+          IMAGE_OUTCOME: ${{ steps.image.outcome }}
+          HARNESS_OUTCOME: ${{ steps.harness.outcome }}
+          HARNESS_STATUS: ${{ steps.vm.outputs.status }}
+        run: |
+          set -euo pipefail
+          reason=""
+          if [[ $RUNNER_OUTCOME != success ]]; then
+            reason="the runner lacks what the harness needs (see the Check the runner step)"
+          elif [[ $IMAGE_OUTCOME != success ]]; then
+            reason="the image artifact did not download, match image-sha256 or carry mac-image.yml's build attestation on main"
+          elif [[ $HARNESS_OUTCOME != success ]]; then
+            reason="the harness at $HARNESS_COMMIT could not be fetched"
+          fi
+          python3 -I scripts/mac-acceptance-record.py --sha256 "$IMAGE_SHA256" --image "$IMAGE" --scenarios "$SCENARIOS" \
+            --run-txt "$ROOT/evidence/mac-image-$VM_RUN_ID/run.txt" --harness-status "$HARNESS_STATUS" \
+            --harness-commit "$HARNESS_COMMIT" --runner "runs-on $RUNNER_LABELS, runner $RUNNER_NAME, host $(uname -n)" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --reason "$reason" --out "$RECORD"
+
+      - name: Keep the evidence record
+        if: always() && steps.record.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-evidence
+          path: ${{ env.RECORD }}
+          if-no-files-found: error
+          retention-days: 90
+
+      # run.txt, serial and guest logs, SHA256SUMS; the harness redacts the
+      # run's random passwords. The image itself never leaves the runner.
+      - name: Keep the harness's logs
+        if: always() && steps.vm.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-harness-logs
+          path: ${{ env.ROOT }}/evidence/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Stop unless the image passed
+        id: gate
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ ! -f $RECORD ]]; then
+            echo "result=fail" >>"$GITHUB_OUTPUT"
+            echo "::error::no evidence record was written for $IMAGE"
+            exit 1
+          fi
+          {
+            echo "### Acceptance of \`$IMAGE\`"
+            echo '```'
+            python3 -I - "$RECORD" <<'PY'
+          import json, sys
+          record = json.load(open(sys.argv[1]))
+          print(f"result   {record.get('result')}")
+          print(f"reason   {record.get('reason') or '-'}")
+          print(f"image    {record.get('image_sha256')}")
+          for scenario in record.get("scenarios") or []:
+              print(f"  {scenario.get('name')}: {scenario.get('result')}")
+          PY
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          if python3 -I scripts/mac-upload.py check-evidence --evidence "$RECORD" --sha256 "$IMAGE_SHA256"; then
+            echo "result=pass" >>"$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >>"$GITHUB_OUTPUT"
+            echo "::error::$IMAGE did not pass acceptance; nothing is uploaded or published"
+            exit 1
+          fi
+
+      # The harness's own exit trap undoes its guests, mounts, mappers and loop
+      # devices; this also covers a run killed before that trap ran. Every
+      # match is scoped to this run's directory or run id.
+      - name: Remove the image and the run's disks
+        if: always()
+        run: |
+          # The bash shell runs with -e; this step must reach its end.
+          set +e -uo pipefail
+          [[ $ROOT =~ ^/var/tmp/omarchy-mac-acceptance/[0-9]+-[0-9]+$ ]] || { echo "::error::unexpected run directory $ROOT"; exit 1; }
+          if [[ -n ${HARNESS_PID:-} ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
+            kill "$HARNESS_PID" 2>/dev/null
+            sleep 10
+          fi
+          # The bracket keeps the pattern from matching sudo's own command line.
+          pattern="[/]var/tmp/omarchy-mac-acceptance/$VM_RUN_ID/"
+          pkill -f -- "$pattern" 2>/dev/null
+          sudo -n pkill -f -- "$pattern" 2>/dev/null
+          sleep 2
+          findmnt -rn -o TARGET | grep -F -- "$ROOT/" | sort -r | while read -r target; do
+            sudo -n umount -R -l "$target"
+          done
+          sudo -n dmsetup ls --target crypt 2>/dev/null | awk -v prefix="omarchy-vm-$VM_RUN_ID-" 'index($1, prefix) == 1 { print $1 }' |
+            while read -r mapper; do sudo -n cryptsetup close "$mapper"; done
+          losetup -l -n -O NAME,BACK-FILE 2>/dev/null | awk -v root="$ROOT/" 'index($2, root) == 1 { print $1 }' |
+            while read -r loop; do sudo -n losetup -d "$loop"; done
+          if [[ -n ${HARNESS_PID:-} ]]; then
+            sudo -n rm -f "/run/udev/rules.d/60-omarchy-vm-mac-image-$HARNESS_PID.rules" && sudo -n udevadm control --reload
+          fi
+          sudo -n rm -rf -- "$ROOT"
+          rmdir /var/tmp/omarchy-mac-acceptance 2>/dev/null
+          if [[ -e $ROOT ]]; then
+            echo "::error::could not remove $ROOT"
+            exit 1
+          fi
+          left=$(losetup -l -n -O NAME,BACK-FILE 2>/dev/null | grep -F -- "$ROOT/" || true)
+          [[ -z $left ]] || { echo "::error::loop devices left behind: $left"; exit 1; }
+          echo "removed $ROOT"
+
+  attest:
+    name: Attest the evidence
+    needs: acceptance
+    if: needs.acceptance.outputs.result == 'pass'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # the attestation's Sigstore certificate
+      attestations: write # storing the attestation
+    env:
+      IMAGE_SHA256: ${{ inputs.image-sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Download the evidence record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: acceptance-evidence
+          path: ${{ runner.temp }}/evidence
+
+      - name: Check the record again
+        run: |
+          set -euo pipefail
+          record=$RUNNER_TEMP/evidence/acceptance-evidence.json
+          python3 -I scripts/mac-upload.py check-evidence --evidence "$record" --sha256 "$IMAGE_SHA256"
+          run_url=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["run_url"])' "$record")
+          expected="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          [[ $run_url == "$expected" ]] || { echo "::error::the record names $run_url, not this run"; exit 1; }
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/evidence/acceptance-evidence.json

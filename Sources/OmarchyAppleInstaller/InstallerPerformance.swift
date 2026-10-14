@@ -3,7 +3,8 @@
   import OSLog
 
   enum InstallerPerformance {
-    private static let logger = Logger(subsystem: "com.omarchy.installer", category: "performance")
+    private static let logger = Logger(
+      subsystem: InstallerProductIdentity.appIdentifier, category: "performance")
 
     static func measure<T>(_ phase: String, _ action: () throws -> T) rethrows -> T {
       let start = ProcessInfo.processInfo.systemUptime

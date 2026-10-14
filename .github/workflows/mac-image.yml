@@ -1,0 +1,183 @@
+name: Mac image (edge)
+
+# Builds the public Apple Silicon image from the edge channel as it is now
+# (image-builder channel mode: the pinned edge omarchy.db, every package
+# checked against it and the Omarchy package key), runs the release guard, and
+# keeps the image, its records and a build provenance attestation as workflow
+# artifacts. It publishes nothing: no release, no catalog, no upload. It uses
+# no secrets, takes no inputs, and never runs for pull requests.
+#
+# Started by hand, or called by the release pipeline (mac-release-pipeline.yml,
+# which edge-dispatch.yml starts when an edge publish changes a package the
+# image installs). A caller grants contents: read, id-token: write and
+# attestations: write; the attestation's signer workflow is this file either
+# way, which is what the upload checks.
+
+on:
+  workflow_call:
+    outputs:
+      name:
+        description: The image name and artifact name, omarchy-mac-edge-<YYYY.MM.DD>-<set id>
+        value: ${{ jobs.build.outputs.name }}
+      payload:
+        description: The image zip's file name
+        value: ${{ jobs.build.outputs.payload }}
+      sha256:
+        description: The image zip's sha256
+        value: ${{ jobs.build.outputs.sha256 }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-image-edge
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build the edge image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    outputs:
+      name: ${{ steps.stage.outputs.name }}
+      payload: ${{ steps.stage.outputs.payload }}
+      sha256: ${{ steps.stage.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Record the host
+        run: |
+          set -euo pipefail
+          WORK=$RUNNER_TEMP/mac-image
+          echo "WORK=$WORK" >>"$GITHUB_ENV"
+          mkdir -p "$WORK/evidence"
+          {
+            git rev-parse HEAD
+            uname -a
+            head -3 /etc/os-release
+            nproc
+            free -h
+            df -h / "$RUNNER_TEMP"
+            docker version --format '{{.Server.Version}} {{.Server.Arch}}'
+            python3 --version
+          } 2>&1 | tee "$WORK/evidence/host.txt"
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          command -v bsdtar >/dev/null || { sudo apt-get update -q && sudo apt-get install --yes -q libarchive-tools; }
+          command -v jq gpg curl sha256sum
+
+      - name: Resolve the edge inputs
+        run: |
+          set -euo pipefail
+          bash image-builder/bin/mac-image-inputs resolve "$WORK/inputs" --channel-set --channel edge --cache "$WORK/cache"
+          tee "$WORK/evidence/inputs" <"$WORK/inputs"
+
+      - name: Build the image
+        run: |
+          set -euo pipefail
+          bash image-builder/bin/build-mac-image --inputs "$WORK/inputs" --cache "$WORK/cache" "$WORK/out" 2>&1 |
+            tee "$WORK/evidence/build.log"
+
+      - name: Check the records
+        run: |
+          set -euo pipefail
+          # The container wrote the outputs as root.
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/out" "$WORK/cache"
+          for check in provenance descriptor; do
+            python3 image-builder/bin/mac-image-check "$check" edge "$WORK/out"
+          done
+          # Channel packages were verified after install from pacman's cache (builder/channel_set.py verify-installed).
+          grep -h '^verified=' "$WORK/out/logs/packages.log"
+          echo "signatures in the package cache: $(find "$WORK/cache/pkg" -name '*.sig' | wc -l)"
+
+      - name: Run the release guard
+        run: |
+          set -euo pipefail
+          sudo python3 image-builder/bin/mac-release-guard build "$WORK/out" 2>&1 | tee "$WORK/evidence/release-guard.log"
+
+      - name: Stage the image
+        id: stage
+        run: |
+          set -euo pipefail
+          name=$(python3 image-builder/bin/mac-image-check name edge "$WORK/out")
+          stage=$WORK/stage/$name
+          mkdir -p "$stage"
+          zip=$(cd "$WORK/out" && ls ./*.zip)
+          zip=${zip#./}
+          mv "$WORK/out/$zip" "$stage/"
+          (cd "$stage" && sha256sum "$zip" >"$zip.sha256")
+          sha256=$(cut -d' ' -f1 "$stage/$zip.sha256")
+          [[ $zip =~ ^omarchy-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-aarch64-apple-silicon-mac-edge-os-package\.zip$ && $sha256 =~ ^[0-9a-f]{64}$ ]]
+          for file in installer_data.json IMAGE PROVENANCE INSPECTION inputs; do
+            cp "$WORK/out/$file" "$stage/"
+          done
+          cp -r "$WORK/out/logs" "$stage/logs"
+          cp "$WORK/evidence/build.log" "$WORK/evidence/release-guard.log" "$stage/"
+          {
+            echo "name=$name"
+            echo "stage=$stage"
+            echo "payload=$zip"
+            echo "sha256=$sha256"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "### \`$name\`"
+            echo '```'
+            echo "payload $zip, $(stat -c %s "$stage/$zip") bytes"
+            echo "sha256  $sha256"
+            grep -E '^(channel_set|omarchy_db_sha256|package_set_sha256|built|builder_commit)=' "$stage/IMAGE"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: ${{ steps.stage.outputs.stage }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Keep the evidence of a failed or timed-out build
+        if: failure() || cancelled()
+        run: |
+          set +e
+          sudo chown -R "$(id -u):$(id -g)" "$WORK/out" 2>/dev/null
+          cp -r "$WORK/out/logs" "$WORK/evidence/logs" 2>/dev/null
+          for file in installer_data.json IMAGE PROVENANCE INSPECTION; do
+            cp "$WORK/out/$file" "$WORK/evidence/" 2>/dev/null
+          done
+          true
+
+      - name: Upload the evidence of a failed or timed-out build
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mac-image-evidence
+          path: ${{ runner.temp }}/mac-image/evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Apart from the privileged build, so only this job can mint the Sigstore
+  # certificate. It attests the digest the build recorded; nothing is downloaded.
+  attest:
+    name: Attest the image
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write # the attestation's Sigstore certificate
+      attestations: write # storing the attestation
+    steps:
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ needs.build.outputs.payload }}
+          subject-digest: sha256:${{ needs.build.outputs.sha256 }}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify and freeze a signed Apple Silicon candidate set; never trust artifact-supplied keys.
 
-A set is the directory the candidate-set tool of omacom/omarchy-mac signs:
+A set is the directory the candidate-set tool of omacom/omarchy-mac-pkgs signs:
 manifest.json, signing.json and signing.json.sig, and each package archive
 with its detached .sig. Trust comes only from candidate-trust/ beside this
 file: the signer's fingerprints, the digest of its public key and the package
@@ -24,6 +24,10 @@ manifest, one entry per such package:
 Each declared package must name that commit as its source and carry it as its
 source revision. Any other runtime package from another commit is refused.
 
+The runtime's source is the policy's source_repositories: omacom/omarchy, where
+it lives since omacom/omarchy#14431, or omacom/omarchy-mac, the fork sets named
+before that (it serves the same commits).
+
   candidate_set.py import --input DIR --output DIR --receipt-sha256 HEX
                           --manifest-sha256 HEX --source-commit HEX
   candidate_set.py describe --input DIR
@@ -44,9 +48,14 @@ TRUST = Path(__file__).resolve().parent / 'candidate-trust'
 HEX40 = re.compile(r'[0-9a-f]{40}')
 HEX64 = re.compile(r'[0-9a-f]{64}')
 ARCHIVE = re.compile(r'[A-Za-z0-9@._+:-]+\.pkg\.tar\.(xz|zst)')
-# The runtime's Apple package list, by upstream's name, then an older runtime's.
-APPLE_LISTS = ('usr/share/omarchy/install/omarchy-apple-silicon.packages',
+# The runtime's Apple package list: omarchy-aarch64-apple.packages, named for
+# the platform (omacom/omarchy e1b0e5e9b), else an older runtime's
+# omarchy-apple-silicon.packages, else an even older one's omarchy-apple.packages.
+APPLE_LISTS = ('usr/share/omarchy/install/omarchy-aarch64-apple.packages',
+               'usr/share/omarchy/install/omarchy-apple-silicon.packages',
                'usr/share/omarchy/install/omarchy-apple.packages')
+NO_APPLE_LIST = ('ships no Apple package list (omarchy-aarch64-apple.packages, '
+                 'omarchy-apple-silicon.packages or omarchy-apple.packages)')
 # Where each runtime package records the commit it was built from.
 REVISION_FILES = {
     'omarchy': 'usr/share/doc/omarchy/source-revision',
@@ -183,7 +192,7 @@ def apple_list(package):
         entry = subprocess.run(['bsdtar', '-tvf', str(package), name], capture_output=True, text=True)
         if entry.returncode == 0 and entry.stdout.startswith('-'):
             return name, member(package, name).decode()
-    raise ValueError('the runtime ships no Apple package list (omarchy-apple-silicon.packages or omarchy-apple.packages)')
+    raise ValueError('the runtime ' + NO_APPLE_LIST)
 
 
 def payload_paths(package):
@@ -254,7 +263,7 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
         source = data.get('source', {})
         require(data.get('schema') == 1 and data.get('candidate_only') is True
                 and data.get('set') == receipt.get('set')
-                and source.get('repository') == policy['source_repository']
+                and source.get('repository') in policy['source_repositories']
                 and source.get('commit') == source_commit, 'wrong build manifest')
         require(data.get('set_sha256') == set_digest(data) == receipt.get('set_sha256'), 'set digest mismatch')
         packages = data['packages']
@@ -298,7 +307,7 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
                     require(origin.get('repository') in policy['platform_repositories']
                             and origin.get('commit') == declared[name] == revision, 'mixed package sources: ' + name)
                     origins[name] = 'platform ' + revision
-                elif origin.get('repository') == policy['source_repository'] and origin.get('commit') == source_commit:
+                elif origin.get('repository') in policy['source_repositories'] and origin.get('commit') == source_commit:
                     require(revision == source_commit, 'mixed package sources: ' + name)
                     origins[name] = 'commit'
                 else:

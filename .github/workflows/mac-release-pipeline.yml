@@ -1,0 +1,196 @@
+name: Mac release pipeline
+
+# Carries one edge image from build to a signed edge catalog:
+#
+#   plan        refuses a real run off main or for a pull request
+#   build       mac-image.yml: builds and attests the image (no secrets)
+#   acceptance  mac-acceptance.yml: the VM harness's fresh-install scenarios
+#               on that exact sha256, on the VM runner (the `runner` input;
+#               the M2 lab's ephemeral self-hosted runner until Namespace).
+#               Writes the evidence record, attests it when it passed, and
+#               fails unless it passed.
+#   catalog-inputs  the engine and app blocks from .github/mac-release-pipeline.json;
+#               a real run without an app release stops here, before anything
+#               is public
+#   upload      mac-upload.yml, only after passing evidence: in the publish
+#               environment (main only) it re-checks the evidence, the
+#               evidence's attestation by mac-acceptance.yml and the image's
+#               build attestation, uploads, publishes the draft as a
+#               prerelease and outputs the catalog's payload, installer-data
+#               and evidence inputs. A dry run uploads to a scratch release
+#               and deletes it.
+#   catalog     mac-catalog.yml, real runs only: re-checks the evidence for the
+#               payload's digest, checks every URL serves its pinned bytes,
+#               and signs in catalog-release, which waits for the owner's
+#               approval: the pipeline's only manual step.
+#
+# Data passes as job outputs (image name, sha256, evidence artifact and run,
+# catalog inputs) and as artifacts of this run (the image, the evidence
+# record), which the called workflows read by name. Every gate stays in the called workflow it
+# belongs to; this file only adds ordering and the skip conditions.
+#
+# Secrets: only the catalog's signing key, passed by name to mac-catalog.yml.
+# It exists only in the catalog-release environment, so here it resolves to
+# empty; only the job that runs in the catalog-release environment (the sign
+# job, also when mac-catalog.yml forwards the key to a nested signing
+# workflow) sees its value. GitHub delivers an environment secret to a called
+# workflow only when every caller on the way passes it (by name or inherit);
+# this file never uses `secrets: inherit`.
+#
+# Started by edge-dispatch.yml (gh workflow run, dry-run=false) when an edge
+# publish changes a package the image installs, or by hand (dry run by
+# default). Never for pull requests.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Upload to a scratch release and delete it; sign no catalog
+        type: boolean
+        default: true
+      runner:
+        description: The VM acceptance job's runs-on as JSON; empty for mac-acceptance.yml's default (the M2 lab runner until Namespace)
+        type: string
+        default: ''
+
+permissions: {}
+
+# One pipeline at a time. A newer queued run replaces an older queued one,
+# which loses nothing: each build takes the edge channel as it is when it
+# starts.
+concurrency:
+  group: mac-release-pipeline
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Refuse a real run off main
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ $EVENT == pull_request || $EVENT == pull_request_target ]]; then
+            echo "::error::the release pipeline never runs for pull requests"
+            exit 1
+          fi
+          if [[ $DRY_RUN != true && $GITHUB_REF != refs/heads/main ]]; then
+            echo "::error::a real pipeline run starts only from main, not $GITHUB_REF"
+            exit 1
+          fi
+          echo "dry_run=$DRY_RUN ref=$GITHUB_REF event=$EVENT"
+
+  build:
+    name: Build
+    needs: plan
+    uses: ./.github/workflows/mac-image.yml
+    permissions:
+      contents: read
+      id-token: write # the image's build attestation
+      attestations: write
+
+  acceptance:
+    name: Acceptance
+    needs: build
+    uses: ./.github/workflows/mac-acceptance.yml
+    permissions:
+      contents: read
+      actions: read # the image artifact
+      attestations: write # the evidence record's attestation (attest job only)
+      id-token: write # its Sigstore certificate (attest job only)
+    with:
+      image-artifact: ${{ needs.build.outputs.name }}
+      image-sha256: ${{ needs.build.outputs.sha256 }}
+      runner: ${{ inputs.runner }}
+
+  catalog-inputs:
+    name: Catalog inputs
+    needs: acceptance
+    if: needs.acceptance.outputs.result == 'pass'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      engine: ${{ steps.read.outputs.engine }}
+      installer: ${{ steps.read.outputs.installer }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Read the engine and app blocks
+        id: read
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          config=${PIPELINE_CONFIG:-.github/mac-release-pipeline.json}
+          # Before the upload, so a real run without an app release publishes
+          # nothing. A dry run signs no catalog and only notes it.
+          if [[ $(jq -r '.installer | type' "$config") != object && $DRY_RUN == true ]]; then
+            echo "::notice::$config names no app release yet; a real run would stop here"
+          elif [[ $(jq -r '.installer | type' "$config") != object ]]; then
+            echo "::error::$config names no app release (installer); set it to a published app release (mac-app-release.yml) before a catalog can be signed"
+            exit 1
+          fi
+          # The catalog's own checks, so a malformed block stops here too.
+          python3 -I - "$config" <<'PY'
+          import importlib.util, json, sys
+          spec = importlib.util.spec_from_file_location("catalog_release", "scripts/catalog_release.py")
+          release = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(release)
+          config = json.load(open(sys.argv[1]))
+          try:
+              release.check_engine(config["engine"])
+              if config["installer"] is not None:
+                  release.check_installer(config["installer"], config["engine"]["version"])
+          except (release.Refusal, KeyError, TypeError) as error:
+              sys.exit(f"::error::{sys.argv[1]}: {error}")
+          PY
+          echo "engine=$(jq -c .engine "$config")" | tee -a "$GITHUB_OUTPUT"
+          echo "installer=$(jq -c .installer "$config")" | tee -a "$GITHUB_OUTPUT"
+
+  upload:
+    name: Upload
+    needs: [build, acceptance, catalog-inputs]
+    if: needs.acceptance.outputs.result == 'pass'
+    uses: ./.github/workflows/mac-upload.yml
+    permissions:
+      contents: write # the image's release
+      actions: read # this run's artifacts
+      attestations: read # the image's build attestation
+    with:
+      image-artifact: ${{ needs.build.outputs.name }}
+      image-sha256: ${{ needs.build.outputs.sha256 }}
+      dry-run: ${{ inputs.dry-run }}
+      evidence-artifact: ${{ needs.acceptance.outputs.evidence-artifact }}
+      evidence-run-id: ${{ needs.acceptance.outputs.evidence-run-id }}
+      make-public: ${{ !inputs.dry-run }}
+
+  catalog:
+    name: Catalog
+    needs: [build, acceptance, upload, catalog-inputs]
+    if: needs.acceptance.outputs.result == 'pass' && !inputs.dry-run
+    uses: ./.github/workflows/mac-catalog.yml
+    permissions:
+      contents: write # the catalog-edge release
+    with:
+      image: ${{ needs.build.outputs.name }}
+      payload: ${{ needs.upload.outputs.payload }}
+      installer-data: ${{ needs.upload.outputs.installer-data }}
+      evidence: ${{ needs.upload.outputs.evidence }}
+      engine: ${{ needs.catalog-inputs.outputs.engine }}
+      installer: ${{ needs.catalog-inputs.outputs.installer }}
+      channel: edge
+      dry-run: false
+    secrets:
+      CATALOG_SIGNING_KEY: ${{ secrets.CATALOG_SIGNING_KEY }}

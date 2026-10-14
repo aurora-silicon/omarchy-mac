@@ -1,0 +1,386 @@
+name: Mac app release
+
+# A pushed v<version> tag builds the installer app, signs it with the Developer
+# ID in the macos-release environment (a second maintainer approves; self-review
+# blocked, no admin bypass), notarizes and staples it into a .dmg, and leaves
+# the .dmg on a draft release v<version> that is never marked latest. A
+# dispatch defaults to an ad hoc dry run that needs no secrets and publishes
+# nothing. Packaging/release/plan decides and refuses everything else; pull
+# requests never trigger this workflow.
+#
+# Jobs: plan, engine and build hold no secrets. Only the sign job can read the
+# certificate and notary key; it installs nothing, runs no package manager and
+# executes only this commit's Packaging/release scripts and Apple's tools on
+# the app the build job produced (checked by digest). publish runs only after
+# an approved, real sign job, and only for a v* tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build, sign and package only; publish nothing
+        type: boolean
+        default: true
+      signing:
+        description: ad-hoc needs no secrets; developer-id waits for macos-release approval (main or a v* tag)
+        type: choice
+        options: [ad-hoc, developer-id]
+        default: ad-hoc
+      version:
+        description: App version for a run that is not on a v* tag
+        type: string
+        default: 0.0.0-dry-run
+      stand-in-trust-root:
+        description: Replace the catalog trust root with a random key (ad hoc dry runs only)
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  # Two runs for one ref never race for the same release.
+  group: mac-app-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Packaging/release/publish-app target; ticket 13 switches it to r2.
+  APP_PUBLISH_TARGET: github-release
+  # Catalogs the app reads: stopgap (this repository's catalog-<channel>
+  # releases) until ticket 13 switches it to base (Release/release.json, the
+  # catalog base in identity.conf).
+  APP_CATALOG_HOST: stopgap
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      dry-run: ${{ steps.plan.outputs.dry_run }}
+      signing: ${{ steps.plan.outputs.signing }}
+      version: ${{ steps.plan.outputs.version }}
+      build-number: ${{ steps.plan.outputs.build_number }}
+      stand-in-trust-root: ${{ steps.plan.outputs.stand_in_trust_root }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          SIGNING: ${{ inputs.signing }}
+          VERSION: ${{ inputs.version }}
+          STAND_IN_TRUST_ROOT: ${{ inputs.stand-in-trust-root }}
+        run: bash Packaging/release/plan | tee -a "$GITHUB_OUTPUT"
+      - name: A release is a commit on main
+        if: steps.plan.outputs.dry_run == 'false'
+        run: |
+          # main takes only reviewed pull requests that passed the installer checks.
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "$GITHUB_REF names $GITHUB_SHA, which is not on main" >&2; exit 1; }
+      - name: Test the release scripts
+        run: |
+          python3 -m unittest discover -s Packaging/release/tests -p 'test_*.py'
+          bash test/shell.d/apple-installer-release-test.sh
+
+  engine:
+    name: Fetch the pinned engine
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # Draft releases are listed only to tokens that can write contents.
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Download and check the engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r name digest size < <(python3 Packaging/read-validation-engine.py)
+          [[ -n $name && -n $digest && -n $size ]]
+          release="engine-${name#installer-}"
+          release="${release%.tar.gz}"
+          mkdir -p "$RUNNER_TEMP/engine"
+          gh release download "$release" -R "$GITHUB_REPOSITORY" -p "$name" -D "$RUNNER_TEMP/engine"
+          (cd "$RUNNER_TEMP/engine" && echo "$digest  $name" | sha256sum -c -)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine
+          path: ${{ runner.temp }}/engine/
+          retention-days: 3
+          if-no-files-found: error
+
+  build:
+    name: Build the unsigned app
+    needs: [plan, engine]
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    outputs:
+      app-sha256: ${{ steps.archive.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: engine
+          path: Engine/artifacts
+      - name: Record source and tools
+        run: |
+          [[ $(uname -m) == "arm64" ]]
+          git rev-parse HEAD
+          sw_vers
+          xcodebuild -version
+          xcrun swift --version
+      - name: Test the release scripts on macOS
+        run: |
+          # The notarization flow and the archived-binary guard cases run only on macOS.
+          python3 -m unittest discover -s Packaging/release/tests -p 'test_*.py'
+          bash test/shell.d/apple-installer-release-test.sh
+      - name: Prepare release inputs
+        env:
+          STAND_IN: ${{ needs.plan.outputs.stand-in-trust-root }}
+        run: |
+          release="$RUNNER_TEMP/release"
+          mkdir "$release"
+          if [[ $STAND_IN == true ]]; then
+            # Dry run only (plan enforces it): a throwaway key nobody holds.
+            head -c 32 /dev/urandom >"$release/trust-root.ed25519.pub"
+            echo "::warning::Dry run with a stand-in catalog trust root, not Release/trust-root.ed25519.pub"
+          else
+            cp Release/trust-root.ed25519.pub "$release/"
+          fi
+          case $APP_CATALOG_HOST in
+            base)
+              if [[ $STAND_IN == true ]]; then host=(); else cp Release/release.json "$release/"; fi ;;
+            stopgap) host=(--stopgap) ;;
+            *) echo "::error::APP_CATALOG_HOST must be base or stopgap"; exit 1 ;;
+          esac
+          if [[ ! -e $release/release.json ]]; then
+            default_channel=$(plutil -extract default_channel raw -o - Release/release.json)
+            bash scripts/make-release-descriptor --public-key "$release/trust-root.ed25519.pub" \
+              --default-channel "$default_channel" --output "$release/release.json" "${host[@]}"
+          fi
+          plutil -p "$release/release.json"
+      - name: Build
+        env:
+          OMARCHY_APP_VERSION: ${{ needs.plan.outputs.version }}
+          OMARCHY_APP_BUILD_NUMBER: ${{ needs.plan.outputs.build-number }}
+          OMARCHY_APP_SIGNING_IDENTITY: none
+        run: |
+          source Packaging/identity.conf
+          OMARCHY_TEAM_ID=$INSTALLER_TEAM_ID bash Packaging/build-app.sh "$RUNNER_TEMP/release" "$RUNNER_TEMP/app"
+      - name: Guard the unsigned app
+        run: python3 Packaging/release/release-guard "$RUNNER_TEMP/app/"*.app
+      - id: archive
+        name: Archive the app
+        run: |
+          # A tar keeps the bundle's modes; artifact zips do not.
+          tar -C "$RUNNER_TEMP/app" -cf "$RUNNER_TEMP/app.tar" .
+          echo "sha256=$(shasum -a 256 "$RUNNER_TEMP/app.tar" | cut -d' ' -f1)" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}/app.tar
+          retention-days: 3
+          if-no-files-found: error
+
+  sign-ad-hoc:
+    name: Sign ad hoc and package (dry run)
+    needs: [plan, build]
+    if: needs.plan.outputs.signing == 'ad-hoc'
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}
+      - name: Unpack the build job's app
+        env:
+          APP_SHA256: ${{ needs.build.outputs.app-sha256 }}
+        run: |
+          echo "$APP_SHA256  $RUNNER_TEMP/app.tar" | shasum -a 256 -c -
+          mkdir "$RUNNER_TEMP/app"
+          tar -C "$RUNNER_TEMP/app" -xf "$RUNNER_TEMP/app.tar"
+      - name: Sign ad hoc, package and guard
+        run: |
+          source Packaging/identity.conf
+          bash Packaging/release/sign-and-package --app "$RUNNER_TEMP/app/$INSTALLER_APP_NAME.app" \
+            --output "$RUNNER_TEMP/out" --identity -
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dry-run-dmg
+          path: ${{ runner.temp }}/out/
+          retention-days: 7
+          if-no-files-found: error
+
+  sign:
+    name: Sign with the Developer ID, notarize and package
+    needs: [plan, build]
+    if: needs.plan.outputs.signing == 'developer-id'
+    runs-on: macos-26
+    timeout-minutes: 150
+    environment: macos-release
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    outputs:
+      dmg-sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-app
+          path: ${{ runner.temp }}
+      - name: Unpack the build job's app
+        env:
+          APP_SHA256: ${{ needs.build.outputs.app-sha256 }}
+        run: |
+          echo "$APP_SHA256  $RUNNER_TEMP/app.tar" | shasum -a 256 -c -
+          mkdir "$RUNNER_TEMP/app"
+          tar -C "$RUNNER_TEMP/app" -xf "$RUNNER_TEMP/app.tar"
+      - name: Import the Developer ID into a throwaway keychain
+        id: keychain
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          umask 077
+          source Packaging/identity.conf
+          [[ -n $P12_BASE64 && -n $P12_PASSWORD ]] || { echo "the Developer ID secrets are not set" >&2; exit 1; }
+          secrets="$RUNNER_TEMP/signing-secrets"
+          mkdir "$secrets"
+          keychain="$secrets/release.keychain-db"
+          password=$(head -c 32 /dev/urandom | base64)
+          echo "::add-mask::$password"
+          printf '%s' "$P12_BASE64" | base64 --decode >"$secrets/developer-id.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$secrets/developer-id.p12" -k "$keychain" -f pkcs12 -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign
+          rm -f "$secrets/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Exactly one Developer ID Application identity of the configured team.
+          identities=$(security find-identity -v -p codesigning "$keychain" |
+            grep -F "\"Developer ID Application: " | grep -F "($INSTALLER_TEAM_ID)\"" || true)
+          (( $(grep -c . <<<"$identities") == 1 )) ||
+            { echo "the keychain needs one Developer ID Application identity of team $INSTALLER_TEAM_ID" >&2; exit 1; }
+          echo "identity=$(awk '{print $2}' <<<"$identities")" >>"$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >>"$GITHUB_OUTPUT"
+      - name: Write the notary API key
+        env:
+          NOTARY_API_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+        run: |
+          umask 077
+          [[ -n $NOTARY_API_KEY_P8_BASE64 ]] || { echo "the notary API key secret is not set" >&2; exit 1; }
+          printf '%s' "$NOTARY_API_KEY_P8_BASE64" | base64 --decode >"$RUNNER_TEMP/signing-secrets/notary-key.p8"
+      - id: package
+        name: Sign, notarize, staple, package and guard
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          source Packaging/identity.conf
+          NOTARY_API_KEY="$RUNNER_TEMP/signing-secrets/notary-key.p8" \
+            bash Packaging/release/sign-and-package --app "$RUNNER_TEMP/app/$INSTALLER_APP_NAME.app" \
+            --output "$RUNNER_TEMP/out" --identity "$IDENTITY" --keychain "$KEYCHAIN" --notarize
+          echo "sha256=$(cut -d' ' -f1 "$RUNNER_TEMP/out/"*.dmg.sha256)" | tee -a "$GITHUB_OUTPUT"
+      - name: Delete the keychain and keys
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/signing-secrets/release.keychain-db"
+          if [[ -e $keychain ]]; then
+            security delete-keychain "$keychain" || true
+          fi
+          rm -rf "$RUNNER_TEMP/signing-secrets"
+      # A notarized dmg leaves this job only for a release, and only for the
+      # publish job; a signed dry run keeps the notary logs and checksum.
+      - if: needs.plan.outputs.dry-run == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-dmg
+          path: ${{ runner.temp }}/out/
+          retention-days: 1
+          if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notarization-evidence
+          path: |
+            ${{ runner.temp }}/out/*.json
+            ${{ runner.temp }}/out/*.sha256
+          retention-days: 30
+          if-no-files-found: ignore
+
+  publish:
+    name: Attest and publish the draft release
+    needs: [plan, sign]
+    if: needs.plan.outputs.dry-run == 'false' && needs.plan.outputs.signing == 'developer-id' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-dmg
+          path: ${{ runner.temp }}/out
+      - name: Check the signed dmg
+        env:
+          DMG_SHA256: ${{ needs.sign.outputs.dmg-sha256 }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          source Packaging/identity.conf
+          dmg="$RUNNER_TEMP/out/$INSTALLER_FILE_STEM-$VERSION.dmg"
+          echo "$DMG_SHA256  $dmg" | shasum -a 256 -c -
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          echo "DMG=$dmg" >>"$GITHUB_ENV"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.DMG }}
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: bash Packaging/release/publish-app --target "$APP_PUBLISH_TARGET" --version "$VERSION" "$DMG" "$DMG.sha256"

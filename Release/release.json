@@ -3,16 +3,16 @@
   "default_channel": "edge",
   "channels": {
     "stable": {
-      "catalog_url": "https://downloads.aicodelabs.com.au/omarchy-mac/channels/stable/catalog.signed.json"
+      "catalog_url": "https://mac.omarchy.org/v1/catalog-stable.signed.json"
     },
     "rc": {
-      "catalog_url": "https://downloads.aicodelabs.com.au/omarchy-mac/channels/rc/catalog.signed.json"
+      "catalog_url": "https://mac.omarchy.org/v1/catalog-rc.signed.json"
     },
     "edge": {
-      "catalog_url": "https://downloads.aicodelabs.com.au/omarchy-mac/channels/edge/catalog.signed.json"
+      "catalog_url": "https://mac.omarchy.org/v1/catalog-edge.signed.json"
     }
   },
-  "trust_root_fingerprint": "sha256:0e86a878c2445009981a182a4642ec22ae14ab4d8365fad4b038cafc4802dc1b",
-  "helper_mach_service_name": "com.omarchy.mx.installer.helper",
-  "helper_code_signing_requirement": "anchor apple generic and identifier \"com.omarchy.mx.installer.helper\" and certificate leaf[subject.OU] = \"T2C384FJBD\""
+  "trust_root_fingerprint": "sha256:bb914ffba2a74d05fd8d57013999376654ff9d7489929c76996a7f7716f27ea3",
+  "helper_mach_service_name": "org.omarchy.installer.helper",
+  "helper_code_signing_requirement": "anchor apple generic and identifier \"org.omarchy.installer.helper\" and certificate leaf[subject.OU] = \"T2C384FJBD\""
 }

@@ -232,29 +232,46 @@ def check_enabled_units(verification: Verification, root: Path) -> None:
 
 
 def installed_package_names(root: Path) -> set[str]:
+    return set(installed_provides(root))
+
+
+def installed_provides(root: Path) -> dict[str, set[str]]:
+    """Each installed package's name and the names it provides, without versions."""
     database = root / "var/lib/pacman/local"
-    names: set[str] = set()
+    packages: dict[str, set[str]] = {}
     if not database.is_dir():
-        return names
+        return packages
     for entry in database.iterdir():
         desc = entry / "desc"
         if desc.is_file():
             lines = desc.read_text().splitlines()
-            names.add(lines[lines.index("%NAME%") + 1])
-    return names
+            provides = set()
+            if "%PROVIDES%" in lines:
+                for line in lines[lines.index("%PROVIDES%") + 1:]:
+                    if not line:
+                        break
+                    provides.add(re.split(r"[<>=]", line, maxsplit=1)[0])
+            packages[lines[lines.index("%NAME%") + 1]] = provides
+    return packages
 
 
-def check_packages(verification: Verification, root: Path) -> None:
-    installed = installed_package_names(root)
-    missing = [name for name in REQUIRED_PACKAGES if name not in installed]
+def check_packages(verification: Verification, root: Path, runtime_packages: frozenset[str] = frozenset()) -> None:
+    """RUNTIME_PACKAGES are the image's runtime named apart from their role (a
+    channel image's omarchy-dev provides omarchy): they fill the roles they
+    provide and are not stray development packages. No other package fills a
+    required name by providing it."""
+    packages = installed_provides(root)
+    installed = set(packages)
+    filled = installed | {role for name in runtime_packages & installed for role in packages[name]}
+    missing = [name for name in REQUIRED_PACKAGES if name not in filled]
     verification.record(
         "packages-required-present",
         not missing,
         f"all {len(REQUIRED_PACKAGES)} required packages installed" if not missing
         else "missing packages: " + ", ".join(missing),
     )
-    legacy = sorted({"linux-asahi", "omarchy-apple-boot", "omarchy-first-boot", "omarchy-dev",
-                     "omarchy-settings-dev"} & installed)
+    legacy = sorted(({"linux-asahi", "omarchy-apple-boot", "omarchy-first-boot", "omarchy-dev",
+                      "omarchy-settings-dev"} - runtime_packages) & installed)
     verification.record("packages-no-legacy", not legacy,
                         "no legacy or development package" if not legacy else "installed: " + ", ".join(legacy))
     versions = []
@@ -283,12 +300,12 @@ def check_identity(verification: Verification, root: Path) -> None:
     )
 
 
-def verify(root: Path) -> Verification:
+def verify(root: Path, runtime_packages=frozenset()) -> Verification:
     verification = Verification()
     check_pacman(verification, root)
     check_network(verification, root)
     check_enabled_units(verification, root)
-    check_packages(verification, root)
+    check_packages(verification, root, frozenset(runtime_packages))
     check_identity(verification, root)
     return verification
 

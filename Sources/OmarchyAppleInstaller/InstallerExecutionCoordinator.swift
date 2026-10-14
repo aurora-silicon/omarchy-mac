@@ -1,10 +1,28 @@
 #if os(macOS)
   import Foundation
 
+  /// Created only by app-side checks that fail before an execution request is sent.
+  /// A transport failure after submission must never be wrapped in this type.
+  public struct InstallerPreSubmissionFailure: Error, Sendable {
+    public let underlying: any Error
+
+    public init(_ underlying: any Error) {
+      self.underlying = underlying
+    }
+  }
+
   public struct InstallerExecutionCoordinator: Sendable {
     private let processAdapter = ClosedEngineProcessAdapter()
 
-    public init() {}
+    private let ping: @Sendable (AuthenticatedEngineXPCSubmitter) async throws -> Void
+
+    public init() {
+      ping = { try await $0.ping() }
+    }
+
+    init(ping: @escaping @Sendable (AuthenticatedEngineXPCSubmitter) async throws -> Void) {
+      self.ping = ping
+    }
 
     public func execute(
       _ prepared: PreparedInstallerPlanExecution,
@@ -53,14 +71,18 @@
       operation: EngineHandoffOperation,
       journalProgress: (@Sendable (Data) -> Void)?
     ) async throws -> InstallerExecutionProgress {
-      let submitter = try AuthenticatedEngineXPCSubmitter(
-        machServiceName: configuration.helperMachServiceName,
-        helperCodeSigningRequirement:
-          configuration.helperCodeSigningRequirement,
-        journalProgress: journalProgress
-      )
-      // Nothing leaves the app until the helper has answered.
-      try await submitter.ping()
+      let submitter: AuthenticatedEngineXPCSubmitter
+      do {
+        submitter = try AuthenticatedEngineXPCSubmitter(
+          machServiceName: configuration.helperMachServiceName,
+          helperCodeSigningRequirement: configuration.helperCodeSigningRequirement,
+          journalProgress: journalProgress
+        )
+        // Ping sends no execution request, handoff or credentials.
+        try await ping(submitter)
+      } catch {
+        throw InstallerPreSubmissionFailure(error)
+      }
       let process = ClosedEngineHandoffProcess(
         assets: prepared.review.assets,
         handoffDirectory: handoffDirectory,

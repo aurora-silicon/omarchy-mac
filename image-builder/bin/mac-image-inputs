@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Resolves, once, every moving input an Apple Silicon image is built from: the
-# signed candidate set, the Omarchy package channel's database, the asahi-alarm
+# signed candidate set (or, in channel mode, the set the Omarchy channel's
+# database names), the Omarchy package channel's database, the asahi-alarm
 # database, the Arch Linux ARM databases and the Arch Linux ARM root
 # filesystem. The record pins each by sha256 and names the servers they come
 # from, so every build from it installs the same bytes or stops.
@@ -19,11 +20,12 @@ DEFAULT_ALARM_SERVER='https://ca.us.mirror.archlinuxarm.org/$arch/$repo'
 
 usage() {
   cat <<'USAGE'
-Usage: bin/mac-image-inputs resolve FILE --candidates DIR [--channel edge|rc|stable]
+Usage: bin/mac-image-inputs resolve FILE (--candidates DIR | --channel-set) [--channel edge|rc|stable]
          [--omarchy-server URL] [--asahi-alarm-server URL] [--alarm-server URL] [--cache DIR]
        bin/mac-image-inputs check FILE
        bin/mac-image-inputs rootfs FILE DEST [--cache DIR]
        bin/mac-image-inputs dbs FILE DEST [--cache DIR]
+       bin/mac-image-inputs packages FILE DEST [--cache DIR]
        bin/mac-image-inputs candidates MANIFEST DEST
 
   resolve     verify the signed candidate set in DIR, download every package
@@ -31,11 +33,19 @@ Usage: bin/mac-image-inputs resolve FILE --candidates DIR [--channel edge|rc|sta
               FILE. --cache keeps the databases and root filesystem for builds.
               The Omarchy server defaults to pkgs.omarchy.org's CHANNEL
               (default edge); URLs may use pacman's $arch and $repo.
+              --channel-set builds from the channel itself (a public image):
+              the set is what the pinned omarchy.db names for the trust
+              policy's channel runtime and boot packages, each archive checked
+              against that database and the Omarchy package key
+              (builder/channel_set.py); the record names it channel_set=.
   check       FILE is a canonical record; prints it
   rootfs      put the record's root filesystem at DEST after checking its
               signature and recorded sha256
   dbs         put each database the record pins in the directory DEST, as
               <repository>.db, from --cache or the record's servers
+  packages    put a channel record's set archives and their signatures in the
+              empty directory DEST, from --cache or the Omarchy server (they
+              are verified by the build, not here)
   candidates  download the release a candidate MANIFEST names into the empty
               directory DEST with gh (the files are verified by resolve and the
               build, not here)
@@ -68,9 +78,14 @@ download() {
 record_body() {
   local repository
   printf 'format=2\nresolved_at=%s\n' "$resolved_at"
-  printf 'candidate_set=%s\ncandidate_source_commit=%s\ncandidate_signer=%s\n' \
-    "$candidate_set" "$candidate_source_commit" "$candidate_signer"
-  printf 'candidate_receipt_sha256=%s\ncandidate_manifest_sha256=%s\n' "$candidate_receipt" "$candidate_manifest"
+  if [[ -n ${channel_set:-} ]]; then
+    printf 'channel_set=%s\nchannel_signer=%s\nchannel_manifest_sha256=%s\n' \
+      "$channel_set" "$channel_signer" "$channel_manifest"
+  else
+    printf 'candidate_set=%s\ncandidate_source_commit=%s\ncandidate_signer=%s\n' \
+      "$candidate_set" "$candidate_source_commit" "$candidate_signer"
+    printf 'candidate_receipt_sha256=%s\ncandidate_manifest_sha256=%s\n' "$candidate_receipt" "$candidate_manifest"
+  fi
   printf 'omarchy_channel=%s\nomarchy_server=%s\nomarchy_db_sha256=%s\n' "$omarchy_channel" "$omarchy_server" "$omarchy_db"
   printf 'asahi_alarm_server=%s\nasahi_alarm_db_sha256=%s\n' "$asahi_alarm_server" "$asahi_alarm_db"
   printf 'alarm_server=%s\n' "$alarm_server"
@@ -105,6 +120,9 @@ load_record() {
       candidate_signer) candidate_signer=$value ;;
       candidate_receipt_sha256) candidate_receipt=$value ;;
       candidate_manifest_sha256) candidate_manifest=$value ;;
+      channel_set) channel_set=$value ;;
+      channel_signer) channel_signer=$value ;;
+      channel_manifest_sha256) channel_manifest=$value ;;
       omarchy_channel) omarchy_channel=$value ;;
       omarchy_server) omarchy_server=$value ;;
       omarchy_db_sha256) omarchy_db=$value ;;
@@ -120,15 +138,24 @@ load_record() {
     esac
   done <"$file"
   [[ ${resolved_at:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ &&
-    ${candidate_set:-} =~ ^[A-Za-z0-9._-]{1,128}$ &&
-    ${candidate_source_commit:-} =~ ^[0-9a-f]{40}$ &&
-    ${candidate_signer:-} =~ ^[0-9A-F]{40}$ &&
-    ${omarchy_channel:-} =~ ^(edge|rc|stable)$ ]] || fail "$file is not an inputs record"
+    ${omarchy_channel:-} =~ ^(edge|rc|stable)$ && ${omarchy_db:-} =~ $hex ]] || fail "$file is not an inputs record"
+  # Either a candidate set or a channel set, never parts of both. A channel set
+  # is named for its channel and the database it was resolved from.
+  if [[ -n ${channel_set:-} ]]; then
+    [[ -z ${candidate_set:-}${candidate_source_commit:-}${candidate_signer:-}${candidate_receipt:-}${candidate_manifest:-} &&
+      $channel_set == "omarchy-$omarchy_channel-${omarchy_db:0:12}" &&
+      ${channel_signer:-} =~ ^[0-9A-F]{40}$ && ${channel_manifest:-} =~ $hex ]] || fail "$file is not an inputs record"
+  else
+    [[ -z ${channel_signer:-}${channel_manifest:-} &&
+      ${candidate_set:-} =~ ^[A-Za-z0-9._-]{1,128}$ &&
+      ${candidate_source_commit:-} =~ ^[0-9a-f]{40}$ &&
+      ${candidate_signer:-} =~ ^[0-9A-F]{40}$ &&
+      ${candidate_receipt:-} =~ $hex && ${candidate_manifest:-} =~ $hex ]] || fail "$file is not an inputs record"
+  fi
   for value in "${omarchy_server:-}" "${asahi_alarm_server:-}" "${alarm_server:-}"; do
     valid_server "$value" || fail "$file is not an inputs record"
   done
-  for value in "${candidate_receipt:-}" "${candidate_manifest:-}" "${omarchy_db:-}" "${asahi_alarm_db:-}" \
-    "${alarm_rootfs:-}"; do
+  for value in "${asahi_alarm_db:-}" "${alarm_rootfs:-}"; do
     [[ $value =~ $hex ]] || fail "$file is not an inputs record"
   done
   for key in "${ALARM_REPOSITORIES[@]}"; do
@@ -176,20 +203,54 @@ fetch_rootfs() {
   gpgconf --homedir "$home" --kill gpg-agent >/dev/null 2>&1 || true
 }
 
+# The channel set's archives and signatures, named by the database DB, into the
+# empty directory DEST: from CACHE's pkg/ when it holds them, else from the
+# Omarchy server. Nothing here is trusted; channel_set.py verifies them.
+fetch_channel_packages() {
+  local db=$1 dest=$2 server=${omarchy_server//\$arch/aarch64} filename name filenames
+  server=${server//\$repo/omarchy}
+  filenames=$(python3 "$ROOT/builder/channel_set.py" files --db "$db" --lane "$omarchy_channel") ||
+    fail "the channel database names no set"
+  while read -r filename; do
+    for name in "$filename" "$filename.sig"; do
+      if [[ -n $cache && -f $cache/pkg/$name ]]; then
+        cp "$cache/pkg/$name" "$dest/$name"
+      else
+        download "$server/$name" "$dest/$name" || fail "could not download $name"
+        if [[ -n $cache ]]; then
+          mkdir -p "$cache/pkg"
+          cp "$dest/$name" "$cache/pkg/$name"
+        fi
+      fi
+    done
+  done <<<"$filenames"
+}
+
 resolve() {
   local file=$1 described repository sha
   resolved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  described=$(python3 "$ROOT/builder/candidate_set.py" describe --input "$candidates") ||
-    fail "the candidate set in $candidates does not verify"
-  candidate_set=$(sed -n 's/^set=//p' <<<"$described")
-  candidate_source_commit=$(sed -n 's/^source_commit=//p' <<<"$described")
-  candidate_signer=$(sed -n 's/^signer=//p' <<<"$described")
-  candidate_receipt=$(sed -n 's/^receipt_sha256=//p' <<<"$described")
-  candidate_manifest=$(sed -n 's/^manifest_sha256=//p' <<<"$described")
+  if [[ -z $channel_mode ]]; then
+    described=$(python3 "$ROOT/builder/candidate_set.py" describe --input "$candidates") ||
+      fail "the candidate set in $candidates does not verify"
+    candidate_set=$(sed -n 's/^set=//p' <<<"$described")
+    candidate_source_commit=$(sed -n 's/^source_commit=//p' <<<"$described")
+    candidate_signer=$(sed -n 's/^signer=//p' <<<"$described")
+    candidate_receipt=$(sed -n 's/^receipt_sha256=//p' <<<"$described")
+    candidate_manifest=$(sed -n 's/^manifest_sha256=//p' <<<"$described")
+  fi
 
   mkdir "$work/db"
   download "$(db_url "$omarchy_server" omarchy)" "$work/db/omarchy.db" || fail "could not download omarchy.db"
   omarchy_db=$(sha256_of "$work/db/omarchy.db")
+  if [[ -n $channel_mode ]]; then
+    mkdir "$work/packages"
+    fetch_channel_packages "$work/db/omarchy.db" "$work/packages"
+    described=$(python3 "$ROOT/builder/channel_set.py" describe --db "$work/db/omarchy.db" --lane "$omarchy_channel" \
+      --packages "$work/packages") || fail "the channel set in omarchy.db does not verify"
+    channel_set=$(sed -n 's/^set=//p' <<<"$described")
+    channel_signer=$(sed -n 's/^signer=//p' <<<"$described")
+    channel_manifest=$(sed -n 's/^manifest_sha256=//p' <<<"$described")
+  fi
   download "$(db_url "$asahi_alarm_server" asahi-alarm)" "$work/db/asahi-alarm.db" ||
     fail "could not download asahi-alarm.db"
   asahi_alarm_db=$(sha256_of "$work/db/asahi-alarm.db")
@@ -220,19 +281,19 @@ if (($#)); then
   shift
 fi
 case $mode in
-  resolve|check|rootfs|dbs|candidates) ;;
+  resolve|check|rootfs|dbs|packages|candidates) ;;
   -h|--help) usage; exit 0 ;;
-  *) usage_error "mode must be resolve, check, rootfs, dbs or candidates" ;;
+  *) usage_error "mode must be resolve, check, rootfs, dbs, packages or candidates" ;;
 esac
 
 positionals=()
-cache="" candidates="" channel=edge omarchy_server="" asahi_alarm_server=$DEFAULT_ASAHI_ALARM_SERVER
+cache="" candidates="" channel_mode="" channel=edge omarchy_server="" asahi_alarm_server=$DEFAULT_ASAHI_ALARM_SERVER
 alarm_server=$DEFAULT_ALARM_SERVER
 while (($#)); do
   case $1 in
     --cache|--candidates|--channel|--omarchy-server|--asahi-alarm-server|--alarm-server)
       (($# > 1)) && [[ -n $2 ]] || usage_error "$1 requires a value"
-      [[ $mode == resolve || ( $1 == --cache && ( $mode == rootfs || $mode == dbs ) ) ]] ||
+      [[ $mode == resolve || ( $1 == --cache && ( $mode == rootfs || $mode == dbs || $mode == packages ) ) ]] ||
         usage_error "$1 does not apply to $mode"
       case $1 in
         --cache) cache=$2 ;;
@@ -247,13 +308,18 @@ while (($#)); do
       esac
       shift 2
       ;;
+    --channel-set)
+      [[ $mode == resolve ]] || usage_error "$1 does not apply to $mode"
+      channel_mode=1
+      shift
+      ;;
     -*) usage_error "unknown option: $1" ;;
     *) positionals+=("$1"); shift ;;
   esac
 done
 case $mode in
   resolve|check) ((${#positionals[@]} == 1)) || usage_error "$mode takes one path" ;;
-  rootfs|dbs|candidates) ((${#positionals[@]} == 2)) || usage_error "$mode takes two paths" ;;
+  rootfs|dbs|packages|candidates) ((${#positionals[@]} == 2)) || usage_error "$mode takes two paths" ;;
 esac
 
 work=$(mktemp -d)
@@ -261,7 +327,11 @@ trap 'rm -rf "$work"' EXIT
 
 case $mode in
   resolve)
-    [[ -n $candidates && -d $candidates ]] || usage_error "--candidates names no directory"
+    if [[ -n $channel_mode ]]; then
+      [[ -z $candidates ]] || usage_error "--candidates and --channel-set exclude each other"
+    else
+      [[ -n $candidates && -d $candidates ]] || usage_error "--candidates names no directory"
+    fi
     omarchy_channel=$channel
     # shellcheck disable=SC2059
     [[ -n $omarchy_server ]] || printf -v omarchy_server "$DEFAULT_OMARCHY_SERVER" "$channel"
@@ -303,6 +373,20 @@ case $mode in
         fail "$repository.db is not the database the inputs pin (its server moved on); resolve again"
       mv "$work/$repository.db" "$dest/$repository.db"
     done < <(pinned_dbs)
+    ;;
+  packages)
+    load_record "${positionals[0]}"
+    dest=${positionals[1]}
+    [[ -n ${channel_set:-} ]] || fail "${positionals[0]} names a candidate set, not a channel set"
+    [[ -d $dest && -z $(ls -A "$dest") ]] || fail "$dest is not an empty directory"
+    if [[ -n $cache && -f $cache/db/$omarchy_db.db ]]; then
+      cp "$cache/db/$omarchy_db.db" "$work/omarchy.db"
+    else
+      download "$(db_url "$omarchy_server" omarchy)" "$work/omarchy.db" || fail "could not download omarchy.db"
+    fi
+    [[ $(sha256_of "$work/omarchy.db") == "$omarchy_db" ]] ||
+      fail "omarchy.db is not the database the inputs pin (its server moved on); resolve again"
+    fetch_channel_packages "$work/omarchy.db" "$dest"
     ;;
   candidates)
     manifest=${positionals[0]} dest=${positionals[1]}

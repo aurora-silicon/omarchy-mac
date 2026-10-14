@@ -225,12 +225,18 @@
           await session.submit(dummy)
         }
         switch scenario {
-        case .connectionLost, .emptyReply, .helperFailure, .manualRecovery:
+        case .connectionLost, .emptyReply, .helperFailure, .manualRecovery, .preparedResumeMismatch:
           guard case .failed(let failure) = session.phase else { return XCTFail(scenario.title) }
           XCTAssertFalse(failure.plainDetail.contains("Nothing was changed"))
           XCTAssertFalse(session.canInspect)
           XCTAssertFalse(session.canRetryRecoveryAuthorization)
           if scenario != .manualRecovery { XCTAssertEqual(session.journal.checkpoints.count, 1) }
+          if scenario == .preparedResumeMismatch {
+            XCTAssertTrue(failure.headline.contains("saved checkpoint"))
+            XCTAssertTrue(failure.plainDetail.contains("already prepared disk space"))
+            XCTAssertTrue(try XCTUnwrap(failure.remedy).contains("do not delete the journal"))
+            XCTAssertFalse(failure.replanAvailable)
+          }
         case .completed:
           guard case .done = session.phase else { return XCTFail(scenario.title) }
         default:

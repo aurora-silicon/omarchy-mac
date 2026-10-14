@@ -6,6 +6,39 @@
   @testable import OmarchyInstallerUXCore
 
   final class PlainLanguageTests: XCTestCase {
+    func testPreSubmissionHelperFailureKeepsSpecificRecoveryAdvice() throws {
+      let failure = PlainLanguage.failure(
+        for: InstallerPreSubmissionFailure(EngineXPCSubmissionError.helperUnresponsive))
+      XCTAssertEqual(failure.headline, "The installation service isn’t responding")
+      XCTAssertTrue(try XCTUnwrap(failure.remedy).contains("again, then reopen this app"))
+      XCTAssertFalse(try XCTUnwrap(failure.remedy).contains("Check again"))
+      XCTAssertTrue(failure.plainDetail.contains("not started"))
+      for error in [EngineXPCSubmissionError.helperUnresponsive, .connectionFailed] {
+        let retry = PlainLanguage.failure(
+          for: InstallerPreSubmissionFailure(error), retryRecoveryAvailable: true)
+        XCTAssertEqual(retry.headline, failure.headline)
+        XCTAssertEqual(retry.remedy, failure.remedy)
+        XCTAssertTrue(retry.retryRecoveryAvailable)
+        XCTAssertTrue(retry.plainDetail.contains("checkpoint is preserved"))
+        XCTAssertFalse(retry.plainDetail.contains("not started"))
+      }
+    }
+
+    func testPreparedResumeMismatchExplainsCompletedWorkWithoutUnsafeRetry() throws {
+      let notice = EngineFailureNotice(
+        reason: EngineFailureReason(rawValue: 5) ?? .unclassified,
+        exitStatus: 1, diskUnchanged: false,
+        summary: "prepared resume target does not match checkpoint")
+      let failure = PlainLanguage.failure(for: EngineXPCSubmissionError.engineFailed(notice))
+      XCTAssertEqual(
+        failure.headline, "The prepared installation no longer matches its saved checkpoint")
+      XCTAssertTrue(failure.plainDetail.contains("already prepared disk space"))
+      XCTAssertTrue(failure.plainDetail.contains("No further installation step"))
+      XCTAssertTrue(try XCTUnwrap(failure.remedy).contains("journal"))
+      XCTAssertFalse(failure.replanAvailable)
+      XCTAssertFalse(failure.retryRecoveryAvailable)
+    }
+
     func testSpaceCautionsFollowAllocationAndReserveBoundary() {
       let plan = PlanDisplay(
         diskTotalBytes: 245_000_000_000, omarchyBytes: 40_000_000_000,
@@ -346,6 +379,29 @@
         headlines.insert(failure.headline)
       }
       XCTAssertGreaterThanOrEqual(headlines.count, 8)
+    }
+
+    func testAnInstallRefusedForAnEarlierRemovalSaysWhyAndHowToRecover() {
+      for (helperError, headline) in [
+        (
+          ClosedEngineHelperError.earlierRemovalUnfinished,
+          PlainLanguage.earlierRemovalUnfinishedHeadline
+        ),
+        (.earlierInstallRecordUncleared, PlainLanguage.earlierInstallRecordUnclearedHeadline),
+      ] {
+        let bridged = helperError as NSError
+        // Over XPC the app sees the helper's error by domain and code.
+        for error in [
+          helperError as any Error,
+          EngineXPCSubmissionError.helperRejected(domain: bridged.domain, code: bridged.code),
+        ] {
+          let failure = PlainLanguage.failure(for: error)
+          XCTAssertEqual(failure.headline, headline, "\(error)")
+          XCTAssertTrue(failure.plainDetail.contains("nothing was changed"), failure.plainDetail)
+          XCTAssertTrue(
+            failure.remedy?.contains(InstallerProductIdentity.helperWorkingDirectory) == true)
+        }
+      }
     }
 
     func testAnOutdatedInstallerOffersTheDownloadItNeeds() {

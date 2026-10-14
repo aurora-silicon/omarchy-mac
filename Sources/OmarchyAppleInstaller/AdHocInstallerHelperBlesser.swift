@@ -83,7 +83,7 @@
         fromPropertyList: plist, format: .xml, options: 0
       ).base64EncodedString()
       let template = bundle.appendingPathComponent(
-        "Contents/Resources/RecoveryTemplate/Omarchy Installer.app", isDirectory: true)
+        "Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppBundleName)", isDirectory: true)
       let templateRequirement = "cdhash H\"\(try Self.codeHash(at: template))\""
       let templates = InstallerProductIdentity.installedRecoveryTemplateDirectory
       let quote = Self.shellQuote
@@ -100,11 +100,11 @@
         trap '/bin/rm -f "$staged" "$new"; /bin/rm -rf "$recovery"' EXIT
         /usr/bin/install -o root -g wheel -m 0544 \(quote(helper.path)) "$staged"
         /usr/bin/codesign --verify --strict -R=\(quote(helperRequirement)) "$staged"
-        /usr/bin/ditto \(quote(template.path)) "$recovery/Omarchy Installer.app"
+        /usr/bin/ditto \(quote(template.path)) "$recovery/\(InstallerProductIdentity.recoveryAppBundleName)"
         /usr/sbin/chown -R root:wheel "$recovery"
         /bin/chmod -R go-w "$recovery"
         /bin/chmod 0755 "$recovery"
-        /usr/bin/codesign --verify --deep --strict -R=\(quote(templateRequirement)) "$recovery/Omarchy Installer.app"
+        /usr/bin/codesign --verify --deep --strict -R=\(quote(templateRequirement)) "$recovery/\(InstallerProductIdentity.recoveryAppBundleName)"
         /usr/bin/printf '%s' \(quote(encoded)) | /usr/bin/base64 -D > "$new"
         /usr/sbin/chown root:wheel "$new"
         /bin/chmod 0644 "$new"

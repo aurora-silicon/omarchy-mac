@@ -91,10 +91,11 @@ printf '# aarch64\nzram-generator\n' >"$scratch/runtime/usr/share/omarchy/instal
   fail "the aarch64 additions follow the base list"
 pass "the runtime's base list, then its aarch64 additions, as omarchy-pkg-defaults composes them"
 
-# The Apple list by upstream's name, else an older runtime's; never a link, which bsdtar reads as empty.
+# The Apple list by the platform's name (omacom/omarchy e1b0e5e9b), else an older runtime's; never a
+# link, which bsdtar reads as empty.
 install_dir=$scratch/runtime/usr/share/omarchy/install
 apple_layout() {
-  rm -f "$install_dir"/omarchy-apple*.packages
+  rm -f "$install_dir"/omarchy-apple*.packages "$install_dir"/omarchy-aarch64-apple.packages
   while (($#)); do
     if [[ $2 == @* ]]; then
       ln -s "${2#@}" "$install_dir/$1"
@@ -108,17 +109,23 @@ apple_layout() {
 chosen_apple() {
   (fail() { builder_fail "$@"; }; read_apple_list && echo "${apple_names[*]}")
 }
+apple_layout omarchy-aarch64-apple.packages 'omarchy-mac omarchy-mac-boot'
+[[ $(chosen_apple) == "omarchy-mac omarchy-mac-boot" ]] || fail "an e1b0e5e9b runtime's omarchy-aarch64-apple.packages is the Apple list"
 apple_layout omarchy-apple-silicon.packages 'omarchy-mac wf-recorder'
-[[ $(chosen_apple) == "omarchy-mac wf-recorder" ]] || fail "an upstream runtime's omarchy-apple-silicon.packages is the Apple list"
+[[ $(chosen_apple) == "omarchy-mac wf-recorder" ]] || fail "a 5397950a2 runtime's omarchy-apple-silicon.packages is the Apple list"
 apple_layout omarchy-apple.packages omarchy-mac
 [[ $(chosen_apple) == omarchy-mac ]] || fail "an older runtime's omarchy-apple.packages is the Apple list"
+apple_layout omarchy-aarch64-apple.packages 'omarchy-mac omarchy-mac-boot' omarchy-apple-silicon.packages 'omarchy-mac wf-recorder'
+[[ $(chosen_apple) == "omarchy-mac omarchy-mac-boot" ]] || fail "the platform's name wins over apple-silicon"
+apple_layout omarchy-aarch64-apple.packages @omarchy-apple-silicon.packages omarchy-apple-silicon.packages 'omarchy-mac wf-recorder'
+[[ $(chosen_apple) == "omarchy-mac wf-recorder" ]] || fail "a link by the platform's name is passed over for the list it names"
 apple_layout omarchy-apple-silicon.packages 'omarchy-mac wf-recorder' omarchy-apple.packages omarchy-mac
-[[ $(chosen_apple) == "omarchy-mac wf-recorder" ]] || fail "upstream's name wins when a runtime ships both"
+[[ $(chosen_apple) == "omarchy-mac wf-recorder" ]] || fail "apple-silicon wins over the oldest name when a runtime ships both"
 apple_layout omarchy-apple-silicon.packages 'omarchy-mac wf-recorder' omarchy-apple.packages @omarchy-apple-silicon.packages
 [[ $(chosen_apple) == "omarchy-mac wf-recorder" ]] || fail "a compatibility link beside the list changes nothing"
 apple_layout omarchy-apple.packages omarchy-mac omarchy-apple-silicon.packages @omarchy-apple.packages
 [[ $(chosen_apple) == omarchy-mac ]] || fail "a link by upstream's name is passed over for the list it names"
-pass "the Apple list is omarchy-apple-silicon.packages, else an older runtime's omarchy-apple.packages, never a link"
+pass "the Apple list is omarchy-aarch64-apple.packages, else omarchy-apple-silicon.packages, else omarchy-apple.packages, never a link"
 refused_apple() {
   local output
   if output=$(chosen_apple 2>&1); then
@@ -127,10 +134,10 @@ refused_apple() {
   [[ $output == "build-mac-image: $1" ]] || fail "$2 is refused with: $1 (got: $output)"
 }
 apple_layout
-refused_apple "the runtime ships no Apple package list (omarchy-apple-silicon.packages or omarchy-apple.packages)" \
+refused_apple "the runtime ships no Apple package list (omarchy-aarch64-apple.packages, omarchy-apple-silicon.packages or omarchy-apple.packages)" \
   "a runtime with no Apple list"
-apple_layout omarchy-apple.packages @omarchy-apple-silicon.packages
-refused_apple "the runtime ships no Apple package list (omarchy-apple-silicon.packages or omarchy-apple.packages)" \
+apple_layout omarchy-aarch64-apple.packages @omarchy-apple.packages omarchy-apple.packages @omarchy-apple-silicon.packages
+refused_apple "the runtime ships no Apple package list (omarchy-aarch64-apple.packages, omarchy-apple-silicon.packages or omarchy-apple.packages)" \
   "a runtime whose only Apple list is a link"
 apple_layout omarchy-apple-silicon.packages ''
 refused_apple "the runtime's omarchy-apple-silicon.packages names no package" "a runtime whose Apple list names nothing"
@@ -139,6 +146,47 @@ pass "a runtime with no Apple list, only a link to one, or an empty one stops th
 grep -A3 '^  prepare_repositories$' "$here/bin/build-mac-image" | grep -Fxq '  read_apple_list' ||
   fail "the build reads the Apple list before it creates the images"
 pass "the build reads the Apple list once, before it creates the images"
+
+# The installed pacman configuration, from each runtime layout: e1b0e5e9b's aarch64-apple templates,
+# 5397950a2's apple-silicon template with its aarch64 mirror list, and older ones.
+installed_config() {
+  local layout
+  target=$scratch/installed
+  rm -rf "$target"
+  mkdir -p "$target/etc"
+  for layout in "$@"; do
+    mkdir -p "$target/${layout%/*}"
+    printf '[options]\n# %s\n' "$layout" >"$target/$layout"
+  done
+  (fail() { builder_fail "$@"; }; write_installed_config) || return
+  printf '%s %s\n' "$(sed -n 2p "$target/etc/pacman.conf")" "$(sed -n 2p "$target/etc/pacman.d/mirrorlist")"
+}
+templates=usr/share/omarchy/default/pacman
+e1b0e5e9b=("$templates"/aarch64/{pacman-edge.conf,mirrorlist-edge} "$templates"/aarch64-apple/{pacman-edge.conf,mirrorlist-edge})
+r5397950a2=("$templates"/aarch64/{pacman-edge.conf,mirrorlist-edge} "$templates"/apple-silicon/{pacman-edge.conf,mirrorlist-edge})
+[[ $(installed_config "${e1b0e5e9b[@]}") == "# $templates/aarch64-apple/pacman-edge.conf # $templates/aarch64-apple/mirrorlist-edge" ]] ||
+  fail "an e1b0e5e9b runtime installs its aarch64-apple template and mirror list"
+[[ $(installed_config "${e1b0e5e9b[@]}" usr/share/omarchy-mac/pacman/pacman-edge.conf) == \
+  "# $templates/aarch64-apple/pacman-edge.conf # $templates/aarch64-apple/mirrorlist-edge" ]] ||
+  fail "the runtime's aarch64-apple template wins over omarchy-mac's"
+[[ $(installed_config "${r5397950a2[@]}") == "# $templates/apple-silicon/pacman-edge.conf # $templates/aarch64/mirrorlist-edge" ]] ||
+  fail "a 5397950a2 runtime installs its apple-silicon template with its aarch64 mirror list"
+[[ $(installed_config "${r5397950a2[@]}" usr/share/omarchy-mac/pacman/pacman-edge.conf) == \
+  "# usr/share/omarchy-mac/pacman/pacman-edge.conf # $templates/aarch64/mirrorlist-edge" ]] ||
+  fail "omarchy-mac's template wins over a 5397950a2 runtime's apple-silicon one"
+[[ $(installed_config "$templates"/aarch64/pacman-edge.conf "$templates"/mirrorlist-aarch64) == \
+  "# $templates/aarch64/pacman-edge.conf # $templates/mirrorlist-aarch64" ]] ||
+  fail "an older runtime installs its aarch64 template and single mirror list"
+[[ $(installed_config "$templates"/aarch64-apple/pacman-edge.conf "$templates"/aarch64/mirrorlist-edge) == \
+  "# $templates/aarch64-apple/pacman-edge.conf # $templates/aarch64/mirrorlist-edge" ]] ||
+  fail "an aarch64-apple template without its own mirror list takes the aarch64 one"
+if output=$(installed_config "$templates"/aarch64-apple/mirrorlist-edge 2>&1); then
+  fail "a runtime with no Apple Silicon template for the channel is refused"
+fi
+[[ $output == "build-mac-image: the image ships no Apple Silicon pacman configuration for edge" ]] ||
+  fail "a runtime with no template is refused with its reason (got: $output)"
+unset target
+pass "the installed pacman.conf is the runtime's aarch64-apple template with its mirror list, else omarchy-mac's, apple-silicon or aarch64 with the aarch64 list"
 
 runtime_list() {
   case $1 in
@@ -615,3 +663,191 @@ done
 [[ $(wc -l <"$scratch/requests") -eq 6 && $(head -n 1 "$scratch/requests") == "-S --noconfirm --needed vulkan-asahi" ]] ||
   fail "every sync or refresh is recorded: $(<"$scratch/requests")"
 pass "the first-boot probe's pacman refuses and records every sync or refresh, and runs everything else"
+
+# ── channel mode ───────────────────────────────────────────────────────────
+# A channel record names its set and the channel database instead of a
+# candidate set; the set's -dev runtime fills the omarchy roles.
+channel=$scratch/channel
+mkdir -p "$channel/candidates" "$channel/target"
+db_sha=$(printf '7%.0s' {1..64})
+cat >"$channel/inputs" <<EOF2
+format=2
+resolved_at=2026-10-14T00:00:00Z
+channel_set=omarchy-edge-${db_sha:0:12}
+channel_signer=40DFB630FF42BCFFB047046CF0134EE680CAC571
+channel_manifest_sha256=$(printf '8%.0s' {1..64})
+omarchy_channel=edge
+omarchy_server=https://pkgs.omarchy.org/edge/\$arch
+omarchy_db_sha256=$db_sha
+asahi_alarm_server=https://github.com/asahi-alarm/asahi-alarm/releases/download/aarch64
+asahi_alarm_db_sha256=$(printf '2%.0s' {1..64})
+alarm_server=https://ca.us.mirror.archlinuxarm.org/\$arch/\$repo
+alarm_core_db_sha256=$(printf '3%.0s' {1..64})
+alarm_extra_db_sha256=$(printf '4%.0s' {1..64})
+alarm_alarm_db_sha256=$(printf '5%.0s' {1..64})
+alarm_aur_db_sha256=$(printf '6%.0s' {1..64})
+alarm_rootfs_sha256=$(printf '9%.0s' {1..64})
+EOF2
+"$BASH" "$here/bin/mac-image-inputs" check "$channel/inputs" >/dev/null || fail "the channel fixture is a canonical record"
+cat >"$channel/candidates/import.json" <<'EOF2'
+{"kind": "channel", "candidate_only": false, "packages": [
+  {"name": "omarchy-dev", "role": "omarchy", "version": "4.0.0.r6971.g492b883-1", "filename": "d.pkg.tar.zst", "group": "runtime"},
+  {"name": "omarchy-settings-dev", "role": "omarchy-settings", "version": "4.0.0.r6971.g492b883-1", "filename": "s.pkg.tar.zst", "group": "runtime"},
+  {"name": "omarchy-mac", "role": "omarchy-mac", "version": "0.1.4-1", "filename": "m.pkg.tar.zst", "group": "runtime", "source_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  {"name": "uboot-asahi", "version": "2026.07-1", "filename": "u.pkg.tar.zst", "group": "boot"}
+]}
+EOF2
+(
+  candidates=$channel/candidates target=$channel/target profile=release
+  field() { sed -n "s/^$1=//p" "$channel/inputs"; }
+  fail() { builder_fail "$@"; }
+  chown() { :; }
+  [[ $(record_kind "$channel/inputs") == channel && $(record_kind "$scratch/inputs") == candidate ]] ||
+    fail "a record with channel_set names a channel set, any other a candidate set"
+  [[ $(set_kind) == channel && $(set_name) == "omarchy-edge-${db_sha:0:12}" ]] || fail "the container reads the channel set's name"
+  [[ $(qualified omarchy omarchy-settings omarchy-mac uboot-asahi gum | paste -sd' ' -) == \
+    "omarchy-candidates/omarchy-dev omarchy-candidates/omarchy-settings-dev omarchy-candidates/omarchy-mac omarchy-candidates/uboot-asahi gum" ]] ||
+    fail "a runtime role installs the channel package that fills it: $(qualified omarchy omarchy-settings | paste -sd' ' -)"
+  [[ $(candidate_archive omarchy) == d.pkg.tar.zst && $(candidate_archive omarchy-dev) == d.pkg.tar.zst ]] ||
+    fail "the runtime's lists are read from the package that fills the omarchy role"
+  [[ $(image_profile) == release ]] || fail "a channel image is a public (release) image"
+  MAC_IMAGE_BUILDER_COMMIT=$builder_commit MAC_IMAGE_BUILDER_CLEAN=true write_image_target
+  [[ $(<"$target/var/lib/omarchy/image/target") == "format=1
+platform=apple-silicon
+channel_set=omarchy-edge-${db_sha:0:12}
+channel_db_sha256=$db_sha
+builder_commit=$builder_commit
+builder_tree_clean=true
+image_profile=release" ]] || fail "a channel image's target names the channel set and database" "$(<"$target/var/lib/omarchy/image/target")"
+  [[ $(sealed_body) == "format=2
+channel_set=omarchy-edge-${db_sha:0:12}
+channel_db_sha256=$db_sha" ]] || fail "@factory is sealed for the channel set and database"
+  [[ $(image_inputs) == "channel_set channel_signer channel_manifest_sha256 omarchy_channel omarchy_db_sha256" ]] ||
+    fail "IMAGE names the channel set, signer, manifest and database"
+  if (profile=lab; write_image_target) >/dev/null 2>&1; then
+    fail "a channel image target is never written for a lab image"
+  fi
+)
+pass "a channel record installs the -dev runtime by its roles and records a release image of the channel set and database"
+
+(
+  candidates=$channel/candidates
+  [[ $(jq -r '.packages[] | select(.group == "runtime" and .source_commit != null) | .name' "$candidates/import.json") == omarchy-mac ]] ||
+    fail "only runtime packages with a source revision get candidate_source lines"
+)
+pass "PROVENANCE names a source commit only for runtime packages that ship one"
+
+mkdir -p "$scratch/lab"
+for options in "--candidates $channel|takes no --candidates" "--lab-access $scratch/lab|built from a candidate set only"; do
+  IFS='|' read -r option expected <<<"$options"
+  read -ra words <<<"$option"
+  refusal=$( (command() { return 0; }; host_main --inputs "$channel/inputs" "${words[@]}" "$scratch/out") 2>&1 >/dev/null) &&
+    fail "a channel record refuses ${words[0]}"
+  [[ $refusal == *"$expected"* ]] || fail "a channel record refuses ${words[0]}: $refusal"
+done
+[[ ! -e $scratch/out ]] || fail "a refused channel build writes nothing"
+pass "a channel record refuses --candidates and --lab-access"
+
+# ── repository order ───────────────────────────────────────────────────────
+# A channel image searches the repositories in the order of the Apple template
+# its runtime settings package ships (omarchy-settings-dev on edge), which
+# becomes the installed /etc/pacman.conf: [omarchy] first.
+# (A test above replaced repositories; take the builder's back.)
+# shellcheck source=/dev/null
+source <(sed -n '/^repositories() {/,/^}/p' "$here/bin/build-mac-image")
+runtime_template() {
+  local tree=$scratch/runtime-tree
+  rm -rf "$tree"
+  mkdir -p "$tree/usr/share/omarchy/default/pacman/aarch64-apple"
+  [[ -z $1 ]] || printf '%s' "$1" >"$tree/usr/share/omarchy/default/pacman/aarch64-apple/pacman-edge.conf"
+  touch "$tree/usr/share/omarchy/.keep"
+  bsdtar -cf "$channel/candidates/s.pkg.tar.zst" -C "$tree" usr
+}
+RUNTIME_TEMPLATE='[options]
+SigLevel = Required DatabaseOptional
+# [core-testing]
+[omarchy]
+Server = https://pkgs.omarchy.org/edge/$arch
+[asahi-alarm]
+Server = https://github.com/asahi-alarm/asahi-alarm/releases/download/aarch64
+[core]
+Include = /etc/pacman.d/mirrorlist
+[extra]
+Include = /etc/pacman.d/mirrorlist
+[alarm]
+Include = /etc/pacman.d/mirrorlist
+[aur]
+Include = /etc/pacman.d/mirrorlist
+'
+runtime_template "$RUNTIME_TEMPLATE"
+(
+  candidates=$channel/candidates
+  field() { sed -n "s/^$1=//p" "$channel/inputs"; }
+  fail() { builder_fail "$@"; }
+  read_repository_order
+  sections=$(render_config /repos /cache | sed -n 's/^\[\(.*\)\]$/\1/p' | paste -sd' ' -)
+  [[ $sections == "options omarchy-candidates omarchy asahi-alarm core extra alarm aur omarchy-aarch64" ]] ||
+    fail "a channel image searches its runtime's Apple template's order: $sections"
+  [[ $(repositories | sed -n 2p) == "omarchy $db_sha https://pkgs.omarchy.org/edge/\$arch" ]] ||
+    fail "[omarchy] keeps the record's database and server"
+)
+(
+  candidates=$candidates
+  fail() { builder_fail "$@"; }
+  read_repository_order
+  [[ ${repository_order[*]} == "asahi-alarm core extra alarm aur omarchy" ]] ||
+    fail "a candidate set keeps the Apple profile's order: ${repository_order[*]}"
+)
+pass "a channel image searches [omarchy] first, as its runtime's Apple template does; a candidate set keeps [omarchy] last"
+
+refused_order() {
+  local expected=$1 what=$2 refusal
+  refusal=$( (candidates=$channel/candidates; field() { sed -n "s/^$1=//p" "$channel/inputs"; }
+    fail() { builder_fail "$@"; }; read_repository_order) 2>&1 >/dev/null) && fail "$what is refused"
+  [[ $refusal == *"$expected"* ]] || fail "$what is refused: $refusal"
+}
+runtime_template "$(sed '/^\[aur\]/,$d' <<<"$RUNTIME_TEMPLATE")"
+refused_order "names the repositories omarchy asahi-alarm core extra alarm, not the pinned" "a template missing a pinned repository"
+runtime_template "$RUNTIME_TEMPLATE"$'[omarchy-aarch64]\nServer = https://example.invalid\n'
+refused_order "not the pinned" "a template with a repository the record does not pin"
+runtime_template ""
+refused_order "the runtime ships no Apple pacman template for the channel" "a runtime without the template"
+runtime_template "$RUNTIME_TEMPLATE"
+pass "a runtime template that names other repositories than the pinned ones, or none, stops the build"
+
+# The resolution itself, where pacman exists (the Arch Linux ARM source-check
+# container): a package both [omarchy] and Arch Linux ARM carry comes from
+# [omarchy] in a channel image, as on the installed Mac.
+if command -v pacman >/dev/null 2>&1; then
+  sync_db() {
+    local repository=$1 version=$2 tree=$scratch/db-$1
+    mkdir -p "$tree/hyprland-$version" "$scratch/repos/$repository"
+    printf '%%FILENAME%%\nhyprland-%s-aarch64.pkg.tar.zst\n\n%%NAME%%\nhyprland\n\n%%VERSION%%\n%s\n\n%%ARCH%%\naarch64\n\n%%CSIZE%%\n1\n' \
+      "$version" "$version" >"$tree/hyprland-$version/desc"
+    bsdtar -czf "$scratch/dbpath/sync/$repository.db" -C "$tree" "hyprland-$version"
+  }
+  mkdir -p "$scratch/dbpath/sync"
+  sync_db omarchy 0.52.0-1
+  sync_db extra 0.51.1-2
+  for repository in omarchy-candidates asahi-alarm core alarm aur omarchy-aarch64; do
+    bsdtar -czf "$scratch/dbpath/sync/$repository.db" --files-from /dev/null
+  done
+  resolved() {
+    pacman --config "$1" --dbpath "$scratch/dbpath" --noconfirm -Sp --print-format '%r %v' hyprland 2>/dev/null
+  }
+  (
+    candidates=$channel/candidates
+    field() { sed -n "s/^$1=//p" "$channel/inputs"; }
+    fail() { builder_fail "$@"; }
+    read_repository_order
+    render_config "$scratch/repos" "$scratch/cache" | sed 's/^Architecture = .*/Architecture = auto/' >"$scratch/channel.conf"
+    [[ $(resolved "$scratch/channel.conf") == "omarchy 0.52.0-1" ]] ||
+      fail "a channel image takes hyprland from [omarchy]: $(resolved "$scratch/channel.conf")"
+  )
+  render_config "$scratch/repos" "$scratch/cache" | sed 's/^Architecture = .*/Architecture = auto/' >"$scratch/candidate.conf"
+  [[ $(resolved "$scratch/candidate.conf") == "extra 0.51.1-2" ]] ||
+    fail "a candidate set's order still takes it from Arch Linux ARM: $(resolved "$scratch/candidate.conf")"
+  pass "pacman takes a package both [omarchy] and Arch Linux ARM carry from [omarchy] in a channel image"
+else
+  echo "skip - pacman resolution of the repository order (no pacman on this host)"
+fi

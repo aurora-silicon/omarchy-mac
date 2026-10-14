@@ -37,6 +37,11 @@
       reply: @escaping @Sendable (Data?, NSError?) -> Void
     )
 
+    /// A `RemovalFinalization` raw value for the removal with this ticket,
+    /// for an app whose removal reply was lost. Helpers older than this call
+    /// never answer it.
+    func removalFinalization(ticket: String, reply: @escaping @Sendable (String) -> Void)
+
     func submit(
       packageDirectory: FileHandle,
       operation: String,
@@ -427,6 +432,41 @@
       let reply = try JSONDecoder().decode(RecoveryAccountReply.self, from: data)
       if let message = reply.message { throw AccountSetupFailure(message) }
       return reply
+    }
+
+    /// What the helper's records say about the removal with this ticket, or
+    /// nil when it doesn't answer in time, as helpers older than the call
+    /// never do, or answers something unknown.
+    public func removalFinalization(
+      ticket: UUID, timeout: Duration = .seconds(10)
+    ) async -> RemovalFinalization? {
+      let connection = makeConnection()
+      let connectionHandle = SendableXPCConnection(connection)
+      let timer = Task {
+        try await Task.sleep(for: timeout)
+        connectionHandle.invalidate()
+      }
+      defer { timer.cancel() }
+      let answer: String = await withCheckedContinuation { continuation in
+        let gate = EngineXPCStringGate(continuation: continuation)
+        connection.interruptionHandler = { gate.resume(returning: "") }
+        connection.invalidationHandler = { gate.resume(returning: "") }
+        connection.activate()
+        guard
+          let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            gate.resume(returning: "")
+          }) as? ClosedEngineXPCService
+        else {
+          gate.resume(returning: "")
+          connectionHandle.invalidate()
+          return
+        }
+        proxy.removalFinalization(ticket: ticket.uuidString) { reported in
+          gate.resume(returning: reported)
+          connectionHandle.invalidate()
+        }
+      }
+      return RemovalFinalization(rawValue: answer)
     }
 
     public func submit(

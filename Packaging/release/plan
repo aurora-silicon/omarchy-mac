@@ -1,0 +1,81 @@
+#!/bin/bash
+# Decide what one run of the app release workflow does, from its trigger, and
+# refuse every combination that could sign or publish something it should not.
+#
+# Reads EVENT, REF and RUN_NUMBER (github.event_name, github.ref,
+# github.run_number) and, for workflow_dispatch, DRY_RUN (true|false), SIGNING
+# (ad-hoc|developer-id), VERSION and STAND_IN_TRUST_ROOT (true|false). Prints
+# the plan as NAME=value lines for $GITHUB_OUTPUT:
+#
+#   dry_run              true: nothing is published, and a notarized dmg
+#                        never leaves the sign job (only ad hoc dry-run dmgs
+#                        are kept as workflow artifacts)
+#   signing              ad-hoc (no secrets, no environment) or developer-id
+#                        (the macos-release environment: approval, secrets)
+#   version              the app version; a v<version> tag sets it
+#   build_number         CFBundleVersion: 100 + the run number, so no two runs
+#                        share a build (the app replaces a helper whose build
+#                        differs from its own) and it never falls below the
+#                        hand builds (27, 28)
+#   stand_in_trust_root  true: a random key replaces the catalog trust root
+#                        (dry runs only; proves the pipeline before the
+#                        Omacom catalog key lands)
+#
+# A pushed v* tag is a release: Developer ID, notarized, published as a draft.
+# A dispatch defaults to an ad hoc dry run. Only a v* tag may publish, only a
+# v* tag or main may use the Developer ID, and pull requests never run here.
+set -euo pipefail
+
+fail() {
+  echo "plan: $*" >&2
+  exit 1
+}
+
+event=${EVENT:?} ref=${REF:?} run_number=${RUN_NUMBER:?}
+[[ $run_number =~ ^[1-9][0-9]*$ ]] || fail "RUN_NUMBER is not a run number"
+version_pattern='^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*$'
+tag_version=""
+if [[ $ref == refs/tags/v* ]]; then
+  tag_version=${ref#refs/tags/v}
+  [[ $tag_version =~ $version_pattern ]] || fail "${ref#refs/tags/} is not v<app version>"
+fi
+
+case $event in
+  push)
+    [[ -n $tag_version ]] || fail "a push releases only v* tags, not $ref"
+    dry_run=false signing=developer-id version=$tag_version stand_in=false
+    ;;
+  workflow_dispatch)
+    dry_run=${DRY_RUN:-true} signing=${SIGNING:-ad-hoc} stand_in=${STAND_IN_TRUST_ROOT:-false}
+    [[ $dry_run == true || $dry_run == false ]] || fail "DRY_RUN is true or false"
+    [[ $stand_in == true || $stand_in == false ]] || fail "STAND_IN_TRUST_ROOT is true or false"
+    [[ $signing == ad-hoc || $signing == developer-id ]] || fail "SIGNING is ad-hoc or developer-id"
+    version=${VERSION:-}
+    if [[ -n $tag_version ]]; then
+      [[ -z $version || $version == "$tag_version" ]] || fail "VERSION $version differs from the tag's $tag_version"
+      version=$tag_version
+    fi
+    [[ $version =~ $version_pattern ]] || fail "VERSION is not an app version: ${version:-empty}"
+    ;;
+  *) fail "the app release never runs for $event" ;;
+esac
+
+if [[ $dry_run == false ]]; then
+  [[ -n $tag_version ]] || fail "only a v* tag publishes; $ref can only dry-run"
+  # The app and the catalog's installer block compare only X.Y.Z; a suffixed
+  # version would skip the app's minimum-version check.
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "a release version is X.Y.Z, not $version"
+  [[ $signing == developer-id ]] || fail "a release is signed with the Developer ID"
+fi
+if [[ $signing == developer-id && -z $tag_version && $ref != refs/heads/main ]]; then
+  fail "the Developer ID signs only v* tags and main, not $ref"
+fi
+if [[ $stand_in == true && ( $dry_run == false || $signing != ad-hoc ) ]]; then
+  fail "a stand-in trust root is for ad hoc dry runs only"
+fi
+
+echo "dry_run=$dry_run"
+echo "signing=$signing"
+echo "version=$version"
+echo "build_number=$((100 + run_number))"
+echo "stand_in_trust_root=$stand_in"

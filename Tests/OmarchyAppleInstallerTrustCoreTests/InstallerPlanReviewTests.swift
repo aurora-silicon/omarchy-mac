@@ -154,6 +154,29 @@
         process: process
       )
 
+      do {
+        _ = try await InstallerExecutionCoordinator(ping: { _ in
+          throw EngineXPCSubmissionError.helperUnresponsive
+        }).execute(
+          prepared, approval: approval, configuration: base.configuration,
+          handoffDirectory: URL(fileURLWithPath: "/private/tmp"),
+          machineOwnerAuthorization: MachineOwnerAuthorization(
+            username: "fixture", password: Data("fixture-password".utf8)))
+        XCTFail("Expected ping failure")
+      } catch {
+        XCTAssertEqual(
+          (error as? InstallerPreSubmissionFailure)?.underlying as? EngineXPCSubmissionError,
+          .helperUnresponsive)
+      }
+      do {
+        _ = try await InstallerExecutionCoordinator().execute(
+          prepared, approval: approval, process: FailingEngineProcess())
+        XCTFail("Expected execute failure")
+      } catch {
+        XCTAssertFalse(error is InstallerPreSubmissionFailure)
+        XCTAssertEqual(error as? EngineXPCSubmissionError, .connectionFailed)
+      }
+
       XCTAssertEqual(progress.nextAction, .enterRecovery)
       let capturedInvocation = await process.capturedInvocation()
       XCTAssertEqual(
@@ -398,6 +421,12 @@
 
     func capturedIdentity() -> PinnedAsahiPlanIdentity? {
       identity
+    }
+  }
+
+  private struct FailingEngineProcess: EngineProcessExecuting {
+    func execute(_ invocation: ClosedEngineInvocation) async throws -> Data {
+      throw EngineXPCSubmissionError.connectionFailed
     }
   }
 

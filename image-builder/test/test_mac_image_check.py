@@ -6,11 +6,13 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
-import struct
 import subprocess
+import sys
 import tempfile
 import unittest
-import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fixtures  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 loader = importlib.machinery.SourceFileLoader("mac_image_check", str(ROOT / "bin/mac-image-check"))
@@ -30,6 +32,22 @@ INPUTS = {
     "candidate_manifest_sha256": "2" * 64,
     "omarchy_channel": "edge",
 }
+# A channel build's inputs (mac-image-inputs resolve --channel-set): the set is named for its database.
+CHANNEL_DB = "7" * 64
+CHANNEL_INPUTS = {
+    "channel_set": f"omarchy-edge-{CHANNEL_DB[:12]}",
+    "channel_signer": "40DFB630FF42BCFFB047046CF0134EE680CAC571",
+    "channel_manifest_sha256": "8" * 64,
+    "omarchy_channel": "edge",
+    "omarchy_db_sha256": CHANNEL_DB,
+}
+CHANNEL_PACKAGES = [
+    ("omarchy-dev", "4.0.0.r6971.g492b883-1", "omarchy-candidates", "omarchy-dev-4.0.0.r6971.g492b883-1-aarch64.pkg.tar.zst",
+     "3" * 64),
+    ("omarchy-mac", "0.1.4-1", "omarchy-candidates", "omarchy-mac-0.1.4-1-aarch64.pkg.tar.zst", "6" * 64),
+    ("omarchy-keyring", "20251027-1", "omarchy", "omarchy-keyring-20251027-1-any.pkg.tar.zst", "9" * 64),
+    ("glibc", "2.43-1", "core", "glibc-2.43-1-aarch64.pkg.tar.xz", "5" * 64),
+]
 PACKAGES = [
     ("omarchy", "4.0.0-1", "omarchy-candidates", "omarchy-4.0.0-1-aarch64.pkg.tar.xz", "3" * 64),
     ("uboot-asahi", "2026.07-1", "omarchy-candidates", "uboot-asahi-2026.07-1-aarch64.pkg.tar.zst", "4" * 64),
@@ -41,15 +59,6 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def pe(extra: bytes) -> bytes:
-    data = bytearray(0x200)
-    data[:2] = b"MZ"
-    struct.pack_into("<I", data, 0x3C, 0x80)
-    data[0x80:0x84] = b"PE\0\0"
-    struct.pack_into("<H", data, 0x84, 0xAA64)
-    return bytes(data) + extra
-
-
 def package_set(packages) -> str:
     lines = sorted((f"{n}|{v}|{s}\n" for n, v, _, _, s in packages), key=str.encode)
     return hashlib.sha256("".join(lines).encode()).hexdigest()
@@ -57,36 +66,24 @@ def package_set(packages) -> str:
 
 def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="passed", image_edit=None,
           profile=(), provenance_profile=None, name=None, inspection_digest=None, target_edit=None,
-          sources=(("omarchy", "a" * 40),), runtime_sources=None, provenance_edit=None, legacy=False) -> None:
-    """A build directory as build-mac-image writes it; LEGACY, as a build before builds recorded their identity."""
+          sources=(("omarchy", "a" * 40),), runtime_sources=None, provenance_edit=None, legacy=False,
+          inputs=INPUTS, pin=None, report_edit=None) -> None:
+    """A build directory as build-mac-image writes it; LEGACY, as a build before builds recorded their identity.
+    With CHANNEL_INPUTS, a channel build: the image target names the channel set and database, INSPECTION the
+    set it inspected, and PIN (the test image pin, empty for a public image) is recorded."""
     lab = "profile=lab" in profile
+    channel = "channel_set" in inputs
     name = name or (LAB_NAME if lab else NAME)
-    payload = out / "payload"
-    for directory in ("esp/EFI/BOOT", "esp/EFI/Linux", "esp/m1n1", "esp/omarchy"):
-        (payload / directory).mkdir(parents=True)
-    boot = bytearray(1 << 16)
-    boot[0x438:0x43A] = b"\x53\xef"
-    boot[0x468:0x478] = uuid.UUID(check.BOOT_UUID).bytes
-    boot[0x478:0x484] = b"OMARCHY_BOOT"
-    (payload / "boot.img").write_bytes(boot)
-    root = bytearray(1 << 17)
-    root[0x10020:0x10030] = uuid.UUID(check.ROOT_UUID).bytes
-    root[0x10040:0x10048] = b"_BHRfS_M"
-    root[0x1012B:0x1012B + 12] = b"OMARCHY_ROOT"
-    (payload / "root.img").write_bytes(root)
-    (payload / "esp/EFI/BOOT/BOOTAA64.EFI").write_bytes(pe(b"Limine 12.9.0\n"))
-    (payload / "esp/EFI/Linux/omarchy_linux-aurora.efi").write_bytes(pe(b".linux\0.initrd\0"))
-    (payload / "esp/limine.conf").write_text("interface_branding: Omarchy Bootloader\n//linux-aurora\n"
-                                             "  protocol: efi\n  path: boot():/EFI/Linux/omarchy_linux-aurora.efi\n")
-    (payload / "esp/m1n1/boot.bin").write_bytes(b"m1n1" * 64)
-    shutil.copy(ROOT / "builder/omarchy-volume.icns", payload / "omarchy-volume.icns")
     zip_path = out / name
-    subprocess.run(["bsdtar", "--format", "zip", "-cf", str(zip_path), "esp", "boot.img", "root.img",
-                    "omarchy-volume.icns"], cwd=payload, check=True)
+    fixtures.write_payload(zip_path, check.BOOT_UUID, check.ROOT_UUID)
     (out / "installer_data.json").write_text(json.dumps(check.expected_metadata(name)))
-    target = {"candidate_set": INPUTS["candidate_set"], "candidate_source_commit": INPUTS["candidate_source_commit"],
-              "builder_commit": "c" * 40, "builder_tree_clean": "true", "image_profile": "lab" if lab else "test",
-              "package_set_sha256": package_set(packages), "built": BUILT}
+    if channel:
+        target = {"channel_set": inputs["channel_set"], "channel_db_sha256": inputs["omarchy_db_sha256"]}
+    else:
+        target = {"candidate_set": inputs["candidate_set"], "candidate_source_commit": inputs["candidate_source_commit"]}
+    target.update({"builder_commit": "c" * 40, "builder_tree_clean": "true",
+                   "image_profile": "lab" if lab else "release" if channel else "test",
+                   "package_set_sha256": package_set(packages), "built": BUILT})
     if legacy:
         del target["package_set_sha256"], target["built"]
     if target_edit:
@@ -97,14 +94,19 @@ def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="pas
     digest = inspection_digest or next((l.split("=", 1)[1] for l in profile if l.startswith("lab_access_sha256=")), None)
     if digest:
         report.update(profile="lab", lab_access_sha256=digest)
+    if channel:
+        report.update(set_kind="channel", set=inputs["channel_set"], database_sha256=inputs["omarchy_db_sha256"])
+    if report_edit:
+        report_edit(report)
     (out / "INSPECTION").write_text(json.dumps(report))
-    (out / "inputs").write_text("format=2\n" + "".join(f"{k}={v}\n" for k, v in INPUTS.items()))
+    (out / "inputs").write_text("format=2\n" + "".join(f"{k}={v}\n" for k, v in inputs.items()))
     lines = ["format=2", "kind=mac-image", "lane=edge", "kernel=linux-aurora", "platform=apple-silicon",
              "builder_commit=" + "c" * 40, "builder_tree_clean=true", f"inputs_sha256={sha(out / 'inputs')}"]
-    lines += [f"input.{k}={v}" for k, v in INPUTS.items()]
+    lines += [f"input.{k}={v}" for k, v in inputs.items()]
     lines += [f"candidate={n}|{v}|{f}|{s}" for n, v, _, f, s in candidates]
     lines += [f"candidate_source={n}|{c}" for n, c in sources]
-    lines += ["hardware_setup=build", *(profile if provenance_profile is None else provenance_profile),
+    lines += ["hardware_setup=build", *([] if pin is None else [f"test_image_pin={pin}"]),
+              *(profile if provenance_profile is None else provenance_profile),
               f"package_set_sha256={package_set(packages)}", *([] if legacy else [f"built={BUILT}"]),
               f"package_count={len(packages)}"]
     lines += [f"package={i}|{'|'.join(p)}" for i, p in enumerate(packages, 1)]
@@ -115,14 +117,114 @@ def build(out: Path, packages=PACKAGES, candidates=PACKAGES[:2], inspection="pas
     (out / "PROVENANCE").write_text("\n".join(lines) + "\n")
     digests = check.check_payload("edge", zip_path, out / "installer_data.json", "lab" if name == LAB_NAME else "release")
     image = ["format=2", "lane=edge", "platform=apple-silicon", "builder_commit=" + "c" * 40, "builder_tree_clean=true",
-             *[f"{k}={v}" for k, v in INPUTS.items()],
-             "hardware_setup=build", *profile, f"package_set_sha256={package_set(packages)}",
+             *[f"{k}={v}" for k, v in inputs.items()],
+             "hardware_setup=build", *([] if pin is None else [f"test_image_pin={pin}"]), *profile,
+             f"package_set_sha256={package_set(packages)}",
              *([] if legacy else [f"built={BUILT}"]),
              *[f"image_sha256={m}|{d}" for m, d in sorted(digests.items())], f"input_digest={sha(out / 'inputs')}"]
     if image_edit:
         image = image_edit(image)
     (out / "IMAGE").write_text("\n".join(image) + "\n")
-    shutil.rmtree(payload)
+
+
+class ChannelBuildDirectoryTest(unittest.TestCase):
+    """A channel build's records name the channel set and database, and describe a public image."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self.tmp.name) / "out"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def build(self, **options):
+        if self.out.exists():
+            shutil.rmtree(self.out)
+        self.out.mkdir()
+        settings = dict(packages=CHANNEL_PACKAGES, candidates=CHANNEL_PACKAGES[:2], inputs=CHANNEL_INPUTS, pin="",
+                        sources=(("omarchy-mac", "b" * 40),))
+        build(self.out, **{**settings, **options})
+
+    def test_a_channel_build_is_a_public_image_with_its_database_and_digests(self):
+        self.build()
+        check.check_provenance("edge", self.out)
+        check.check_descriptor("edge", self.out)
+        image = check.parse_fields(self.out / "IMAGE")
+        self.assertEqual(image["omarchy_db_sha256"], [CHANNEL_DB])
+        self.assertEqual(image["channel_set"], [CHANNEL_INPUTS["channel_set"]])
+        self.assertNotIn("candidate_set", image)
+        self.assertNotIn("profile", image)
+        self.assertEqual(image["test_image_pin"], [""])
+        provenance = check.parse_fields(self.out / "PROVENANCE")
+        self.assertEqual(provenance["input.omarchy_db_sha256"], [CHANNEL_DB])
+        self.assertEqual({p.split("|")[1]: p.split("|")[5] for p in provenance["package"]},
+                         {n: s for n, _, _, _, s in CHANNEL_PACKAGES}, "PROVENANCE records every package's digest")
+
+    def test_a_channel_build_carries_no_test_image_pin(self):
+        self.build(pin="omarchy omarchy-mac omarchy-settings")
+        for mode in ("provenance", "descriptor"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(check.CheckError, "test image pin for a channel image"):
+                getattr(check, f"check_{mode}")("edge", self.out)
+
+    def test_a_channel_build_is_never_a_lab_image(self):
+        self.build(profile=LAB)
+        for mode in ("provenance", "descriptor"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(check.CheckError, "lab profile for a channel image"):
+                getattr(check, f"check_{mode}")("edge", self.out)
+
+    def test_the_image_target_and_inspection_must_name_the_channel_build(self):
+        cases = {
+            "the image target's channel_db_sha256 does not match": dict(
+                target_edit=lambda t: dict(t, channel_db_sha256="0" * 64)),
+            "the image target's profile does not match": dict(target_edit=lambda t: dict(t, image_profile="test")),
+            "INSPECTION did not inspect the channel set": dict(
+                report_edit=lambda r: r.update(database_sha256="0" * 64)),
+        }
+        for message, options in cases.items():
+            with self.subTest(message=message):
+                self.build(**options)
+                with self.assertRaisesRegex(check.CheckError, message):
+                    check.check_provenance("edge", self.out)
+
+    def test_records_name_one_kind_of_set(self):
+        mixed = dict(CHANNEL_INPUTS, candidate_set="apple-test-fixture")
+        self.build(inputs=mixed)
+        for mode in ("provenance", "descriptor"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(check.CheckError, "names no single set"):
+                getattr(check, f"check_{mode}")("edge", self.out)
+
+    def test_the_payload_passes_the_engine_contract(self):
+        self.build()
+        metadata = json.loads((self.out / "installer_data.json").read_text())
+        engine = json.loads((ROOT.parent / "Engine/installer_data.json").read_text())
+        engine["os_list"][0]["package"] = NAME
+        self.assertEqual(metadata, engine)
+
+    def test_a_public_image_is_named_for_its_lane_date_and_package_set(self):
+        self.build()
+        set_id = package_set(CHANNEL_PACKAGES)[:12]
+        self.assertEqual(check.image_name("edge", self.out), f"omarchy-mac-edge-2026.09.25-{set_id}")
+        result = subprocess.run([sys.executable, str(ROOT / "bin/mac-image-check"), "name", "edge", str(self.out)],
+                                capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout), (0, f"omarchy-mac-edge-2026.09.25-{set_id}\n"))
+
+    def test_any_changed_package_changes_the_name(self):
+        self.build()
+        first = check.image_name("edge", self.out)
+        changed = [*CHANNEL_PACKAGES[:3], ("glibc", "2.43-2", "core", "glibc-2.43-2-aarch64.pkg.tar.xz", "a" * 64)]
+        self.build(packages=changed)
+        self.assertNotEqual(check.image_name("edge", self.out), first)
+
+    def test_only_a_public_image_is_named(self):
+        cases = {
+            "lab profile for a channel image": dict(profile=LAB),
+            "test image pin for a channel image": dict(pin="omarchy omarchy-mac omarchy-settings"),
+        }
+        for message, options in cases.items():
+            with self.subTest(message=message):
+                self.build(**options)
+                with self.assertRaisesRegex(check.CheckError, message):
+                    check.image_name("edge", self.out)
 
 
 class BuildDirectoryTest(unittest.TestCase):
@@ -138,6 +240,11 @@ class BuildDirectoryTest(unittest.TestCase):
         build(self.out)
         check.check_provenance("edge", self.out)
         check.check_descriptor("edge", self.out)
+
+    def test_a_candidate_set_image_is_not_named(self):
+        build(self.out)
+        with self.assertRaisesRegex(check.CheckError, "only a public image"):
+            check.image_name("edge", self.out)
 
     def test_a_candidate_installed_from_another_repository(self):
         packages = [PACKAGES[0], ("uboot-asahi", "2026.07-1", "asahi-alarm", PACKAGES[1][3], PACKAGES[1][4]), PACKAGES[2]]
@@ -339,7 +446,7 @@ class BuildDirectoryTest(unittest.TestCase):
         payload = self.out / "unpacked"
         payload.mkdir()
         subprocess.run(["bsdtar", "-xf", str(self.out / NAME), "-C", str(payload)], check=True)
-        (payload / "esp/EFI/BOOT/BOOTAA64.EFI").write_bytes(pe(b"GRUB 2.12\n"))
+        (payload / "esp/EFI/BOOT/BOOTAA64.EFI").write_bytes(fixtures.payload_pe(b"GRUB 2.12\n"))
         (self.out / NAME).unlink()
         subprocess.run(["bsdtar", "--format", "zip", "-cf", str(self.out / NAME), "esp", "boot.img", "root.img",
                         "omarchy-volume.icns"], cwd=payload, check=True)

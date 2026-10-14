@@ -174,6 +174,18 @@
         .unclassified)
     }
 
+    func testPreparedResumeMismatchHasItsOwnDiagnostic() {
+      XCTAssertEqual(
+        EngineFailureReason.classify(
+          exception: "AsahiAdapterError",
+          message: "prepared resume target does not match checkpoint"
+        ).rawValue, 5)
+      XCTAssertEqual(
+        EngineFailureReason.classify(
+          exception: "ValueError",
+          message: "prepared resume target does not match checkpoint"), .unclassified)
+    }
+
     func testSummaryIsOneBoundedPrintableLine() {
       let notice = EngineFailureNotice(
         reason: .unclassified, exitStatus: 1, diskUnchanged: false,

@@ -103,3 +103,70 @@ if "$BASH" "$inputs" resolve "$work/new" --candidates "$work" --alarm-server htt
 fi
 grep -Fq "not an https server URL: http://mirror.invalid" "$work/out" || fail "resolve refuses an http server by name"
 pass "resolve refuses an http server"
+
+# ── channel records ────────────────────────────────────────────────────────
+# A fixture edge snapshot: a real repository database naming the channel set,
+# its archives and stand-in signatures in the cache (nothing here verifies them).
+mkdir -p "$work/channel" "$work/cache/pkg"
+channel_db=$(cd "$ROOT" && python3 -c '
+import sys
+sys.path.insert(0, "test")
+import fixtures
+from pathlib import Path
+names = [fixtures.CHANNEL_NAMES.get(role, role) for role in fixtures.VERSIONS]
+database, sha256 = fixtures.make_channel(Path(sys.argv[1]), None, unsigned=names)
+print(sha256)
+' "$work/channel/edge")
+cp "$work/channel/edge/omarchy.db" "$work/cache/db/$channel_db.db"
+for archive in "$work"/channel/edge/packages/*.pkg.tar.*; do
+  cp "$archive" "$work/cache/pkg/"
+  printf 'signature\n' >"$work/cache/pkg/${archive##*/}.sig"
+done
+channel_record() {
+  record | awk -v set="omarchy-edge-${channel_db:0:12}" -v db="$channel_db" -v manifest="$(hex 8)" '
+    /^candidate_set=/ { print "channel_set=" set; print "channel_signer=40DFB630FF42BCFFB047046CF0134EE680CAC571";
+      print "channel_manifest_sha256=" manifest; next }
+    /^candidate_/ { next }
+    /^omarchy_db_sha256=/ { print "omarchy_db_sha256=" db; next }
+    { print }'
+}
+channel_record >"$work/channel-inputs"
+"$BASH" "$inputs" check "$work/channel-inputs" | cmp -s - "$work/channel-inputs" || fail "check prints a canonical channel record"
+pass "a canonical channel record checks"
+
+refuse "a channel record that also names a candidate set" \
+  awk '{ print } /^resolved_at=/ { print "candidate_set=apple-test-fixture" }' "$work/channel-inputs"
+refuse "a channel set named for another database" \
+  sed "s/^channel_set=.*/channel_set=omarchy-edge-$(hex 0 | cut -c1-12)/" "$work/channel-inputs"
+refuse "a channel set named for another channel" sed 's/^channel_set=omarchy-edge-/channel_set=omarchy-rc-/' "$work/channel-inputs"
+refuse "a lowercase channel signer" \
+  sed 's/^channel_signer=.*/channel_signer=40dfb630ff42bcffb047046cf0134ee680cac571/' "$work/channel-inputs"
+refuse "a channel record without its manifest digest" sed '/^channel_manifest_sha256=/d' "$work/channel-inputs"
+
+mkdir "$work/channel-packages"
+"$BASH" "$inputs" packages "$work/channel-inputs" "$work/channel-packages" --cache "$work/cache" >/dev/null ||
+  fail "packages from the cache"
+expected=$(cd "$work/channel/edge/packages" && ls | sort)
+[[ $(cd "$work/channel-packages" && ls | grep -v '\.sig$' | sort) == "$expected" &&
+  $(ls "$work/channel-packages" | grep -c '\.sig$') == $(wc -l <<<"$expected") ]] ||
+  fail "packages puts each archive the pinned database names, with its signature, in place"
+pass "packages puts the channel set's archives and signatures in place from the cache"
+
+mkdir "$work/candidate-packages"
+if "$BASH" "$inputs" packages "$work/inputs" "$work/candidate-packages" --cache "$work/cache" >/dev/null 2>&1; then
+  fail "packages accepts a candidate record"
+fi
+cp "$work/cache/db/$channel_db.db" "$work/channel-db.keep"
+printf 'moved on\n' >"$work/cache/db/$channel_db.db"
+mkdir "$work/moved-packages"
+if "$BASH" "$inputs" packages "$work/channel-inputs" "$work/moved-packages" --cache "$work/cache" >/dev/null 2>&1; then
+  fail "packages accepts a channel database that is not the pinned one"
+fi
+mv "$work/channel-db.keep" "$work/cache/db/$channel_db.db"
+pass "packages refuses a candidate record and a channel database that is not the pinned one"
+
+if "$BASH" "$inputs" resolve "$work/new" --channel-set --candidates "$work" >"$work/out" 2>&1; then
+  fail "resolve accepts --channel-set with --candidates"
+fi
+grep -Fq "exclude each other" "$work/out" || fail "resolve says --channel-set and --candidates exclude each other"
+pass "resolve takes a candidate set or the channel, not both"

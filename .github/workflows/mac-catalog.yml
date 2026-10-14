@@ -1,0 +1,193 @@
+name: Mac catalog
+
+# Signs and publishes a channel catalog that pins one uploaded image, its
+# engine and its installer_data.json by digest:
+#
+#   prepare  no secrets: refuses unless the VM evidence record passed for the
+#            image's exact sha256, checks every artifact URL serves its pinned
+#            bytes, and builds catalog-<channel>.json enabling every supported
+#            M1, M2 and M3 Mac
+#   release  mac-catalog-sign.yml, shared with the promote workflow: signs in
+#            the catalog-release environment (main only, the owner approves
+#            each run) after re-checking the evidence, then publishes from a
+#            separate job holding a write token and no key. A dry run signs
+#            and publishes to a scratch directory only.
+#
+# Inputs and the evidence record are documented in docs/catalog-release.md.
+# A caller (the edge publish trigger) must grant contents: write.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image name, omarchy-mac-<channel>-<YYYY.MM.DD>-<package set id>
+        type: string
+        required: true
+      payload:
+        description: The uploaded image zip as JSON {url, fileName, sizeBytes, sha256, parts?}
+        type: string
+        required: true
+      engine:
+        description: The engine as JSON {version, url, fileName, sizeBytes, sha256, downstreamRevision}
+        type: string
+        required: true
+      installer-data:
+        description: The image's installer_data.json as JSON {url, fileName, sizeBytes, sha256}
+        type: string
+        required: true
+      evidence:
+        description: The VM acceptance evidence record (JSON)
+        type: string
+        required: true
+      installer:
+        description: App compatibility as JSON {minimumVersion, latestVersion, downloadURL}; required for engines from v0.9.2-omarchy.18
+        type: string
+        default: ''
+      channel:
+        description: Channel to publish (edge only until promotion is unparked)
+        type: string
+        default: edge
+      dry-run:
+        description: Sign and publish to a scratch directory only
+        type: boolean
+        default: true
+    secrets:
+      # The sign job reads the catalog-release environment's secret, which a
+      # caller must still pass: call with `secrets: inherit`. Callers must be
+      # workflows of this repository; catalog_release.py refuses others.
+      CATALOG_SIGNING_KEY:
+        required: false
+    outputs:
+      catalog-sha256:
+        description: sha256 of the unsigned catalog
+        value: ${{ jobs.prepare.outputs.catalog-sha256 }}
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image name, omarchy-mac-<channel>-<YYYY.MM.DD>-<package set id>
+        type: string
+        required: true
+      payload:
+        description: The uploaded image zip as JSON {url, fileName, sizeBytes, sha256, parts?}
+        type: string
+        required: true
+      engine:
+        description: The engine as JSON {version, url, fileName, sizeBytes, sha256, downstreamRevision}
+        type: string
+        required: true
+      installer-data:
+        description: The image's installer_data.json as JSON {url, fileName, sizeBytes, sha256}
+        type: string
+        required: true
+      evidence:
+        description: The VM acceptance evidence record (JSON)
+        type: string
+        required: true
+      installer:
+        description: App compatibility as JSON {minimumVersion, latestVersion, downloadURL}; required for engines from v0.9.2-omarchy.18
+        type: string
+        default: ''
+      channel:
+        description: Channel to publish
+        type: choice
+        options: [edge]
+        default: edge
+      dry-run:
+        description: Sign and publish to a scratch directory only
+        type: boolean
+        default: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Gate and build the catalog
+    # Only this repository's runs (a caller elsewhere would check out its own
+    # code); sign and publish need this job.
+    if: ${{ github.repository == 'omacom/omarchy-mac-installer' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      catalog-sha256: ${{ steps.build.outputs.catalog-sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Record the inputs
+        env:
+          IMAGE: ${{ inputs.image }}
+          PAYLOAD: ${{ inputs.payload }}
+          ENGINE: ${{ inputs.engine }}
+          INSTALLER_DATA: ${{ inputs.installer-data }}
+          EVIDENCE: ${{ inputs.evidence }}
+          INSTALLER: ${{ inputs.installer }}
+          CHANNEL: ${{ inputs.channel }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          inputs=$RUNNER_TEMP/catalog-inputs
+          mkdir -p "$inputs"
+          printf '%s\n' "$IMAGE" >"$inputs/image"
+          printf '%s\n' "$CHANNEL" >"$inputs/channel"
+          printf '%s\n' "$PAYLOAD" >"$inputs/payload.json"
+          printf '%s\n' "$ENGINE" >"$inputs/engine.json"
+          printf '%s\n' "$INSTALLER_DATA" >"$inputs/installer-data.json"
+          printf '%s\n' "$EVIDENCE" >"$inputs/evidence.json"
+          [[ -z $INSTALLER ]] || printf '%s\n' "$INSTALLER" >"$inputs/installer.json"
+          {
+            git rev-parse HEAD
+            openssl version
+            python3 --version
+            echo "dry_run=$DRY_RUN"
+          } | tee "$inputs/toolchain.txt"
+
+      - name: Run the catalog checks
+        run: python3 -m unittest discover -s scripts/tests -p 'test_catalog_release.py'
+
+      - name: Build the catalog
+        id: build
+        run: |
+          set -euo pipefail
+          inputs=$RUNNER_TEMP/catalog-inputs
+          installer=()
+          [[ ! -f $inputs/installer.json ]] || installer=(--installer "$inputs/installer.json")
+          python3 scripts/catalog_release.py prepare \
+            --channel "$(<"$inputs/channel")" --image "$(<"$inputs/image")" \
+            --payload "$inputs/payload.json" --engine "$inputs/engine.json" \
+            --installer-data "$inputs/installer-data.json" --evidence "$inputs/evidence.json" \
+            "${installer[@]}" --verify-remote --check-live --host github-release \
+            --out "$inputs" | tee "$inputs/prepare.log"
+          echo "catalog-sha256=$(sed -n 's/^catalog_sha256=//p' "$inputs/prepare.log")" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Catalog for \`$(<"$inputs/image")\`"
+            echo '```'
+            cat "$inputs/prepare.log"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: catalog-unsigned
+          path: ${{ runner.temp }}/catalog-inputs/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Sign and publish
+    needs: prepare
+    uses: ./.github/workflows/mac-catalog-sign.yml
+    permissions:
+      contents: write # only its publish job, skipped in a dry run, uses it
+    with:
+      channel: ${{ inputs.channel }}
+      catalog-sha256: ${{ needs.prepare.outputs.catalog-sha256 }}
+      gate: evidence
+      dry-run: ${{ inputs.dry-run }}
+    secrets: inherit

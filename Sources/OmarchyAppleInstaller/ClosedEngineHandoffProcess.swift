@@ -53,12 +53,17 @@
     }
 
     public func execute(_ invocation: ClosedEngineInvocation) async throws -> Data {
-      let handoff = try InstallerPerformance.measure("app_handoff") {
-        try ClosedEngineHandoffBuilder().prepare(
-          invocation: invocation,
-          assets: assets,
-          in: handoffDirectory
-        )
+      let handoff: PreparedEngineHandoff
+      do {
+        handoff = try InstallerPerformance.measure("app_handoff") {
+          try ClosedEngineHandoffBuilder().prepare(
+            invocation: invocation,
+            assets: assets,
+            in: handoffDirectory
+          )
+        }
+      } catch {
+        throw InstallerPreSubmissionFailure(error)
       }
       defer { try? FileManager.default.removeItem(at: handoff.packageURL) }
       return try await submitter.submit(

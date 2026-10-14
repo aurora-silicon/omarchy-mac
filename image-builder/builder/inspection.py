@@ -45,6 +45,9 @@ M1N1_OPTION = re.compile(r"(chosen\.[^=]*|display|mitigations)=.*")
 # is still inspected: the identity is both keys or none.
 TARGET_FIELDS = ("format", "platform", "candidate_set", "candidate_source_commit", "builder_commit",
                  "builder_tree_clean", "image_profile", "package_set_sha256", "built")
+# A channel image names its set and the channel database it came from instead.
+CHANNEL_TARGET_FIELDS = ("format", "platform", "channel_set", "channel_db_sha256", "builder_commit",
+                         "builder_tree_clean", "image_profile", "package_set_sha256", "built")
 IDENTITY_FIELDS = ("package_set_sha256", "built")
 # The candidate set's name and the build time, as the builder writes them.
 CANDIDATE_SET_NAME = re.compile(r"[A-Za-z0-9._-]+")
@@ -85,13 +88,31 @@ def require(ok: bool, message: str) -> None:
 
 
 class Candidates:
-    """The frozen, imported candidate set: import.json and its archives."""
+    """The frozen, imported set: import.json and its archives. A candidate set
+    (candidate_set.py), or a channel set (channel_set.py, kind "channel"), whose
+    runtime packages name the role they fill (omarchy-dev fills omarchy)."""
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self.summary = json.loads((directory / "import.json").read_text())
         self.packages = {p["name"]: p for p in self.summary["packages"]}
+        self.kind = self.summary.get("kind", "candidate")
+        require(self.kind in ("candidate", "channel"), f"the set is of an unknown kind: {self.kind}")
+        self.roles = {p.get("role", p["name"]): p["name"] for p in self.summary["packages"]}
         self._listings: dict[str, list[str]] = {}
+
+    def target_fields(self) -> tuple[str, ...]:
+        return CHANNEL_TARGET_FIELDS if self.kind == "channel" else TARGET_FIELDS
+
+    def target_set(self) -> dict[str, str]:
+        """The set's lines in the image-target manifest and the factory seal."""
+        if self.kind == "channel":
+            return {"channel_set": self.summary["set"], "channel_db_sha256": self.summary["database_sha256"]}
+        return {"candidate_set": self.summary["set"], "candidate_source_commit": self.summary["source_commit"]}
+
+    def runtime_names(self) -> set[str]:
+        """Runtime packages named apart from their role: a channel's -dev desktop."""
+        return {name for role, name in self.roles.items() if role != name}
 
     def archive(self, name: str) -> Path:
         return self.directory / self.packages[name]["filename"]
@@ -139,7 +160,12 @@ def check_candidate_versions(root: Path, candidates: Candidates, report: dict) -
 def check_runtime_sources(root: Path, candidates: Candidates, report: dict) -> str:
     """The commit each runtime package was built from, as the importer verified
     it: the set's source commit, or the one the set declares for a platform
-    package. The installed package records it too."""
+    package. The installed package records it too. A channel set's runtime
+    records a commit where its package ships a source revision (the platform
+    packages); the -dev desktop ships none and is held to one version, the set's
+    archives and the channel database instead."""
+    if candidates.kind == "channel":
+        return check_channel_runtime_sources(root, candidates, report)
     sources = {}
     for name, package in sorted(candidates.packages.items()):
         if package.get("group") != "runtime":
@@ -156,14 +182,33 @@ def check_runtime_sources(root: Path, candidates: Candidates, report: dict) -> s
     return f"runtime from {candidates.summary['source_commit'][:12]}" + (f"; {', '.join(others)}" if others else "")
 
 
+def check_channel_runtime_sources(root: Path, candidates: Candidates, report: dict) -> str:
+    sources = {}
+    for name, package in sorted(candidates.packages.items()):
+        if package.get("group") != "runtime" or "source_commit" not in package:
+            continue
+        commit = package["source_commit"]
+        relative = candidate_set.REVISION_FILES[package["role"]]
+        require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, f"the channel set records no source commit for {name}")
+        require((root / relative).is_file() and (root / relative).read_text().strip() == commit,
+                f"/{relative} does not name {commit}")
+        sources[name] = commit
+    desktop = candidates.packages[candidates.roles["omarchy"]], candidates.packages[candidates.roles["omarchy-settings"]]
+    require(desktop[0]["version"] == desktop[1]["version"], "the runtime and its settings are not one version")
+    require(sources, "the channel set records no runtime source commit")
+    report["runtime_sources"] = sources
+    return (f"runtime {desktop[0]['name']} {desktop[0]['version']} from the channel database "
+            f"{candidates.summary['database_sha256'][:12]}; " + ", ".join(f"{n} {c[:12]}" for n, c in sources.items()))
+
+
 def check_apple_packages(root: Path, report: dict) -> str:
     """Every package the image's Apple list names is installed, reading the list
-    build-mac-image took: omarchy-apple-silicon.packages, else an older
-    runtime's omarchy-apple.packages, never a link."""
+    build-mac-image took: omarchy-aarch64-apple.packages, else an older
+    runtime's omarchy-apple-silicon.packages or omarchy-apple.packages, never a
+    link."""
     path = next((root / name for name in candidate_set.APPLE_LISTS
                  if (root / name).is_file() and not (root / name).is_symlink()), None)
-    require(path is not None,
-            "the image ships no Apple package list (omarchy-apple-silicon.packages or omarchy-apple.packages)")
+    require(path is not None, "the image " + candidate_set.NO_APPLE_LIST)
     names = [fields[0] for fields in map(str.split, path.read_text().splitlines())
              if fields and not fields[0].startswith("#")]
     require(bool(names), f"{path.name} names no package")
@@ -426,8 +471,8 @@ def image_profile(profile: str, candidates: Candidates) -> str:
     return "test" if candidates.summary.get("candidate_only") is True else "release"
 
 
-def read_image_target(path: Path) -> dict[str, str]:
-    """TARGET_FIELDS from a manifest read as the runtime reads it: comments and
+def read_image_target(path: Path, known: tuple[str, ...] = TARGET_FIELDS) -> dict[str, str]:
+    """KNOWN fields from a manifest read as the runtime reads it: comments and
     unknown keys ignored, any other line refused. Each known key appears once."""
     fields: dict[str, str] = {}
     # Lines end at a newline only, as the runtime's read -r splits them: a carriage
@@ -439,14 +484,18 @@ def read_image_target(path: Path) -> dict[str, str]:
             continue
         require("=" in line, f"/var/lib/omarchy/image/target is malformed: {line}")
         key, value = line.split("=", 1)
-        if key in TARGET_FIELDS:
+        if key in known:
             require(key not in fields, f"/var/lib/omarchy/image/target names {key} twice")
             fields[key] = value
-    missing = [key for key in TARGET_FIELDS if key not in fields]
+    missing = [key for key in known if key not in fields]
     if all(key in missing for key in IDENTITY_FIELDS):
         missing = [key for key in missing if key not in IDENTITY_FIELDS]
     require(not missing, f"/var/lib/omarchy/image/target does not record {', '.join(missing)}")
     return fields
+
+
+def read_target_keys(path: Path) -> set[str]:
+    return {line.split("=", 1)[0] for line in path.read_text().split("\n") if "=" in line and not line.startswith("#")}
 
 
 def check_image_target(root: Path, candidates: Candidates, profile: str, report: dict) -> str:
@@ -455,23 +504,28 @@ def check_image_target(root: Path, candidates: Candidates, profile: str, report:
     path = directory / "target"
     require(path.is_file(), "/var/lib/omarchy/image/target is missing")
     root_owned(path, 0o644)
-    fields = read_image_target(path)
+    known = candidates.target_fields()
+    fields = read_image_target(path, known)
     require(fields["format"] == "1" and fields["platform"] == PLATFORM,
             f"/var/lib/omarchy/image/target does not name {PLATFORM}")
-    require(CANDIDATE_SET_NAME.fullmatch(fields["candidate_set"]) is not None
-            and fields["candidate_set"] == candidates.summary["set"]
-            and fields["candidate_source_commit"] == candidates.summary["source_commit"],
-            "/var/lib/omarchy/image/target records another candidate set")
+    if candidates.kind == "channel":
+        require(not set(TARGET_FIELDS[2:4]) & set(read_target_keys(path)),
+                "/var/lib/omarchy/image/target of a channel image names a candidate set")
+    set_fields = candidates.target_set()
+    name = next(iter(set_fields))
+    require(CANDIDATE_SET_NAME.fullmatch(fields[name]) is not None
+            and all(fields[key] == value for key, value in set_fields.items()),
+            f"/var/lib/omarchy/image/target records another {candidates.kind} set")
     require(re.fullmatch(r"[0-9a-f]{40}", fields["builder_commit"]) is not None,
             "/var/lib/omarchy/image/target names no builder commit")
     require(fields["builder_tree_clean"] in ("true", "false"),
             "/var/lib/omarchy/image/target does not say whether the builder tree was clean")
     expected = image_profile(profile, candidates)
     require(fields["image_profile"] == expected, f"/var/lib/omarchy/image/target does not record the {expected} profile")
-    report["image_target"] = {key: fields[key] for key in TARGET_FIELDS
+    report["image_target"] = {key: fields[key] for key in known
                               if key in fields and key not in ("format", "platform")}
     detail = (f"/var/lib/omarchy/image/target names {PLATFORM}, root-owned, {expected} image of "
-              f"{fields['candidate_set']} from builder {fields['builder_commit'][:12]}")
+              f"{fields[name]} from builder {fields['builder_commit'][:12]}")
     if "built" not in fields:
         return detail + ", built before images recorded their build identity"
     require(re.fullmatch(r"[0-9a-f]{64}", fields["package_set_sha256"]) is not None,
@@ -517,35 +571,40 @@ def check_first_boot(root: Path, report: dict) -> str:
 
 
 def pacman_templates(root: Path, channel: str) -> tuple[str, Path, Path]:
-    # The Apple template as build-mac-image picks it: omarchy-mac's, else an
-    # older runtime's apple-silicon one, else an even older runtime's aarch64
-    # one; and the runtime's aarch64 mirror list, per channel or single.
+    # The Apple template as build-mac-image picks it: the runtime's
+    # aarch64-apple one, else omarchy-mac's, else an older runtime's
+    # apple-silicon one, else an even older runtime's aarch64 one; and the
+    # mirror list beside the runtime's aarch64-apple template, else its aarch64
+    # one, per channel or single.
     runtime = root / "usr/share/omarchy/default/pacman"
-    choices = (("omarchy-mac's apple-silicon", root / f"usr/share/omarchy-mac/pacman/pacman-{channel}.conf"),
+    choices = (("the runtime's aarch64-apple", runtime / f"aarch64-apple/pacman-{channel}.conf"),
+               ("omarchy-mac's apple-silicon", root / f"usr/share/omarchy-mac/pacman/pacman-{channel}.conf"),
                ("the runtime's apple-silicon", runtime / f"apple-silicon/pacman-{channel}.conf"),
                ("the runtime's aarch64", runtime / f"aarch64/pacman-{channel}.conf"))
     kind, template = next((choice for choice in choices if choice[1].is_file()), choices[-1])
-    mirrorlist = runtime / f"aarch64/mirrorlist-{channel}"
-    if not mirrorlist.is_file():
-        mirrorlist = runtime / "mirrorlist-aarch64"
+    mirrorlist = next((path for path in (runtime / f"aarch64-apple/mirrorlist-{channel}",
+                                         runtime / f"aarch64/mirrorlist-{channel}") if path.is_file()),
+                      runtime / "mirrorlist-aarch64")
     return kind, template, mirrorlist
 
 
 def check_pacman_config(root: Path, channel: str, candidates: Candidates) -> str:
     kind, template, mirrorlist = pacman_templates(root, channel)
+    mirrors = "aarch64-apple" if mirrorlist.parent.name == "aarch64-apple" else "aarch64"
     require(template.is_file(), f"the image ships no Apple Silicon pacman configuration for {channel}")
     pinned = test_image_pin.pinned(candidates.summary)
     require((root / "etc/pacman.conf").read_bytes() == test_image_pin.render(limine.regular(template), pinned),
             f"/etc/pacman.conf is not {kind} {channel} configuration"
             + (" with the test image's pin" if pinned else ""))
     require((root / "etc/pacman.d/mirrorlist").read_bytes() == limine.regular(mirrorlist),
-            f"/etc/pacman.d/mirrorlist is not the runtime's aarch64 {channel} mirror list")
-    return (f"{kind} {channel} pacman.conf and the runtime's aarch64 mirror list"
+            f"/etc/pacman.d/mirrorlist is not the runtime's {mirrors} {channel} mirror list")
+    return (f"{kind} {channel} pacman.conf and the runtime's {mirrors} mirror list"
             + (f"; test image pin: IgnorePkg = {' '.join(pinned)}" if pinned else ""))
 
 
-def check_installed_system(root: Path, report: dict) -> str:
-    verification = installed_system.verify(root)
+def check_installed_system(root: Path, report: dict, candidates: Candidates) -> str:
+    # A channel set's -dev desktop is its runtime, not a stray development package.
+    verification = installed_system.verify(root, runtime_packages=candidates.runtime_names())
     report["installed_system"] = verification.checks
     require(not verification.failed, "installed-system checks failed: " + ", ".join(verification.failed))
     return f"{len(verification.checks)} installed-system checks"
@@ -555,9 +614,8 @@ def check_factory(factory: Path, root: Path, candidates: Candidates) -> str:
     sealed = factory / "var/lib/omarchy/factory-sealed"
     require(sealed.is_file() and not sealed.is_symlink(), "@factory is not sealed")
     body = sealed.read_text()
-    require(body == f"format=2\ncandidate_set={candidates.summary['set']}\n"
-                    f"candidate_source_commit={candidates.summary['source_commit']}\n",
-            "@factory records another candidate set")
+    require(body == "format=2\n" + "".join(f"{key}={value}\n" for key, value in candidates.target_set().items()),
+            f"@factory records another {candidates.kind} set")
     for rel in ("var/lib/omarchy/mac-first-boot/pending", "var/lib/omarchy/mac-first-boot/deferred-steps",
                 "var/lib/omarchy/provisioning/pending", "etc/pacman.d/gnupg", "boot/efi/omarchy/install.conf"):
         require(not (factory / rel).exists(), f"@factory carries /{rel}")
@@ -580,6 +638,8 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
         "set": candidates.summary["set"],
         "source_commit": candidates.summary["source_commit"],
         "signer": candidates.summary["signer"],
+        **({"set_kind": "channel", "database_sha256": candidates.summary["database_sha256"]}
+           if candidates.kind == "channel" else {}),
         "channel": channel,
         "checks": {},
     }
@@ -601,7 +661,7 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
         ("first-boot", lambda: check_first_boot(root, report)),
         ("snapshots", lambda: check_snapshots(root)),
         ("pacman-config", lambda: check_pacman_config(root, channel, candidates)),
-        ("installed-system", lambda: check_installed_system(root, report)),
+        ("installed-system", lambda: check_installed_system(root, report, candidates)),
     ]
     if factory is not None:
         checks.append(("factory", lambda: check_factory(factory, root, candidates)))

@@ -1,0 +1,135 @@
+#!/bin/bash
+# Turn an unsigned installer app (build-app.sh with OMARCHY_APP_SIGNING_IDENTITY=none)
+# into the release download: guard, sign, notarize and staple the app, put it
+# in a .dmg beside an /Applications link, sign, notarize and staple the .dmg,
+# check both with Gatekeeper, check and guard the app inside the finished .dmg
+# and write its sha256.
+#
+# Usage: sign-and-package --app APP --output DIRECTORY --identity IDENTITY
+#                         [--keychain KEYCHAIN] [--notarize]
+#
+# --identity - is the dry run: ad hoc signatures, no notarization, no stapling
+# and no Gatekeeper checks (Gatekeeper refuses ad hoc code), so it needs no
+# secrets. --notarize needs a Developer ID identity and NOTARY_API_KEY (path
+# to the App Store Connect API key .p8), NOTARY_API_KEY_ID and
+# NOTARY_API_ISSUER_ID in the environment.
+#
+# Writes DIRECTORY/<file stem>-<version>.dmg and .dmg.sha256 (shasum format),
+# and the notary service's logs as notary-*.json.
+set -euo pipefail
+
+fail() {
+  echo "sign-and-package: $*" >&2
+  exit 1
+}
+
+usage() {
+  fail "usage: sign-and-package --app APP --output DIRECTORY --identity IDENTITY [--keychain KEYCHAIN] [--notarize]"
+}
+
+app="" output="" identity="" keychain="" notarize=0
+while (( $# > 0 )); do
+  case $1 in
+    --app) app=${2:-}; shift 2 || usage ;;
+    --output) output=${2:-}; shift 2 || usage ;;
+    --identity) identity=${2:-}; shift 2 || usage ;;
+    --keychain) keychain=${2:-}; shift 2 || usage ;;
+    --notarize) notarize=1; shift ;;
+    *) usage ;;
+  esac
+done
+[[ -n $app && -n $output && -n $identity ]] || usage
+
+here=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=../identity.conf
+source "$here/../identity.conf"
+[[ $app == /* && -d $app && ! -L $app && ${app##*/} == "$INSTALLER_APP_NAME.app" ]] ||
+  fail "the app must be an absolute path to $INSTALLER_APP_NAME.app"
+if (( notarize )); then
+  [[ $identity != "-" ]] || fail "an ad hoc signature cannot be notarized"
+  for name in NOTARY_API_KEY NOTARY_API_KEY_ID NOTARY_API_ISSUER_ID; do
+    [[ -n ${!name:-} ]] || fail "$name is required to notarize"
+  done
+  [[ -f $NOTARY_API_KEY ]] || fail "NOTARY_API_KEY is not a file"
+fi
+version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")
+mkdir -p "$output"
+output=$(cd "$output" && pwd -P)
+dmg="$output/$INSTALLER_FILE_STEM-$version.dmg"
+[[ ! -e $dmg && ! -e $dmg.sha256 ]] || fail "refusing to overwrite $dmg"
+work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sign-and-package.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+# The notary service's verdict and log for FILE; stapled on acceptance.
+notarize_and_staple() {
+  local file=$1 submission=$2 label=$3 id status
+  local key=(--key "$NOTARY_API_KEY" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER_ID")
+  echo "Notarizing $label"
+  xcrun notarytool submit "$submission" "${key[@]}" --wait --timeout 1h \
+    --output-format json >"$work/notary-$label.json" || true
+  id=$(/usr/bin/plutil -extract id raw -o - "$work/notary-$label.json" 2>/dev/null) ||
+    fail "notarytool did not accept the $label submission: $(cat "$work/notary-$label.json")"
+  status=$(/usr/bin/plutil -extract status raw -o - "$work/notary-$label.json")
+  # Read the log even on acceptance: it lists warnings the verdict hides, and
+  # it is the release's notarization evidence.
+  xcrun notarytool log "$id" "${key[@]}" "$output/notary-$label.json" >/dev/null ||
+    fail "could not fetch the notary log for $label (submission $id, status $status)"
+  cat "$output/notary-$label.json"
+  [[ $status == "Accepted" ]] || fail "notarization of $label ended $status (submission $id)"
+  xcrun stapler staple "$file"
+  xcrun stapler validate "$file"
+}
+
+echo "Guarding the unsigned app"
+"$here/release-guard" "$app"
+
+"$here/sign-app" "$app" "$identity" ${keychain:+"$keychain"}
+if (( notarize )); then
+  /usr/bin/ditto -c -k --keepParent "$app" "$work/app.zip"
+  notarize_and_staple "$app" "$work/app.zip" app
+  spctl --assess --type execute --verbose=4 "$app"
+fi
+
+echo "Building $(basename "$dmg")"
+stage="$work/stage"
+mkdir "$stage"
+/usr/bin/ditto "$app" "$stage/${app##*/}"
+ln -s /Applications "$stage/Applications"
+hdiutil create -volname "$INSTALLER_APP_NAME" -srcfolder "$stage" -fs HFS+ \
+  -format UDZO -imagekey zlib-level=9 "$work/release.dmg" >/dev/null
+hdiutil verify "$work/release.dmg" >/dev/null
+dmg_arguments=(--force --sign "$identity")
+if [[ $identity == "-" ]]; then
+  dmg_arguments+=(--timestamp=none)
+else
+  dmg_arguments+=(--timestamp)
+fi
+[[ -z $keychain ]] || dmg_arguments+=(--keychain "$keychain")
+codesign "${dmg_arguments[@]}" "$work/release.dmg"
+codesign --verify --strict --verbose=2 "$work/release.dmg"
+if (( notarize )); then
+  notarize_and_staple "$work/release.dmg" "$work/release.dmg" dmg
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$work/release.dmg"
+fi
+
+# What a person gets: the app as it sits in the finished .dmg.
+echo "Checking the app inside the dmg"
+mount="$work/mount"
+mkdir "$mount"
+hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$work/release.dmg" >/dev/null
+inner_status=0
+"$here/sign-app" --verify "$mount/${app##*/}" "$identity" || inner_status=$?
+if (( notarize && inner_status == 0 )); then
+  xcrun stapler validate "$mount/${app##*/}" || inner_status=$?
+fi
+if (( notarize && inner_status == 0 )); then
+  spctl --assess --type execute --verbose=4 "$mount/${app##*/}" || inner_status=$?
+fi
+hdiutil detach "$mount" >/dev/null
+(( inner_status == 0 )) || fail "the app inside the dmg does not verify"
+
+echo "Guarding the dmg"
+"$here/release-guard" "$work/release.dmg"
+mv "$work/release.dmg" "$dmg"
+(cd "$output" && /usr/bin/shasum -a 256 "${dmg##*/}" >"${dmg##*/}.sha256")
+cat "$dmg.sha256"

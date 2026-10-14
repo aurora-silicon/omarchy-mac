@@ -194,21 +194,29 @@ struct ProgressTrack: View {
           Capsule()
             .fill(OmarchyTheme.accent)
             .frame(width: geometry.size.width * min(1, max(0, fraction)))
-            .animation(.linear(duration: 0.18), value: fraction)
+            .animation(reduceMotion ? nil : .linear(duration: 0.18), value: fraction)
         } else {
           Capsule()
             .fill(OmarchyTheme.accent.opacity(0.75))
             .frame(width: geometry.size.width * 0.32)
             .offset(x: sweep ? geometry.size.width * 0.68 : 0)
             .animation(
-              .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+              reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
               value: sweep
             )
             .onAppear { sweep = !reduceMotion }
+            .onChange(of: reduceMotion) { _, reduced in sweep = !reduced }
         }
       }
     }
     .frame(height: height)
+    .accessibilityRepresentation {
+      if let fraction {
+        ProgressView("Progress", value: min(1, max(0, fraction)))
+      } else {
+        ProgressView("In progress")
+      }
+    }
   }
 }
 

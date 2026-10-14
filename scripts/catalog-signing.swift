@@ -12,8 +12,10 @@ enum SigningToolError: Error {
 }
 
 // The signing key lives in the login keychain as a generic password whose data
-// is the 32 raw Ed25519 bytes. Every channel catalog is signed by this one
-// long-lived key, so a shipped app can accept catalogs published after it.
+// is the 32 raw Ed25519 bytes, or their base64 text (the form of the backup
+// copy of the CI key, which can be pasted into a password manager). Every
+// channel catalog is signed by this one long-lived key, so a shipped app can
+// accept catalogs published after it.
 let keychainAccount = "omarchy"
 
 func keychainQuery(service: String) -> [String: Any] {
@@ -37,7 +39,17 @@ func loadKeychainKey(service: String) throws -> Curve25519.Signing.PrivateKey {
     guard status == errSecSuccess else {
         throw SigningToolError.keychainFailure(status)
     }
-    guard let raw = item as? Data,
+    guard let stored = item as? Data else {
+        throw SigningToolError.invalidKey
+    }
+    var raw = stored
+    if stored.count != 32,
+        let text = String(data: stored, encoding: .utf8),
+        let decoded = Data(base64Encoded: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    {
+        raw = decoded
+    }
+    guard raw.count == 32,
         let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: raw)
     else {
         throw SigningToolError.invalidKey

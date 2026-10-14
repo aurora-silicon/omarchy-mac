@@ -21,7 +21,8 @@ set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
-# The payload contract (the engine's bundled installer_data.json).
+# The payload contract (the engine's bundled installer_data.json; test/test_engine_contract.py
+# holds it to Engine/installer_data.json and the engine's package admission).
 ROOT_UUID=4f4d5801-524f-4f54-8000-000000000001
 BOOT_UUID=4f4d5801-424f-4f54-8000-000000000001
 ESP_VOLUME_ID=0x4f4d5801
@@ -33,7 +34,11 @@ SUPPORTED_FW=(13.5 14.8.3)
 ICON_SHA256=cf26ed5d2831db99c00d62ca046040e01a18e08e63363d629340d04ac6ec8c23
 KERNEL=linux-aurora
 # The hardware this image is for. It is written to the image-target manifest
-# and is the only machine identity the build chroot sees.
+# and is the only machine identity the build chroot sees. Upstream's name is now
+# aarch64-apple (omacom/omarchy e1b0e5e9b), which still reads apple-silicon from
+# a manifest; an older runtime (5397950a2, in released images and packages)
+# refuses aarch64-apple in omarchy-hw-platform and install/helpers/image-target.sh,
+# so the manifest keeps apple-silicon until no supported runtime needs it.
 PLATFORM=apple-silicon
 PLATFORM_COMPATIBLE=apple,arm-platform
 
@@ -60,11 +65,15 @@ TOOLCHAIN=(pacman arch-install-scripts btrfs-progs e2fsprogs dosfstools libarchi
 
 usage() {
   cat <<'USAGE'
-Usage: bin/build-mac-image --inputs FILE --candidates DIR [--cache DIR] [--lab-access DIR] [--dry-run] OUT
+Usage: bin/build-mac-image --inputs FILE [--candidates DIR] [--cache DIR] [--lab-access DIR] [--dry-run] OUT
 
 Builds the Apple Silicon image for the candidate set in DIR from the inputs
 record FILE (bin/mac-image-inputs resolve) into the empty or missing directory
-OUT, in a privileged linux/arm64 Arch Linux ARM container. --cache holds the
+OUT, in a privileged linux/arm64 Arch Linux ARM container. A channel record
+(mac-image-inputs resolve --channel-set) takes no --candidates: the set is
+what the pinned Omarchy channel database names, each archive verified against
+it and the Omarchy package key (builder/channel_set.py), and the image is a
+public one (the release profile, no test image pin). --cache holds the
 verified root filesystem, databases and package archives between runs, so a
 later build from the same record installs the same bytes. --dry-run checks the
 inputs and the candidate set and prints what would be built.
@@ -76,6 +85,7 @@ grants that user key-only SSH, passwordless sudo and polkit
 (builder/lab_access.py). It never carries a secret: enrollment credentials go
 over SSH after the first boot. IMAGE and PROVENANCE record profile=lab, and the
 inspection holds the image to exactly that overlay; any other image refuses it.
+A lab image is built from a candidate set only, never from a channel record.
 
 Needs docker, curl, gpg, python3, bsdtar and sha256sum on the host. As root or
 with passwordless sudo, it hides its loop devices from desktop automounters
@@ -165,9 +175,37 @@ record_field() {
   sed -n "s/^$1=//p" "$2"
 }
 
+# The set a record names: a signed candidate set, or a channel set
+# (channel_set=, mac-image-inputs resolve --channel-set).
+record_kind() {
+  if [[ -n $(record_field channel_set "$1") ]]; then echo channel; else echo candidate; fi
+}
+
+# Verifies and freezes the set the channel record INPUTS names into
+# $host_work/candidates, from the pinned omarchy.db (already in $host_work/dbs)
+# and archives fetched now: each must be that database's, signed by the Omarchy
+# package key.
+import_channel_set() {
+  local inputs=$1 key field
+  shift
+  mkdir "$host_work/channel-packages"
+  "$BASH" "$ROOT/bin/mac-image-inputs" packages "$inputs" "$host_work/channel-packages" "$@"
+  python3 "$ROOT/builder/channel_set.py" import --db "$host_work/dbs/omarchy.db" \
+    --db-sha256 "$(record_field omarchy_db_sha256 "$inputs")" --lane "$(record_field omarchy_channel "$inputs")" \
+    --packages "$host_work/channel-packages" --output "$host_work/candidates" >"$host_work/import.txt" ||
+    fail "the channel set does not verify against the inputs record"
+  rm -rf "$host_work/channel-packages"
+  for key in set signer manifest_sha256; do
+    field=channel_$key
+    [[ $key != manifest_sha256 ]] || field=channel_manifest_sha256
+    [[ $(sed -n "s/^$key=//p" "$host_work/import.txt") == "$(record_field "$field" "$inputs")" ]] ||
+      fail "the channel set is not the one the inputs record names ($field)"
+  done
+}
+
 host_main() {
   local inputs="" candidates="" cache="" lab_access="" out commit status clean=true started=$SECONDS dry_run=false
-  local cache_mounts=() lab_mounts=()
+  local cache_mounts=() lab_mounts=() kind
   while (($#)); do
     case $1 in
       --inputs|--candidates|--cache|--lab-access)
@@ -189,12 +227,18 @@ host_main() {
   (($# == 1)) || usage_error "expected OUT"
   out=$1
   [[ -n $inputs ]] || usage_error "--inputs is required"
-  [[ -n $candidates && -d $candidates ]] || usage_error "--candidates names no directory"
   for tool in docker curl gpg python3 bsdtar sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || fail "missing command: $tool"
   done
   "$BASH" "$ROOT/bin/mac-image-inputs" check "$inputs" >/dev/null
   inputs=$(cd -- "$(dirname -- "$inputs")" && pwd)/$(basename -- "$inputs")
+  kind=$(record_kind "$inputs")
+  if [[ $kind == channel ]]; then
+    [[ -z $candidates ]] || usage_error "a channel record takes no --candidates"
+    [[ -z $lab_access ]] || fail "a lab image is built from a candidate set only, not from a channel record"
+  else
+    [[ -n $candidates && -d $candidates ]] || usage_error "--candidates names no directory"
+  fi
   if [[ -n $lab_access ]]; then
     [[ $(record_field omarchy_channel "$inputs") == edge ]] || fail "a lab image is built for the edge lane only"
     python3 "$ROOT/builder/lab_access.py" validate "$lab_access" >/dev/null || fail "--lab-access is not lab access"
@@ -207,16 +251,24 @@ host_main() {
   trap 'stop_build; exit 130' INT
   trap 'stop_build; exit 143' TERM
   trap 'stop_build; exit 129' HUP
-  # The set is verified and frozen before any network access or container.
-  python3 "$ROOT/builder/candidate_set.py" import --input "$candidates" --output "$host_work/candidates" \
-    --receipt-sha256 "$(record_field candidate_receipt_sha256 "$inputs")" \
-    --manifest-sha256 "$(record_field candidate_manifest_sha256 "$inputs")" \
-    --source-commit "$(record_field candidate_source_commit "$inputs")" >"$host_work/import.txt" ||
-    fail "the candidate set does not verify against the inputs record"
-  [[ $(sed -n 's/^signer=//p' "$host_work/import.txt") == "$(record_field candidate_signer "$inputs")" ]] ||
-    fail "the candidate set is signed by another key than the inputs record names"
-  [[ $(sed -n 's/^set=//p' "$host_work/import.txt") == "$(record_field candidate_set "$inputs")" ]] ||
-    fail "the candidate set is not the one the inputs record names"
+  if [[ $kind == channel ]]; then
+    # The pinned database first, then the archives it names, verified and
+    # frozen before any container.
+    mkdir "$host_work/dbs"
+    "$BASH" "$ROOT/bin/mac-image-inputs" dbs "$inputs" "$host_work/dbs" ${cache:+--cache "$cache"}
+    import_channel_set "$inputs" ${cache:+--cache "$cache"}
+  else
+    # The set is verified and frozen before any network access or container.
+    python3 "$ROOT/builder/candidate_set.py" import --input "$candidates" --output "$host_work/candidates" \
+      --receipt-sha256 "$(record_field candidate_receipt_sha256 "$inputs")" \
+      --manifest-sha256 "$(record_field candidate_manifest_sha256 "$inputs")" \
+      --source-commit "$(record_field candidate_source_commit "$inputs")" >"$host_work/import.txt" ||
+      fail "the candidate set does not verify against the inputs record"
+    [[ $(sed -n 's/^signer=//p' "$host_work/import.txt") == "$(record_field candidate_signer "$inputs")" ]] ||
+      fail "the candidate set is signed by another key than the inputs record names"
+    [[ $(sed -n 's/^set=//p' "$host_work/import.txt") == "$(record_field candidate_set "$inputs")" ]] ||
+      fail "the candidate set is not the one the inputs record names"
+  fi
   if $dry_run; then
     echo "Would build the Apple Silicon image of $(sed -n 's/^set=//p' "$host_work/import.txt") from $inputs into $out"
     [[ -z $lab_access ]] || { echo "as a lab test image:"; python3 "$ROOT/builder/lab_access.py" validate "$lab_access"; }
@@ -244,8 +296,10 @@ host_main() {
     cache_mounts=(-v /cache)
   fi
   "$BASH" "$ROOT/bin/mac-image-inputs" rootfs "${rootfs_args[@]}"
-  mkdir "$host_work/dbs"
-  "$BASH" "$ROOT/bin/mac-image-inputs" dbs "${db_args[@]}"
+  if [[ $kind != channel ]]; then
+    mkdir "$host_work/dbs"
+    "$BASH" "$ROOT/bin/mac-image-inputs" dbs "${db_args[@]}"
+  fi
   host_image=omarchy-mac-image-alarm:$(sha256_of "$host_work/rootfs.tar.gz" | cut -c1-16)-$$
   docker import --platform linux/arm64 "$host_work/rootfs.tar.gz" "$host_image" >/dev/null ||
     fail "could not import the root filesystem"
@@ -291,6 +345,15 @@ declare -a unavailable=()
 
 field() {
   sed -n "s/^$1=//p" /inputs
+}
+
+# candidate or channel: the kind of set the inputs record names.
+set_kind() {
+  if [[ -n $(field channel_set) ]]; then echo channel; else echo candidate; fi
+}
+
+set_name() {
+  if [[ $(set_kind) == channel ]]; then field channel_set; else field candidate_set; fi
 }
 
 # Kills every process whose root lies in DIR, like the gpg-agent a chroot leaves.
@@ -345,16 +408,47 @@ verify_database() {
     fail "${file##*/} is not the database the inputs pin"
 }
 
-# Every repository a transaction reads, in the Apple profile's order behind the
+# The pinned repositories behind the candidate set, in the order transactions
+# search them. A candidate set keeps the Apple profile's order, [omarchy] last;
+# a channel set takes its runtime's (read_repository_order).
+repository_order=(asahi-alarm core extra alarm aur omarchy)
+
+# Every repository a transaction reads, in repository_order behind the
 # candidate set: name, pinned sha256 (none for the set) and remote server.
 repositories() {
-  printf 'omarchy-candidates - -\n'
-  printf 'asahi-alarm %s %s\n' "$(field asahi_alarm_db_sha256)" "$(field asahi_alarm_server)"
   local repository
-  for repository in core extra alarm aur; do
-    printf '%s %s %s\n' "$repository" "$(field "alarm_${repository}_db_sha256")" "$(field alarm_server)"
+  printf 'omarchy-candidates - -\n'
+  for repository in "${repository_order[@]}"; do
+    case $repository in
+      omarchy) printf 'omarchy %s %s\n' "$(field omarchy_db_sha256)" "$(field omarchy_server)" ;;
+      asahi-alarm) printf 'asahi-alarm %s %s\n' "$(field asahi_alarm_db_sha256)" "$(field asahi_alarm_server)" ;;
+      *) printf '%s %s %s\n' "$repository" "$(field "alarm_${repository}_db_sha256")" "$(field alarm_server)" ;;
+    esac
   done
-  printf 'omarchy %s %s\n' "$(field omarchy_db_sha256)" "$(field omarchy_server)"
+}
+
+# A channel image searches the repositories in the order its runtime's Apple
+# template for the channel names them (default/pacman/aarch64-apple/
+# pacman-<channel>.conf, [omarchy] first on aarch64), read from the archive
+# that fills the omarchy-settings role (omarchy-settings-dev on edge, which
+# ships the templates) before anything installs: the template becomes the image's
+# /etc/pacman.conf, so the installed Mac resolves every package from the
+# repository the image took it from, and its first update swaps nothing. The
+# template must name exactly the pinned repositories; its servers are not
+# used. A candidate set keeps the Apple profile's order.
+read_repository_order() {
+  [[ $(set_kind) == channel ]] || return 0
+  local archive template text order=()
+  archive=$candidates/$(candidate_archive omarchy-settings)
+  template=usr/share/omarchy/default/pacman/aarch64-apple/pacman-$(field omarchy_channel).conf
+  [[ $(bsdtar -tvf "$archive" "$template" 2>/dev/null) == -* ]] ||
+    fail "the runtime ships no Apple pacman template for the channel ($template)"
+  text=$(bsdtar -xOf "$archive" "$template") || fail "could not read the runtime's ${template##*/}"
+  mapfile -t order < <(pacman_repositories <(printf '%s\n' "$text"))
+  [[ $(printf '%s\n' "${order[@]}" | LC_ALL=C sort | paste -sd' ' -) == \
+    "$(printf '%s\n' "${repository_order[@]}" | LC_ALL=C sort | paste -sd' ' -)" ]] ||
+    fail "the runtime's ${template##*/} names the repositories ${order[*]}, not the pinned ${repository_order[*]}"
+  repository_order=("${order[@]}")
 }
 
 prepare_toolchain() {
@@ -388,9 +482,10 @@ prepare_toolchain() {
 
   # The build keyring alone trusts the candidate test key: pacman checks each
   # candidate archive's signature again as it installs it. The image never
-  # carries this key.
+  # carries this key, and a channel build never trusts it.
   trust_key "$ROOT/builder/keys/omarchy-repository.gpg" "$OMARCHY_REPOSITORY_KEY" "the Omarchy repository key"
-  trust_key "$ROOT/builder/candidate-trust/public.asc" "$CANDIDATE_KEY" "the candidate test key"
+  [[ $(set_kind) == channel ]] ||
+    trust_key "$ROOT/builder/candidate-trust/public.asc" "$CANDIDATE_KEY" "the candidate test key"
 }
 
 trust_key() {
@@ -631,8 +726,11 @@ candidate_names() {
   jq -r --arg group "$1" '.packages[] | select(.group == $group) | .name' "$candidates/import.json"
 }
 
+# A set package's archive by its name or, for a channel set's runtime, its role
+# (omarchy-dev fills the omarchy role).
 candidate_archive() {
-  jq -r --arg name "$1" '.packages[] | select(.name == $name) | .filename' "$candidates/import.json"
+  jq -r --arg name "$1" 'first(.packages[] | select(.name == $name or .role == $name) | .filename) // empty' \
+    "$candidates/import.json"
 }
 
 # The runtime's package list for LABEL (base or aarch64), read from the
@@ -643,19 +741,21 @@ runtime_list() {
 }
 
 # The runtime's Apple list, read once before anything installs:
-# omarchy-apple-silicon.packages, else an older runtime's
+# omarchy-aarch64-apple.packages, named for the platform, else an older
+# runtime's omarchy-apple-silicon.packages, else an even older one's
 # omarchy-apple.packages. A link is passed over: bsdtar reads it as empty, and
 # the list it names is a member of its own.
 read_apple_list() {
   local archive name list="" text
   archive=$candidates/$(candidate_archive omarchy)
-  for name in omarchy-apple-silicon omarchy-apple; do
+  for name in omarchy-aarch64-apple omarchy-apple-silicon omarchy-apple; do
     if [[ $(bsdtar -tvf "$archive" "usr/share/omarchy/install/$name.packages" 2>/dev/null) == -* ]]; then
       list=usr/share/omarchy/install/$name.packages
       break
     fi
   done
-  [[ -n $list ]] || fail "the runtime ships no Apple package list (omarchy-apple-silicon.packages or omarchy-apple.packages)"
+  [[ -n $list ]] ||
+    fail "the runtime ships no Apple package list (omarchy-aarch64-apple.packages, omarchy-apple-silicon.packages or omarchy-apple.packages)"
   text=$(bsdtar -xOf "$archive" "$list") || fail "could not read the runtime's ${list##*/}"
   mapfile -t apple_names < <(awk 'NF && $1 !~ /^#/ { print $1 }' <<<"$text")
   ((${#apple_names[@]})) || fail "the runtime's ${list##*/} names no package"
@@ -672,10 +772,12 @@ runtime_lists() {
 }
 
 qualified() {
-  local name
+  local name package
   for name in "$@"; do
-    if jq -e --arg name "$name" 'any(.packages[]; .name == $name)' "$candidates/import.json" >/dev/null; then
-      printf 'omarchy-candidates/%s\n' "$name"
+    package=$(jq -r --arg name "$name" 'first(.packages[] | select(.name == $name or .role == $name) | .name) // empty' \
+      "$candidates/import.json")
+    if [[ -n $package ]]; then
+      printf 'omarchy-candidates/%s\n' "$package"
     else
       printf '%s\n' "$name"
     fi
@@ -751,17 +853,29 @@ image_profile() {
 # once the package set is known. The image's own digest is not here, since
 # root.img holds this file: IMAGE, PROVENANCE and the catalog carry it.
 write_image_target() {
-  local set_name source_commit image_profile
+  local set_name source_commit image_profile set_lines
   set_name=$(field candidate_set)
   source_commit=$(field candidate_source_commit)
   image_profile=$(image_profile) || fail "could not read the candidate set's kind"
-  [[ $set_name =~ ^[A-Za-z0-9._-]+$ && $source_commit =~ ^[0-9a-f]{40}$ ]] ||
-    fail "the inputs name no candidate set and source commit for the image target"
+  if [[ $(set_kind) == channel ]]; then
+    # A channel image names its set and the channel database it came from.
+    set_name=$(field channel_set)
+    source_commit=$(field omarchy_db_sha256)
+    [[ $set_name =~ ^[A-Za-z0-9._-]+$ && $source_commit =~ ^[0-9a-f]{64}$ && $image_profile == release ]] ||
+      fail "the inputs name no channel set and database for the image target"
+    printf -v set_lines 'channel_set=%s\nchannel_db_sha256=%s' "$set_name" "$source_commit"
+  else
+    [[ $set_name =~ ^[A-Za-z0-9._-]+$ && $source_commit =~ ^[0-9a-f]{40}$ ]] ||
+      fail "the inputs name no candidate set and source commit for the image target"
+    printf -v set_lines 'candidate_set=%s\ncandidate_source_commit=%s' "$set_name" "$source_commit"
+  fi
   [[ ${MAC_IMAGE_BUILDER_COMMIT:-} =~ ^[0-9a-f]{40}$ && ${MAC_IMAGE_BUILDER_CLEAN:-} =~ ^(true|false)$ ]] ||
     fail "the build names no builder commit for the image target"
   install -d -m 0755 "$target/var/lib/omarchy" "$target/var/lib/omarchy/image"
-  printf 'format=1\nplatform=%s\ncandidate_set=%s\ncandidate_source_commit=%s\nbuilder_commit=%s\nbuilder_tree_clean=%s\nimage_profile=%s\n' \
-    "$PLATFORM" "$set_name" "$source_commit" "$MAC_IMAGE_BUILDER_COMMIT" "$MAC_IMAGE_BUILDER_CLEAN" "$image_profile" \
+  # platform=apple-silicon, not upstream's aarch64-apple: the new runtime reads
+  # either, an older one only apple-silicon (see PLATFORM above).
+  printf 'format=1\nplatform=%s\n%s\nbuilder_commit=%s\nbuilder_tree_clean=%s\nimage_profile=%s\n' \
+    "$PLATFORM" "$set_lines" "$MAC_IMAGE_BUILDER_COMMIT" "$MAC_IMAGE_BUILDER_CLEAN" "$image_profile" \
     >"$target/var/lib/omarchy/image/target"
   chmod 0644 "$target/var/lib/omarchy/image/target"
   chown root:root "$target/var/lib/omarchy" "$target/var/lib/omarchy/image" "$target/var/lib/omarchy/image/target"
@@ -844,11 +958,12 @@ release_build_pacman_config() {
   rmdir "$target/var/cache/omarchy-image-repositories" "$target/var/cache/omarchy-image-packages"
 }
 
-# The installed configuration for an Apple Silicon Mac: omarchy-mac's
-# template for the channel the inputs name (an older set's runtime
-# apple-silicon one, or an even older runtime's aarch64 one), with the
-# runtime's aarch64 mirror list (per channel, or the single
-# mirrorlist-aarch64 of a runtime that keeps its own repositories). TEST IMAGES ONLY: a
+# The installed configuration for an Apple Silicon Mac: the runtime's
+# aarch64-apple template for the channel the inputs name (else omarchy-mac's,
+# an older runtime's apple-silicon one, or an even older runtime's aarch64
+# one), with the mirror list beside the runtime's aarch64-apple template, else
+# its aarch64 one (per channel, or the single mirrorlist-aarch64 of a runtime
+# that keeps its own repositories). TEST IMAGES ONLY: a
 # test candidate set's runtime sorts below the channel's omarchy, so its
 # [options] gain a marked IgnorePkg for the packages built from the set's
 # source commit, which keeps a pacman -Syu from replacing them
@@ -856,10 +971,12 @@ release_build_pacman_config() {
 write_installed_config() {
   local channel templates=$target/usr/share/omarchy/default/pacman repositories mirrorlist
   channel=$(field omarchy_channel)
-  repositories=$target/usr/share/omarchy-mac/pacman
+  repositories=$templates/aarch64-apple
+  [[ -f $repositories/pacman-$channel.conf ]] || repositories=$target/usr/share/omarchy-mac/pacman
   [[ -f $repositories/pacman-$channel.conf ]] || repositories=$templates/apple-silicon
   [[ -f $repositories/pacman-$channel.conf ]] || repositories=$templates/aarch64
-  mirrorlist=$templates/aarch64/mirrorlist-$channel
+  mirrorlist=$templates/aarch64-apple/mirrorlist-$channel
+  [[ -f $mirrorlist ]] || mirrorlist=$templates/aarch64/mirrorlist-$channel
   [[ -f $mirrorlist ]] || mirrorlist=$templates/mirrorlist-aarch64
   [[ -f $repositories/pacman-$channel.conf ]] || fail "the image ships no Apple Silicon pacman configuration for $channel"
   [[ -f $mirrorlist ]] || fail "the runtime ships no aarch64 mirror list for $channel"
@@ -1031,8 +1148,12 @@ apply_lab_access() {
 }
 
 sealed_body() {
-  printf 'format=2\ncandidate_set=%s\ncandidate_source_commit=%s\n' \
-    "$(field candidate_set)" "$(field candidate_source_commit)"
+  if [[ $(set_kind) == channel ]]; then
+    printf 'format=2\nchannel_set=%s\nchannel_db_sha256=%s\n' "$(field channel_set)" "$(field omarchy_db_sha256)"
+  else
+    printf 'format=2\ncandidate_set=%s\ncandidate_source_commit=%s\n' \
+      "$(field candidate_set)" "$(field candidate_source_commit)"
+  fi
 }
 
 forget_private_pacman() {
@@ -1286,6 +1407,12 @@ record_packages() {
     --order "$(repositories | awk '{ print $1 }' | paste -sd, -)" --cache /cache \
     --candidates "$candidates/import.json" >"$work/packages" 2>>"$logs/packages.log" ||
     fail "the installed packages do not trace to the pinned databases (logs/packages.log)"
+  # A channel image also holds every package it took from the channel itself,
+  # not only the set, to the pinned database and the Omarchy package key.
+  [[ $(set_kind) != channel ]] ||
+    python3 "$ROOT/builder/channel_set.py" verify-installed --db /dbs/omarchy.db --db-sha256 "$(field omarchy_db_sha256)" \
+      --records "$work/packages" --cache /cache >>"$logs/packages.log" 2>&1 ||
+    fail "a package from the Omarchy channel is not signed by the Omarchy package key (logs/packages.log)"
 }
 
 # The finished root is copied into a fresh image sized to its content, so
@@ -1399,7 +1526,8 @@ write_provenance() {
       printf 'toolchain=%s\n' "$(pacman -Q "$name" | tr ' ' '|')"
     done
     jq -r '.packages[] | "candidate=\(.name)|\(.version)|\(.filename)|\(.sha256)"' "$candidates/import.json"
-    jq -r '.packages[] | select(.group == "runtime") | "candidate_source=\(.name)|\(.source_commit)"' "$candidates/import.json"
+    jq -r '.packages[] | select(.group == "runtime" and .source_commit != null) | "candidate_source=\(.name)|\(.source_commit)"' \
+      "$candidates/import.json"
     printf 'hardware_setup=%s\n' "$hardware_setup"
     printf 'test_image_pin=%s\n' "$test_image_pin"
     [[ $profile == release ]] || printf 'profile=%s\nlab_access_sha256=%s\n' "$profile" "$lab_access_sha256"
@@ -1423,6 +1551,17 @@ write_provenance() {
   }
 }
 
+# The inputs IMAGE names (mac-image-check IMAGE_INPUTS): a channel image names
+# its set and the channel database's sha256 in place of the candidate set's.
+image_inputs() {
+  if [[ $(set_kind) == channel ]]; then
+    echo channel_set channel_signer channel_manifest_sha256 omarchy_channel omarchy_db_sha256
+  else
+    echo candidate_set candidate_source_commit candidate_signer candidate_receipt_sha256 \
+      candidate_manifest_sha256 omarchy_channel
+  fi
+}
+
 # IMAGE, on standard output.
 write_image() {
   local key
@@ -1430,8 +1569,7 @@ write_image() {
   {
     printf 'format=2\nlane=%s\nplatform=%s\nbuilder_commit=%s\nbuilder_tree_clean=%s\n' \
       "$lane" "$PLATFORM" "$MAC_IMAGE_BUILDER_COMMIT" "$MAC_IMAGE_BUILDER_CLEAN"
-    for key in candidate_set candidate_source_commit candidate_signer candidate_receipt_sha256 \
-      candidate_manifest_sha256 omarchy_channel; do
+    for key in $(image_inputs); do
       printf '%s=%s\n' "$key" "$(field "$key")"
     done
     printf 'hardware_setup=%s\n' "$hardware_setup"
@@ -1496,7 +1634,9 @@ build_payload() {
   step() { printf '[%4ds] %s\n' "$((SECONDS - started))" "$1"; }
   step "preparing the toolchain from Arch Linux ARM"
   prepare_toolchain
-  step "publishing $(field candidate_set) as [omarchy-candidates]"
+  step "publishing $(set_name) as [omarchy-candidates]"
+  read_repository_order
+  step "repository order: omarchy-candidates ${repository_order[*]}"
   prepare_repositories
   read_apple_list
   render_config "$repos" /cache >"$work/build.conf"
