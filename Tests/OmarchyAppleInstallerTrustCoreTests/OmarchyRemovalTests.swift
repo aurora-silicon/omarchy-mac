@@ -48,19 +48,24 @@
         Self.auroraStage1(esp: esp) + Self.auroraStage1(esp: esp),
       ]
       for bootObject in cases {
-        let disk = FakeRemovalDisk(F.neoMacos26(), install: F.convergedInstall)
-        disk.files!.stubBootObject = bootObject
-        // A direct catch avoids the Swift 6.2 release ownership-verifier crash
-        // when this loop's disk is captured by XCTest's throwing autoclosure.
-        do {
-          _ = try OmarchyRemovalPlan(disks: disk)
-          XCTFail("An invalid Aurora Stage1 must not authorize removal")
-        } catch {
-          XCTAssertTrue(
-            (error as? RemovalFailure)?.message.contains(
-              "the m1n1 boot object in its startup container doesn’t point to this EFI partition")
-              ?? false, "\(error)")
-        }
+        assertInvalidAuroraStage1(bootObject)
+      }
+    }
+
+    // Keep the disk's lifetime outside the loop to avoid Swift 6.2's release
+    // CopyPropagation ownership-verifier crash. All rejection cases still run.
+    @inline(never)
+    private func assertInvalidAuroraStage1(_ bootObject: Data) {
+      let disk = FakeRemovalDisk(F.neoMacos26(), install: F.convergedInstall)
+      disk.files!.stubBootObject = bootObject
+      do {
+        _ = try OmarchyRemovalPlan(disks: disk)
+        XCTFail("An invalid Aurora Stage1 must not authorize removal")
+      } catch {
+        XCTAssertTrue(
+          (error as? RemovalFailure)?.message.contains(
+            "the m1n1 boot object in its startup container doesn’t point to this EFI partition")
+            ?? false, "\(error)")
       }
     }
 
