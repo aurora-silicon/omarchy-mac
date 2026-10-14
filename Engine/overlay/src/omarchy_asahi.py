@@ -24,6 +24,7 @@ import asahi_firmware
 import osinstall
 import stub
 
+import omarchy_apple_aea
 import omarchy_mesa
 import omarchy_mt7932
 import omarchy_als
@@ -49,7 +50,6 @@ RESTORE_BUNDLE_PATH = "./Restore"
 # From macOS 15 the recovery image in a restore image is an Apple Encrypted
 # Archive, which hdiutil cannot attach without Apple's key.
 AEA_MAGIC = b"AEA1"
-HOST_ROOT = "/"
 
 
 class AsahiAdapterError(RuntimeError):
@@ -573,6 +573,21 @@ class _WithoutRecoveryMount:
         return self._module.run(command, *args, **kwargs)
 
 
+class _WithDecryptedImage:
+    """subprocess for stub, attaching IMAGE's decrypted copy in its place."""
+
+    def __init__(self, module, image, decrypted):
+        self._module, self._image, self._decrypted = module, image, decrypted
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def run(self, command, *args, **kwargs):
+        if command[:2] == ["hdiutil", "attach"]:
+            command = [self._decrypted if part == self._image else part for part in command]
+        return self._module.run(command, *args, **kwargs)
+
+
 class _WithNeoFirmwareArchive(_WithoutRecoveryMount):
     """Preserve the newer camera daemon and raw ALS input in fallback data."""
 
@@ -671,30 +686,16 @@ def stub_installer(sysinfo, dutil, osinfo):
         )
         if not _is_encrypted(image):
             return collect_firmware(pkg)
-        # The firmware the recovery image carries is the same build's as
-        # the running macOS's own /usr/share/firmware and /usr/sbin, so it is
-        # read from there, and only when the builds match.
-        wanted = installer.manifest["ProductBuildVersion"]
-        running = installer.sysinfo.macos_build
-        if running != wanted:
-            raise AsahiAdapterError(
-                f"the {wanted} recovery image is encrypted; run the installer "
-                f"from macOS {wanted}, not {running}, to collect its firmware"
-            )
-        os.makedirs("recovery/usr")
+        # The recovery image's firmware is its own build's, so it is read
+        # from the image itself, decrypted, whichever macOS this Mac runs.
+        decrypted = _decrypted_copy(installer, image)
         module = stub.subprocess
         try:
-            for name in ("share", "sbin"):
-                os.symlink(
-                    os.path.join(HOST_ROOT, "usr", name),
-                    os.path.join("recovery/usr", name),
-                )
             # Only stub's own name is rebound, never the shared module.
-            stub.subprocess = _WithoutRecoveryMount(module)
+            stub.subprocess = _WithDecryptedImage(module, image, decrypted)
             return collect_firmware(pkg)
         finally:
             stub.subprocess = module
-            shutil.rmtree("recovery")
 
     installer.collect_firmware = collect_firmware_from_an_encrypted_recovery
 
@@ -723,12 +724,20 @@ def _validate_neo_firmware_package(pkg):
         raise AsahiAdapterError("MacBook Neo firmware package is incomplete: " + ", ".join(sorted(missing)))
 
 
-def _collect_neo_radios(installer, pkg, collect=omarchy_mt7932.collect):
-    """Require the Neo's complete MT7932 Wi-Fi and Bluetooth input set."""
+def _collect_neo_radios(installer, pkg, collect=None):
+    """Require the Neo's complete MT7932 Wi-Fi and Bluetooth input set.
+
+    The model-wide files are Apple's pinned 25G83 ones, fetched by the
+    bundled decoder; the calibration and address are this Mac's own.
+    """
     if getattr(getattr(installer, "sysinfo", None), "device_class", "") != "j700ap":
         return
     try:
-        files = collect()
+        if collect is None:
+            with omarchy_apple_aea.neo_radio_root() as root:
+                files = omarchy_mt7932.collect(root)
+        else:
+            files = collect()
         required = {
             "mediatek/mt7932/" + name for name in (
                 omarchy_mt7932.WIFI_PATCH, omarchy_mt7932.WIFI_RAM,
@@ -741,7 +750,8 @@ def _collect_neo_radios(installer, pkg, collect=omarchy_mt7932.collect):
         missing = sorted(name for name in required if not files.get(name))
         if missing:
             raise omarchy_mt7932.Mt7932Error("missing required files: " + ", ".join(missing))
-    except (OSError, ValueError, subprocess.CalledProcessError, omarchy_mt7932.Mt7932Error) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError, omarchy_mt7932.Mt7932Error,
+            omarchy_apple_aea.AppleInputError) as error:
         raise AsahiAdapterError(f"MacBook Neo radio firmware collection failed: {error}") from error
     for name, data in sorted(files.items()):
         pkg.add_file(name, asahi_firmware.core.FWFile(name, data))
@@ -806,27 +816,37 @@ def _is_encrypted(path):
         return fd.read(len(AEA_MAGIC)) == AEA_MAGIC
 
 
+def _decrypted_copy(installer, image):
+    """IMAGE's AEA archive decrypted into the engine's working directory, once.
+
+    The copy lives beside the engine's other downloads, not in the stub,
+    whose container has room for one copy of each image at a time.
+    """
+    copies = installer.__dict__.setdefault("_omarchy_decrypted", {})
+    if image not in copies:
+        destination = os.path.abspath(f"decrypted-{len(copies)}-{os.path.basename(image)}")
+        try:
+            omarchy_apple_aea.decrypt(image, destination)
+        except (OSError, subprocess.CalledProcessError, omarchy_apple_aea.AppleInputError) as error:
+            raise AsahiAdapterError(f"could not decrypt {os.path.basename(image)}: {error}") from error
+        copies[image] = destination
+    return copies[image]
+
+
 def _use_decrypted_images(installer, cur_os):
-    """Swap the stub's AEA images for the running macOS's decrypted ones.
+    """Decrypt the stub's AEA images in place.
 
     A macOS 26 restore image ships its recoveryOS and ExclaveOS images
     encrypted; the stub's recoveryOS kernel cannot mount them ("Failed to
-    mount root image"). macOS keeps the same build's images decrypted in its
-    own Recovery and Preboot volumes, and their signed root hashes are the
-    ones the stub's boot objects are personalized for.
+    mount root image"). Decrypting an archive yields Apple's own image, whose
+    signed root hash is the one the stub's boot objects are personalized for,
+    whichever macOS this Mac runs.
     """
     image = "usr/standalone/firmware/arm64eBaseSystem.dmg"
     stub_image = os.path.join(installer.osi.recovery, installer.osi.vgid, image)
     if not _is_encrypted(stub_image):
         return
-    wanted = installer.manifest["ProductBuildVersion"]
-    running = installer.sysinfo.macos_build
-    if running != wanted:
-        raise AsahiAdapterError(
-            f"the {wanted} recovery image is encrypted; run the installer "
-            f"from macOS {wanted}, not {running}, to use its decrypted copy"
-        )
-    host_image = os.path.join(cur_os.recovery, cur_os.vgid, image)
+    host_image = _decrypted_copy(installer, stub_image)
     # A UDIF image ends in its 512-byte "koly" trailer.
     with open(host_image, "rb") as fd:
         fd.seek(0, os.SEEK_END)
@@ -836,28 +856,23 @@ def _use_decrypted_images(installer, cur_os):
             trailer = fd.read(4)
     if trailer != b"koly":
         raise AsahiAdapterError(
-            "the running macOS's recovery image is not a decrypted disk image"
+            "the decrypted recovery image is not a disk image"
         )
     copies = [(host_image, stub_image)]
     bless2 = installer.bootcaches["bless2"]
     restore = os.path.join(
         installer.pb_vgid, bless2.get("RestoreBundlePath", RESTORE_BUNDLE_PATH)
     )
-    host_restore = os.path.join(cur_os.preboot, cur_os.vgid, "restore")
     for name in sorted(os.listdir(restore)):
         path = os.path.join(restore, name)
         if not os.path.isfile(path) or not _is_encrypted(path):
             continue
-        source = os.path.join(host_restore, name)
-        if not os.path.isfile(source) or _is_encrypted(source):
-            raise AsahiAdapterError(
-                f"the running macOS has no decrypted {name} for the stub"
-            )
-        copies.append((source, path))
+        copies.append((_decrypted_copy(installer, path), path))
     for source, target in copies:
         # Removed first: the stub container has room for one copy at a time.
         os.unlink(target)
         shutil.copyfile(source, target)
+        os.unlink(source)
 
 
 class AsahiInPlaceRepairAdapter:

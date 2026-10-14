@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Repack the authenticated deployed engine with a Python-only overlay."""
+"""Repack the authenticated deployed engine with a Python overlay and its bundled tools."""
 import argparse
 import difflib
 import gzip
@@ -15,7 +15,7 @@ import tempfile
 
 BASE_SHA256 = '9e9277384b6c9e8b269cc79b1b24df7bfcdcbb898a596a677b74d1d18050aebe'
 BASE_COMMIT = 'f0469cea0899f3efed8efead604174c7a53c4451'
-VERSION = 'v0.9.2-omarchy.39'
+VERSION = 'v0.9.2-omarchy.40'
 
 _SPEC = importlib.util.spec_from_file_location(
     'verify_source_lock', Path(__file__).resolve().parent / 'verify-source-lock.py')
@@ -106,6 +106,15 @@ def rebuild(checkout, base, output):
         if sha256((root / item['path']).read_bytes()) != item['sha256']:
             raise ValueError('source lock digest mismatch: ' + item['path'])
     overlay = {Path(name).name: (root / name).read_bytes() for name in sorted(expected)}
+    # Executables the Python overlay runs ship under bin/, which the base already carries empty.
+    tools = {item['path'] for item in records if item['destination'].startswith('bin/')}
+    if tools != {str(p.relative_to(root)) for p in (root / 'overlay/bin').glob('*')}:
+        raise ValueError('bundled tool inventory differs from source lock')
+    for item in records:
+        if item['path'] in tools:
+            if item['destination'] != 'bin/' + Path(item['path']).name:
+                raise ValueError('bundled tool destination is invalid: ' + item['path'])
+            overlay[item['destination']] = (root / item['path']).read_bytes()
     overlay['version.tag'] = (VERSION + '\n').encode()
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
         # The engine carries its own installer metadata; the per-payload copy in the repository is a different file.
@@ -155,7 +164,7 @@ def rebuild(checkout, base, output):
                     result.addfile(member, archive.extractfile(member) if member.isfile() else None)
                 for name, content in sorted(overlay.items()):
                     member = tarfile.TarInfo('./' + name)
-                    member.mode = 0o644
+                    member.mode = 0o755 if name.startswith('bin/') else 0o644
                     member.mtime = 1786436181
                     member.size = len(content)
                     result.addfile(member, io.BytesIO(content))

@@ -36,6 +36,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
 
   func inspectRecoveryAccount() async throws -> RecoveryAccountReply? {
     guard refreshHelperStatus().isReady else { return nil }
+    // A helper another build installed refuses this app until helper setup
+    // replaces it; until then it has no installation to report.
+    guard await probeHelperStatus().isCurrent else { return nil }
     let reply = try await accountClient().recoveryAccount(action: "inspect")
     return reply.target == nil ? nil : reply
   }
