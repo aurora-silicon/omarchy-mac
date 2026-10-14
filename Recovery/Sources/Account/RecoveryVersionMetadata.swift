@@ -1,7 +1,7 @@
 import Foundation
 
-/// The stub keeps its version hidden until Finish Installation completes in
-/// Recovery. The macOS handoff hides it again if something revealed it early.
+/// The stub needs its version visible during native Startup Disk authorization,
+/// then hidden again for the initial Finish Installation Recovery handoff.
 public enum RecoveryVersionMetadata {
   public static func validate(_ data: Data) throws {
     guard
@@ -11,6 +11,10 @@ public enum RecoveryVersionMetadata {
       let version = value["ProductVersion"] as? String, !version.isEmpty,
       let build = value["ProductBuildVersion"] as? String, !build.isEmpty
     else { throw AccountSetupFailure("The stub is missing valid macOS version metadata.") }
+  }
+
+  public static func showForStartupDisk(system: URL) throws {
+    try setVisible(true, system: system)
   }
 
   public static func hideForInitialRecovery(system: URL) throws {

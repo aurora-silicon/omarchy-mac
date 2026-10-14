@@ -6,6 +6,49 @@
   @testable import OmarchyAppleInstallerTrustCore
 
   final class RecoveryAccountTests: XCTestCase {
+    func testTokenAuthorityWaitsForNativePersistence() throws {
+      let id = UUID().uuidString
+      let hashes = [Data("fixture-hash".utf8)]
+      var reads = 0
+      try RecoveryAccountInstaller.waitForTokenAuthority(
+        generatedUID: id, passwordHashes: hashes,
+        read: {
+          reads += 1
+          return [
+            "generateduid": [id], "ShadowHashData": hashes,
+            "authentication_authority": reads < 3 ? [] : [";SecureToken;"],
+          ]
+        }, pause: {})
+      XCTAssertEqual(reads, 3)
+    }
+
+    func testTokenAuthorityRejectsChangedIdentityOrPasswordHash() {
+      let id = UUID().uuidString
+      let hashes = [Data("fixture-hash".utf8)]
+      let changes: [[String: Any]] = [
+        ["generateduid": [UUID().uuidString], "ShadowHashData": hashes],
+        ["generateduid": [id], "ShadowHashData": [Data("changed".utf8)]],
+      ]
+      for changed in changes {
+        XCTAssertThrowsError(
+          try RecoveryAccountInstaller.waitForTokenAuthority(
+            generatedUID: id, passwordHashes: hashes,
+            read: {
+              changed.merging(["authentication_authority": [";SecureToken;"]]) { _, new in new }
+            },
+            pause: {}))
+      }
+    }
+
+    func testTokenAuthorityDoesNotAcceptAnUnpersistedMarker() {
+      let id = UUID().uuidString
+      let hashes = [Data("fixture-hash".utf8)]
+      XCTAssertThrowsError(
+        try RecoveryAccountInstaller.waitForTokenAuthority(
+          generatedUID: id, passwordHashes: hashes, timeout: 0,
+          read: { ["generateduid": [id], "ShadowHashData": hashes] }, pause: {}))
+    }
+
     func testShutdownRequiresSelectedTargetVolumeGroup() throws {
       try RecoveryAccountHandoff.requireStartupSelection(
         target, info: ["APFSVolumeGroupID": target.groupUUID])
@@ -56,7 +99,7 @@
       XCTAssertThrowsError(try check([]))
     }
 
-    func testStubVersionMetadataValidation() throws {
+    func testNativeStartupDiskRequiresValidStubVersionMetadata() throws {
       let valid = try PropertyListSerialization.data(
         fromPropertyList: [
           "ProductName": "macOS", "ProductVersion": "26.6.2", "ProductBuildVersion": "25G83",
@@ -77,25 +120,35 @@
       groupUUID: "33333333-3333-4333-8333-333333333333",
       prebootUUID: "44444444-4444-4444-8444-444444444444")
 
-    func testInstallationTargetValidation() throws {
+    func testRecoveryAccountInputAndIdentityValidation() throws {
       try target.validate()
-      for invalid in [
-        RecoveryAccountTarget(
-          volumeName: "", systemUUID: target.systemUUID, dataUUID: target.dataUUID,
-          groupUUID: target.groupUUID, prebootUUID: target.prebootUUID),
-        RecoveryAccountTarget(
-          volumeName: "Omarchy", systemUUID: target.systemUUID, dataUUID: target.systemUUID,
-          groupUUID: target.groupUUID, prebootUUID: target.prebootUUID),
-        RecoveryAccountTarget(
-          volumeName: "Omarchy", systemUUID: target.systemUUID, dataUUID: target.dataUUID,
-          groupUUID: "00000000-0000-0000-0000-000000000000", prebootUUID: target.prebootUUID),
-        RecoveryAccountTarget(
-          volumeName: "Omarchy", systemUUID: "aaaaaaaa-1111-4111-8111-111111111111",
-          dataUUID: target.dataUUID, groupUUID: target.groupUUID,
-          prebootUUID: target.prebootUUID),
-      ] {
-        XCTAssertThrowsError(try invalid.validate())
+      XCTAssertTrue(RecoveryAccountInstaller.validName("omarchy-owner"))
+      for name in ["root", "daemon", "nobody", "../owner", "name\nquit", "OWNER", "-owner"] {
+        XCTAssertFalse(RecoveryAccountInstaller.validName(name))
       }
+      try RecoveryAccountInstaller.validatePassword(Data("short".utf8))
+      for value in [Data(), Data([0]), Data("line\nbreak".utf8), Data(repeating: 65, count: 4097)] {
+        XCTAssertThrowsError(try RecoveryAccountInstaller.validatePassword(value))
+      }
+      let record = RecoveryAccountRecord(
+        target: target, username: "owner", generatedUID: UUID().uuidString, phase: "prepared")
+      try record.validate()
+      XCTAssertEqual(
+        try JSONDecoder().decode(RecoveryAccountRecord.self, from: JSONEncoder().encode(record)),
+        record)
+    }
+
+    func testRelativeAccountLookupHandlesDifferentMountSuffixes() {
+      XCTAssertEqual(
+        RecoveryAccountInstaller.relativePath(
+          from: URL(fileURLWithPath: "/Volumes/Omarchy 1/private"),
+          to: URL(fileURLWithPath: "/Volumes/Omarchy - Data 2/private/var")),
+        "../../Omarchy - Data 2/private/var")
+      XCTAssertEqual(
+        RecoveryAccountInstaller.relativePath(
+          from: URL(fileURLWithPath: "/Volumes/Omarchy 1"),
+          to: URL(fileURLWithPath: "/Volumes/Omarchy - Data 2/private/var")),
+        "../Omarchy - Data 2/private/var")
     }
 
     func testCommandUsesStdinAndBoundsOutputAndTime() throws {

@@ -20,9 +20,9 @@ static double monotonic_time(void)
     return now.tv_sec + now.tv_nsec / 1000000000.0;
 }
 
-/* No controlling terminal: any input is read from the supplied pipe, never
- * argv or environment values. Capture is bounded and the child is always
- * reaped, including launch, timeout and output-limit failures. */
+/* No controlling terminal: dscl's password prompt must read the supplied pipe.
+ * Credentials are never argv or environment values. Capture is bounded and the
+ * child is always reaped, including launch, timeout and output-limit failures. */
 int omarchy_account_command(const char *path, const char *const *arguments,
                             const unsigned char *input, long input_size,
                             unsigned char **output, long *output_size,
