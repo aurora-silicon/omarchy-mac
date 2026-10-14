@@ -171,7 +171,9 @@ static int authorization_run_logged(const char *executable, char *const argument
             if(password_sent++) { result=REPEATED_PASSWORD;break; }
             password_waiting=true;
             used=0;pending[0]=0;
-        } else if(strchr(line,':') && (strstr(line,"username") || strstr(line,"user name"))) {
+        } else if(strchr(line,':') && (strstr(line,"username") || strstr(line,"user name") ||
+                  strstr(line,"authorized user"))) {
+            /* bputil asks "Authorized user:" before its password prompt. */
             if(user_sent++) { result=REPEATED_USERNAME;break; }
             response=username;
         }
