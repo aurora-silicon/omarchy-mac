@@ -13,6 +13,12 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import omarchy_recovery as recovery
 
+# Recovery has a separate product identity; the pinned engine consumes its name.
+identity = Path(__file__).resolve().parents[3] / "Packaging/identity.conf"
+RECOVERY_DISPLAY_NAME = next(line.split('=', 1)[1].strip('"')
+                             for line in identity.read_text().splitlines()
+                             if line.startswith('INSTALLER_RECOVERY_APP_NAME='))
+
 SYSTEM = "11111111-1111-4111-8111-111111111111"
 GROUP = "22222222-2222-4222-8222-222222222222"
 PREBOOT = "33333333-3333-4333-8333-333333333333"
@@ -33,11 +39,11 @@ class RecoveryTests(unittest.TestCase):
         self.resources = self.app / "Contents/Resources"
         (self.resources / "en.lproj").mkdir(parents=True)
         (self.resources / "en.lproj/InfoPlist.strings").write_text(
-            '"CFBundleDisplayName" = "Omarchy Installer";\n')
+            '"CFBundleDisplayName" = ' + json.dumps(RECOVERY_DISPLAY_NAME) + ';\n')
         self.info = self.app / "Contents/Info.plist"
         self.info.write_bytes(plistlib.dumps({
             "OmarchyRecoveryBuildMode": "recovery", "CFBundleExecutable": "OmarchyRecovery",
-            "CFBundleDisplayName": "Omarchy Installer",
+            "CFBundleDisplayName": RECOVERY_DISPLAY_NAME,
         }))
         self.binary = self.app / "Contents/MacOS/OmarchyRecovery"
         self.binary.parent.mkdir()
@@ -127,7 +133,7 @@ class RecoveryTests(unittest.TestCase):
         marker = plistlib.loads(self.marker.read_bytes())
         self.assertEqual(marker["AppName"], recovery.APP_NAME)
         self.assertEqual(marker["ProductBuildVersion"], "00A191")
-        self.assertIn("../../../Omarchy Installer.app/Contents/MacOS/OmarchyRecovery", self.step2.read_text())
+        self.assertIn("../../../" + RECOVERY_DISPLAY_NAME + ".app/Contents/MacOS/OmarchyRecovery", self.step2.read_text())
         self.assertTrue(self.boot.is_file())
         self.assertEqual(len(self.commands), 3)
         self.assertEqual(self.commands[1][1:4], ["--force", "--sign", "-"])

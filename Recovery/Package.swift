@@ -12,6 +12,7 @@ let package = Package(
   name: "OmarchyRecovery",
   platforms: [.macOS(.v13)],
   products: [.executable(name: "OmarchyRecovery", targets: ["OmarchyRecovery"])],
+  dependencies: [.package(name: "InstallerIdentity", path: "..")],
   targets: [
     .target(name: "RecoveryAuthorization", path: "Native", publicHeadersPath: "."),
     .executableTarget(
@@ -20,7 +21,8 @@ let package = Package(
       path: "Sources",
       swiftSettings: [
         .define(buildMode == "recovery" ? "OMARCHY_STEP2_RECOVERY" : "OMARCHY_STEP2_PREVIEW")
-      ]
+      ],
+      plugins: [.plugin(name: "OmarchyInstallerIdentityPlugin", package: "InstallerIdentity")]
     ),
   ]
 )

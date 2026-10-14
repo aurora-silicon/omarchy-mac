@@ -8,6 +8,7 @@ let package = Package(
     .macOS(.v15)
   ],
   products: [
+    .plugin(name: "OmarchyInstallerIdentityPlugin", targets: ["OmarchyInstallerIdentityPlugin"]),
     .library(
       name: "OmarchyAppleInstallerTrustCore",
       targets: ["OmarchyAppleInstallerTrustCore"]

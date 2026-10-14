@@ -9,6 +9,8 @@ step.
 
 `identity.conf` is the one place that sets the app name, bundle, helper and package identifiers, the Apple Developer team and its Developer ID identities, the catalog trust root and its Keychain service, and the catalog and download hosts. `build-app.sh` writes them into `Info.plist` and the helper's launch-daemon property list, the Swift build compiles them in through `OmarchyInstallerIdentityPlugin`, and the package, notarization and release scripts source the same file.
 
+`INSTALLER_RECOVERY_APP_NAME` is a separate Recovery product contract. The main installer may change its branding while Recovery keeps the bundle name and paths consumed by the admitted validation engine. Changing the Recovery name requires updating and qualifying that engine contract; the identity fixture verifies the frozen overlay bytes against `Engine/source-lock.json` and checks their Recovery name before accounting for frozen literals. Live installer code and other identity/hosting values remain guarded.
+
 Moving to another identity or host is an edit to `identity.conf` followed by `scripts/make-release-descriptor` for a matching `Release/release.json`. `test/all` fails when the descriptor drifts from the configuration or when a configured value is repeated in code, scripts or tests.
 
 ## Bundle layout

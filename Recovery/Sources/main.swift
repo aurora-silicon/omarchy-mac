@@ -875,7 +875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     LaunchTrace.mark("delegate.didFinishLaunching")
     let window = InstallerWindow()
-    window.title = "Omarchy Installer"
+    window.title = InstallerBuildConfiguration.recoveryAppName
     window.isOpaque = false
     window.backgroundColor = .clear
     window.hasShadow = true
@@ -922,13 +922,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       menu.addItem(item)
       return result
     }
-    let application = submenu("Omarchy Installer")
+    let application = submenu(InstallerBuildConfiguration.recoveryAppName)
     application.addItem(
-      withTitle: "About Omarchy Installer",
+      withTitle: "About \(InstallerBuildConfiguration.recoveryAppName)",
       action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
     application.addItem(.separator())
     application.addItem(
-      withTitle: "Hide Omarchy Installer", action: #selector(NSApplication.hide(_:)),
+      withTitle: "Hide \(InstallerBuildConfiguration.recoveryAppName)",
+      action: #selector(NSApplication.hide(_:)),
       keyEquivalent: "h")
     let hideOthers = application.addItem(
       withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)),
@@ -939,7 +940,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       keyEquivalent: "")
     application.addItem(.separator())
     application.addItem(
-      withTitle: "Quit Omarchy Installer", action: #selector(NSApplication.terminate(_:)),
+      withTitle: "Quit \(InstallerBuildConfiguration.recoveryAppName)",
+      action: #selector(NSApplication.terminate(_:)),
       keyEquivalent: "q")
 
     let edit = submenu("Edit")
@@ -999,7 +1001,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func showPreviewHelp(_ sender: Any?) {
     let alert = NSAlert()
-    alert.messageText = "Omarchy Installer"
+    alert.messageText = InstallerBuildConfiguration.recoveryAppName
     alert.informativeText =
       RecoveryActions.inRecovery
       ? "Install or restore Omarchy startup software. The aura command is available in Recovery Terminal after opening this app."

@@ -49,7 +49,7 @@
     static func updateRecoveryApp(for target: RecoveryAccountTarget) throws {
       let source = URL(
         fileURLWithPath:
-          "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/Omarchy Installer.app"
+          "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppName).app"
       )
       let fm = FileManager.default
       guard fm.fileExists(atPath: source.path) else {
@@ -68,7 +68,8 @@
       }
       _ = try AccountNativeCommand.checked("/sbin/mount", ["-u", "-w", mount])
       let system = URL(fileURLWithPath: mount, isDirectory: true)
-      let destination = system.appendingPathComponent("Omarchy Installer.app", isDirectory: true)
+      let destination = system.appendingPathComponent(
+        "\(InstallerProductIdentity.recoveryAppName).app", isDirectory: true)
       let oldResources = destination.appendingPathComponent("Contents/Resources", isDirectory: true)
       let configuration = try RecoveryAccountInstaller.protectedRead(
         oldResources.appendingPathComponent("install-config.json"), limit: 65536)
@@ -92,7 +93,8 @@
       try fm.createDirectory(
         at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
       defer { try? fm.removeItem(at: scratch) }
-      let candidate = scratch.appendingPathComponent("Omarchy Installer.app", isDirectory: true)
+      let candidate = scratch.appendingPathComponent(
+        "\(InstallerProductIdentity.recoveryAppName).app", isDirectory: true)
       try fm.copyItem(at: source, to: candidate)
       let resources = candidate.appendingPathComponent("Contents/Resources", isDirectory: true)
       try configuration.write(
@@ -297,7 +299,7 @@
         throw AccountSetupFailure("Couldn’t mount the completed installation.")
       }
       let path = URL(fileURLWithPath: mount).appendingPathComponent(
-        "Omarchy Installer.app/Contents/Resources/install-config.json")
+        "\(InstallerProductIdentity.recoveryAppName).app/Contents/Resources/install-config.json")
       let configBytes = try RecoveryAccountInstaller.protectedRead(path, limit: 65536)
       guard let config = try JSONSerialization.jsonObject(with: configBytes) as? [String: Any],
         config["schema"] as? Int == 2,

@@ -22,16 +22,6 @@ helper="$app/Contents/Library/LaunchServices/$INSTALLER_HELPER_IDENTIFIER"
 [[ $(/usr/bin/lipo -archs "$helper") == "arm64" ]] || exit 1
 [[ $(/usr/bin/lipo -archs "$app/Contents/MacOS/OmarchyAppleInstallerApp") == "arm64" ]] || exit 1
 helper_requirement=$(private_code_requirement "$helper" "$INSTALLER_HELPER_IDENTIFIER")
-descriptor="$app/Contents/Resources/Release/release.json"
-chmod u+w "$descriptor"
-/usr/bin/plutil -replace helper_code_signing_requirement -string "$helper_requirement" "$descriptor"
-chmod 444 "$descriptor"
-/usr/bin/plutil -insert OmarchyPrivateExactBuild -bool true "$app/Contents/Info.plist"
-# The external system daemon is generated only after the app is sealed. Never
-# leave a usable identifier-only registration path inside the signed bundle.
-/usr/bin/plutil -replace EnvironmentVariables.OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT \
-  -string 'never' "$app/Contents/Library/LaunchDaemons/$INSTALLER_HELPER_IDENTIFIER.plist"
-/usr/bin/codesign --force --sign - --timestamp=none --options runtime "$app"
 /usr/bin/codesign --verify --deep --strict "$app"
 /usr/bin/codesign --verify --strict -R="$helper_requirement" "$helper"
 private_code_requirement "$app" "$INSTALLER_APP_IDENTIFIER"

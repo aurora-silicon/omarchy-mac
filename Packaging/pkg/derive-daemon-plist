@@ -30,10 +30,46 @@ embedded="$app/Contents/Library/LaunchDaemons/$INSTALLER_HELPER_IDENTIFIER.plist
   exit 66
 }
 
+# Exact ad-hoc apps deliberately embed an unusable client requirement. Only
+# an external daemon derived from the final, verified seal may admit the client.
+exact=$(python3 - "$app/Contents/Info.plist" "$embedded" <<'PY'
+import pathlib, plistlib, sys
+info_path = pathlib.Path(sys.argv[1])
+info = plistlib.loads(info_path.read_bytes()) if info_path.is_file() else {}
+with open(sys.argv[2], "rb") as handle:
+    daemon = plistlib.load(handle)
+exact = info.get("OmarchyExactBuild") is True or info.get("OmarchyPrivateExactBuild") is True
+requirement = daemon.get("EnvironmentVariables", {}).get("OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT")
+if exact != (requirement == "never"):
+    sys.exit("derive-daemon-plist: exact identity marker and disabled embedded registration disagree")
+print("true" if exact else "false")
+PY
+)
+client_requirement=""
+if [[ $exact == "true" ]]; then
+  source "$(cd "$(dirname "$0")/.." && pwd)/code-identity.sh"
+  codesign --verify --deep --strict "$app"
+  helper="$app/Contents/Library/LaunchServices/$INSTALLER_HELPER_IDENTIFIER"
+  helper_requirement=$(code_requirement "$helper" "$INSTALLER_HELPER_IDENTIFIER")
+  descriptor_requirement=$(python3 - "$app/Contents/Resources/Release/release.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as handle:
+    print(json.load(handle)["helper_code_signing_requirement"])
+PY
+)
+  [[ $descriptor_requirement == "$helper_requirement" ]] || {
+    echo "derive-daemon-plist: sealed helper requirement does not match the helper" >&2
+    exit 65
+  }
+  codesign --verify --strict -R="$helper_requirement" "$helper"
+  client_requirement=$(code_requirement "$app" "$INSTALLER_APP_IDENTIFIER")
+  codesign --verify --strict -R="$client_requirement" "$app"
+fi
+
 app_name=$(basename "$app")
-python3 - "$embedded" "$output" "$app" "$install_location/$app_name" <<'PY'
+python3 - "$embedded" "$output" "$app" "$install_location/$app_name" "$client_requirement" "$INSTALLER_HELPER_IDENTIFIER" <<'PY'
 import plistlib, sys, os
-embedded, output, app, installed_app = sys.argv[1:5]
+embedded, output, app, installed_app, client_requirement, helper_identifier = sys.argv[1:7]
 with open(embedded, "rb") as handle:
     plist = plistlib.load(handle)
 relative = plist.pop("BundleProgram", None)
@@ -49,6 +85,11 @@ if not program or not os.path.isabs(program):
 if not program.startswith(installed_app + "/"):
     sys.exit("derive-daemon-plist: daemon Program must live inside the installed app: %s" % program)
 plist["Program"] = program
+if client_requirement:
+    if (plist.get("Label") != helper_identifier
+            or relative != "Contents/Library/LaunchServices/" + helper_identifier):
+        sys.exit("derive-daemon-plist: exact daemon must reference its sealed helper")
+    plist["EnvironmentVariables"]["OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT"] = client_requirement
 for key in ("Label", "MachServices", "UserName"):
     if key not in plist:
         sys.exit("derive-daemon-plist: embedded plist lacks %s" % key)

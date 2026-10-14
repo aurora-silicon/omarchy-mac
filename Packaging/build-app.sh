@@ -20,6 +20,7 @@ release_directory="$({ cd "$1" && pwd -P; })"
 output_directory="$2"
 # shellcheck source=identity.conf
 source "$script_directory/identity.conf"
+source "$script_directory/code-identity.sh"
 
 [[ -d $release_directory && ! -L $release_directory ]] \
   || fail "release directory must be a real directory"
@@ -204,7 +205,7 @@ final_app="$output_directory/$app_name"
 recovery_template="${OMARCHY_RECOVERY_TEMPLATE:-}"
 if [[ -z $recovery_template ]]; then
   "$package_directory/Recovery/build-recovery.sh" "$output_directory/recovery-template"
-  recovery_template="$output_directory/recovery-template/Omarchy Installer.app"
+  recovery_template="$output_directory/recovery-template/$INSTALLER_RECOVERY_APP_NAME.app"
 fi
 [[ -d $recovery_template && ! -L $recovery_template ]] || fail "native Recovery template is missing"
 [[ $(/usr/bin/plutil -extract OmarchyRecoveryBuildMode raw -o - "$recovery_template/Contents/Info.plist") == recovery ]] \
@@ -285,9 +286,9 @@ install -m 0444 "$trust_root" "$resources/Release/trust-root.ed25519.pub"
 install -m 0444 "$package_directory/Design/Assets/MacBookPowerButton.png" "$resources/MacBookPowerButton.png"
 install -m 0444 "$package_directory/Design/Assets/MacDesktopPowerButton.png" "$resources/MacDesktopPowerButton.png"
 mkdir -p "$resources/RecoveryTemplate"
-/usr/bin/ditto "$recovery_template" "$resources/RecoveryTemplate/Omarchy Installer.app"
+/usr/bin/ditto "$recovery_template" "$resources/RecoveryTemplate/$INSTALLER_RECOVERY_APP_NAME.app"
 codesign --force --sign "$signing_identity" "${timestamp_arguments[@]}" \
-  "$resources/RecoveryTemplate/Omarchy Installer.app"
+  "$resources/RecoveryTemplate/$INSTALLER_RECOVERY_APP_NAME.app"
 if [[ ${OMARCHY_PRIVATE_LIMINE_TEST:-0} == "1" ]]; then
   install -m 0444 "$release_directory/limine-inputs.json" "$resources/Release/limine-inputs.json"
 fi
@@ -397,10 +398,20 @@ codesign --force --sign "$signing_identity" \
   --options runtime \
   --identifier "$helper_identifier" \
   "$helper_path"
+if [[ $signing_identity == "-" ]]; then
+  seal_adhoc_identity "$assembled_app" "$helper_identifier"
+  if [[ ${OMARCHY_PRIVATE_PLAIN_TEST:-0} == "1" || ${OMARCHY_PRIVATE_LIMINE_TEST:-0} == "1" ]]; then
+    plutil -insert OmarchyPrivateExactBuild -bool true "$contents/Info.plist"
+  fi
+  helper_requirement=$(code_requirement "$helper_path" "$helper_identifier")
+fi
 codesign --force --sign "$signing_identity" \
   "${timestamp_arguments[@]}" \
   --options runtime \
   "$assembled_app"
+if [[ $signing_identity == "-" ]]; then
+  client_requirement=$(code_requirement "$assembled_app" "$app_identifier")
+fi
 
 codesign --verify --deep --strict --verbose=2 "$assembled_app"
 codesign --verify --strict \

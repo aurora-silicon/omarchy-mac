@@ -219,7 +219,9 @@ enum RecoveryActions {
     return owner
   }
   static func recoveryOnly() throws {
-    try check(inRecovery && geteuid() == 0, "Open Omarchy Installer in its paired Recovery.")
+    try check(
+      inRecovery && geteuid() == 0,
+      "Open \(InstallerBuildConfiguration.recoveryAppName) in its paired Recovery.")
     try verifyVolume()
   }
   static func esp() throws -> URL {

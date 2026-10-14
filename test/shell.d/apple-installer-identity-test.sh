@@ -33,7 +33,7 @@ while IFS= read -r line || [[ -n $line ]]; do
   seen[$name]=1
 done <"$config"
 source "$config"
-for name in INSTALLER_APP_NAME INSTALLER_LEGACY_APP_NAME INSTALLER_FILE_STEM INSTALLER_APP_IDENTIFIER \
+for name in INSTALLER_APP_NAME INSTALLER_RECOVERY_APP_NAME INSTALLER_LEGACY_APP_NAME INSTALLER_FILE_STEM INSTALLER_APP_IDENTIFIER \
   INSTALLER_HELPER_IDENTIFIER INSTALLER_PKG_IDENTIFIER INSTALLER_TEAM_ID \
   INSTALLER_APP_SIGNING_IDENTITY INSTALLER_PKG_SIGNING_IDENTITY INSTALLER_TRUST_ROOT_FINGERPRINT \
   INSTALLER_CATALOG_KEY_SERVICE INSTALLER_PUBLIC_BASE INSTALLER_STREAM_PATH INSTALLER_R2_BUCKET \
@@ -85,6 +85,62 @@ PY
 done
 pass "release inputs are derived from identity.conf"
 
+# Recovery is a separate product contract in the immutable admitted engine.
+# Validate its exact source hashes and AST constant before accounting for those
+# frozen literals in the scan; changing Recovery requires updating the engine
+# contract through its own qualification workflow. No live app code is exempt.
+python3 - "$ROOT" "$INSTALLER_RECOVERY_APP_NAME" "$test_tmp/frozen-recovery-files" <<'PY'
+import ast, hashlib, json, pathlib, shutil, sys, tempfile
+paths = ["overlay/src/omarchy_recovery.py", "overlay/tests/test_omarchy_asahi.py"]
+
+def validate_contract(root, configured_name):
+    entries = json.loads((root / "Engine/source-lock.json").read_text())["downstream_overlay"]["files"]
+    for path in paths:
+        entry = next(item for item in entries if item["path"] == path)
+        if hashlib.sha256((root / "Engine" / path).read_bytes()).hexdigest() != entry["sha256"]:
+            raise ValueError("frozen Recovery source differs from source-lock: " + path)
+    module = ast.parse((root / "Engine" / paths[0]).read_text())
+    name = next(ast.literal_eval(node.value) for node in module.body
+                if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == "APP_NAME" for target in node.targets))
+    if name != configured_name + ".app":
+        raise ValueError("configured Recovery name disagrees with the frozen engine contract")
+    fixture = ast.parse((root / "Engine" / paths[1]).read_text())
+    expected = "esp/aurora/recovery/" + name + "/Contents/MacOS/OmarchyRecovery"
+    if expected not in [node.value for node in ast.walk(fixture) if isinstance(node, ast.Constant)]:
+        raise ValueError("frozen engine fixture disagrees with its Recovery name")
+
+root = pathlib.Path(sys.argv[1])
+try:
+    validate_contract(root, sys.argv[2])
+except ValueError as error:
+    sys.exit("identity: " + str(error))
+# Negative fixtures prove changing the Recovery identity or frozen source fails
+# before any literal can be filtered from the identity scan.
+try:
+    validate_contract(root, sys.argv[2] + " Alternate")
+except ValueError:
+    pass
+else:
+    sys.exit("identity: changed Recovery contract was accepted")
+with tempfile.TemporaryDirectory() as directory:
+    probe = pathlib.Path(directory)
+    for path in ["source-lock.json", *paths]:
+        destination = probe / "Engine" / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / "Engine" / path, destination)
+    changed = probe / "Engine" / paths[0]
+    changed.write_text(changed.read_text() + "\n# altered frozen source\n")
+    try:
+        validate_contract(probe, sys.argv[2])
+    except ValueError:
+        pass
+    else:
+        sys.exit("identity: changed frozen source was accepted")
+pathlib.Path(sys.argv[3]).write_text("\n".join("Engine/" + path for path in paths) + "\n")
+PY
+pass "the separate Recovery identity matches exact source-locked engine bytes"
+
 # Values set here must not be repeated in code, scripts or tests. Docs,
 # recorded evidence and the derived release inputs checked above may name them.
 guarded=(
@@ -111,7 +167,22 @@ done
 (( ${#scanned[@]} > 100 )) || fail "the repeated-value scan covers the repository" "${#scanned[@]} files"
 status=0
 hits=$(cd "$ROOT" && grep -n -I -F "${patterns[@]}" -- "${scanned[@]}") || status=$?
-(( status == 1 )) || fail "identity and hosting values live only in Packaging/identity.conf" "$hits"
+(( status <= 1 )) || fail "the repeated-value scan completed" "$hits"
+# Every file was scanned. Only the already hash/AST-validated frozen engine
+# literals may coincide with the main default name; other guarded values there
+# and every literal in live code still fail the invariant.
+hits=$(printf '%s' "$hits" | python3 -c '
+import pathlib, sys
+frozen = set(pathlib.Path(sys.argv[1]).read_text().splitlines())
+main, recovery, guarded = sys.argv[2], sys.argv[3], sys.argv[4:]
+for line in sys.stdin.read().splitlines():
+    path, _, text = line.split(":", 2)
+    matching = {value for value in guarded if value in text}
+    if path in frozen and main == recovery and matching == {main}:
+        continue
+    print(line)
+' "$test_tmp/frozen-recovery-files" "$INSTALLER_APP_NAME" "$INSTALLER_RECOVERY_APP_NAME" "${guarded[@]}")
+[[ -z $hits ]] || fail "identity and hosting values live only in Packaging/identity.conf or the validated frozen Recovery contract" "$hits"
 pass "no code, script or test repeats an identity or hosting value, the image producer included"
 
 # A different configuration changes what the packaging scripts produce.
@@ -148,3 +219,13 @@ assert descriptor["helper_code_signing_requirement"].endswith(
 )
 PY
 pass "packaging scripts follow a changed identity.conf"
+
+frozen_recovery_name="$INSTALLER_RECOVERY_APP_NAME.app"
+sed 's/^INSTALLER_APP_NAME=.*/INSTALLER_APP_NAME="Alternate Product Installer"/' \
+  "$config" >"$test_tmp/alternate.conf"
+(
+  source "$test_tmp/alternate.conf"
+  [[ $INSTALLER_APP_NAME == "Alternate Product Installer" ]]
+  [[ $INSTALLER_RECOVERY_APP_NAME.app == "$frozen_recovery_name" ]]
+) || fail "alternate main branding preserves the frozen Recovery product identity"
+pass "main installer branding can vary independently of canonical Recovery identity"

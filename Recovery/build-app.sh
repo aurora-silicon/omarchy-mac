@@ -5,11 +5,15 @@ MODE="${1:?preview or recovery}"
 OUT="${2:-build}"
 [[ "$MODE" == "preview" || "$MODE" == "recovery" ]] || exit 2
 export OMARCHY_RECOVERY_BUILD="$MODE"
-APP="$OUT/Omarchy Installer.app"
+source ../Packaging/identity.conf
+APP="$OUT/$INSTALLER_RECOVERY_APP_NAME.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/OmarchyVolumeIcon.png "$APP/Contents/Resources/OmarchyVolumeIcon.png"
 mkdir -p "$APP/Contents/Resources/en.lproj"
-cp Resources/en.lproj/InfoPlist.strings "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
+python3 - "$INSTALLER_RECOVERY_APP_NAME" "$APP/Contents/Resources/en.lproj/InfoPlist.strings" <<'PYSTRINGS'
+import json, pathlib, sys
+pathlib.Path(sys.argv[2]).write_text('"CFBundleDisplayName" = ' + json.dumps(sys.argv[1]) + ';\n')
+PYSTRINGS
 # Build the standalone Recovery target with XcodeBuildMCP before packaging.
 "${XCODEBUILDMCP:-xcodebuildmcp}" swift-package build --package-path "$PWD" --configuration release
 cp .build/release/OmarchyRecovery "$APP/Contents/MacOS/OmarchyRecovery"
@@ -21,8 +25,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>CFBundleExecutable</key><string>OmarchyRecovery</string>
 <key>CFBundleIdentifier</key><string>org.aurorasilicon.omarchy.recovery.$MODE</string>
 <key>OmarchyRecoveryBuildMode</key><string>$MODE</string>
-<key>CFBundleName</key><string>Omarchy Installer</string>
-<key>CFBundleDisplayName</key><string>Omarchy Installer</string>
+<key>CFBundleName</key><string>$INSTALLER_RECOVERY_APP_NAME</string>
+<key>CFBundleDisplayName</key><string>$INSTALLER_RECOVERY_APP_NAME</string>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1</string>

@@ -4,8 +4,12 @@ import PackagePlugin
 @main
 struct OmarchyInstallerIdentityPlugin: BuildToolPlugin {
   func createBuildCommands(context: PluginContext, target: any Target) throws -> [Command] {
-    let configuration = context.package.directoryURL
-      .appending(components: "Packaging", "identity.conf")
+    let packageDirectory = context.package.directoryURL
+    let identityRoot =
+      FileManager.default.fileExists(
+        atPath: packageDirectory.appending(components: "Packaging", "identity.conf").path
+      ) ? packageDirectory : packageDirectory.deletingLastPathComponent()
+    let configuration = identityRoot.appending(components: "Packaging", "identity.conf")
     let output = context.pluginWorkDirectoryURL
       .appending(component: "InstallerBuildConfiguration.swift")
     return [

@@ -12,7 +12,8 @@
 # (Contents/Library/LaunchDaemons), rewriting its bundle-relative BundleProgram
 # into an absolute Program under /Applications. Pass --plist only to supply a
 # daemon plist that already carries an absolute Program; it is validated the
-# same way.
+# same way. Exact ad-hoc builds always derive the canonical plist and reject
+# --plist overrides.
 set -euo pipefail
 
 PKG_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,6 +40,18 @@ done
   exit 64
 }
 [[ -z "$PLIST" || -f "$PLIST" ]] || { echo "build-pkg.sh: --plist is not a file: $PLIST" >&2; exit 64; }
+
+# An exact build must always derive its client requirement from the final seal.
+# Preserve explicit plist overrides for the existing named-signing workflow.
+if [[ -n "$PLIST" ]]; then
+  python3 - "$APP/Contents/Info.plist" <<'PY'
+import pathlib, plistlib, sys
+path = pathlib.Path(sys.argv[1])
+info = plistlib.loads(path.read_bytes()) if path.is_file() else {}
+if info.get("OmarchyExactBuild") is True or info.get("OmarchyPrivateExactBuild") is True:
+    sys.exit("build-pkg.sh: --plist is forbidden for exact builds; derive the canonical sealed identity")
+PY
+fi
 
 work="$(mktemp -d /tmp/omarchy-pkg.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
