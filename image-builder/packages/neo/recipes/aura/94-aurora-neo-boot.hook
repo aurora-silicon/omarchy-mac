@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/lib/aurora-boot/select-board
+Target = etc/default/update-m1n1
+
+[Action]
+Description = Updating package-selected Aura Stage2...
+When = PostTransaction
+Exec = /usr/bin/update-m1n1

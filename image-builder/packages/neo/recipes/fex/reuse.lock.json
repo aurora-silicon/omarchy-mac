@@ -1,0 +1,13 @@
+{
+  "source_commit": "14c92681f4d62cf84d901460e0358de09c8847a7",
+  "archive": null,
+  "archive_sha256": null,
+  "publication_url": null,
+  "status": "prior native artifact; public reuse disabled until SoftFloat notice correction archive is qualified",
+  "build_mode": "native LLVM22; host and 32/64-bit guest thunks; exact source cache; no bit-reproducibility claim",
+  "superseded_artifact": {
+    "archive": "FEX-Emu-2610.aurora1-1-aarch64.pkg.tar.zst",
+    "archive_sha256": "eca2131aa48afdf1b89ad369b3eff1a2bb81cd1842706325bac55ff28a4d7459",
+    "reason": "SoftFloat notice correction pending actual native repack; no relabeling"
+  }
+}

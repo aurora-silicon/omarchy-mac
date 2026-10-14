@@ -1,0 +1,33 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+pkgname=xorg-xwayland
+pkgver=24.1.14.aurora1
+pkgrel=1
+pkgdesc='Xwayland from the current licensed public Aurora source'
+arch=(aarch64)
+url=https://github.com/aurora-silicon/xserver
+license=(MIT)
+depends=(nettle libepoxy libxfont2 pixman xorg-server-common libxcvt mesa libglvnd
+  libxau libxdmcp wayland libdrm libtirpc libei libxshmfence libdecor 'glibc>=2.43')
+makedepends=(git xtrans meson ninja xorgproto xorg-font-util wayland-protocols)
+source=('xserver::git+https://github.com/aurora-silicon/xserver.git#commit=d958b4e84c903e8d5851b5ea587b998e4834ce62')
+sha256sums=(SKIP)
+prepare() {
+  [[ $(git -C xserver rev-parse HEAD) == d958b4e84c903e8d5851b5ea587b998e4834ce62 ]]
+  [[ -z $(git -C xserver status --porcelain --untracked-files=all --ignored=matching) ]]
+}
+build() {
+  meson setup build xserver --prefix=/usr --libdir=lib --buildtype=release \
+    -Dxvfb=false -Ddocs=false -Ddevel-docs=false -Dglamor=true -Dglx=true \
+    -Dxwayland_ei=socket -Dlibdecor=true -Dsha1=libnettle
+  meson compile -C build -j "${OMARCHY_BUILD_JOBS:-10}"
+}
+check() {
+  meson test -C build --print-errorlogs
+}
+package() {
+  DESTDIR="$pkgdir" meson install -C build
+  install -Dm644 xserver/COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+  install -d "$pkgdir/usr/share/doc/$pkgname"
+  printf '%s\n' d958b4e84c903e8d5851b5ea587b998e4834ce62 > "$pkgdir/usr/share/doc/$pkgname/source-revision"
+}

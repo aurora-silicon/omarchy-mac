@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Never remove the only package contracts maintaining an active Neo boot.
+set -eu
+[ -r /proc/device-tree/compatible ] || exit 0
+compatible=$(tr '\000\n' '  ' </proc/device-tree/compatible)
+case " $compatible " in *' apple,j700 '*) ;; *) exit 0 ;; esac
+while IFS= read -r package; do
+  case "$package" in
+    linux-aurora|m1n1-aurora|uboot-asahi|asahi-scripts|omarchy-mac-boot|aurora-neo-boot)
+      echo "Refusing removal of active Neo boot contract: $package" >&2
+      exit 1
+      ;;
+  esac
+done

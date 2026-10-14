@@ -1,0 +1,33 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+# Normal UCM/DSP source packages; speakerguardd is built separately from its public reviewed pin.
+pkgbase=aurora-neo-audio
+pkgname=(alsa-ucm-conf-asahi asahi-audio)
+pkgver=20261014
+pkgrel=1
+arch=(aarch64)
+license=(MIT BSD-3-Clause)
+makedepends=(git make python)
+source=('ucm::git+https://github.com/aurora-silicon/alsa-ucm-conf-asahi.git#commit=e55107ad9ba220a2772dbe4d55438cd1ec669288'
+        'audio::git+https://github.com/aurora-silicon/asahi-audio.git#commit=b2da7512e9bfcd5837355d2393f3c43219acf6b9')
+sha256sums=(SKIP SKIP)
+prepare() {
+  [[ $(git -C ucm rev-parse HEAD) == e55107ad9ba220a2772dbe4d55438cd1ec669288 ]]
+  [[ $(git -C audio rev-parse HEAD) == b2da7512e9bfcd5837355d2393f3c43219acf6b9 ]]
+  for source_tree in ucm audio; do
+    [[ -z $(git -C "$source_tree" status --porcelain --untracked-files=all --ignored=matching) ]]
+  done
+}
+package_alsa-ucm-conf-asahi() {
+  pkgdesc='Public Apple Silicon ALSA UCM profiles'
+  depends=(alsa-ucm-conf)
+  install -d "$pkgdir/usr/share/alsa"
+  cp -a ucm/ucm2 "$pkgdir/usr/share/alsa/ucm2"
+  install -Dm644 ucm/LICENSE.asahi "$pkgdir/usr/share/licenses/$pkgname/LICENSE.asahi"
+}
+package_asahi-audio() {
+  pkgdesc='Public Apple Silicon PipeWire DSP profiles'
+  depends=(alsa-ucm-conf-asahi pipewire-audio wireplumber bankstown lsp-plugins-lv2 speakersafetyd speakerguardd)
+  make -C audio install DESTDIR="$pkgdir" PREFIX=/usr
+  install -Dm644 audio/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

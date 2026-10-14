@@ -1,0 +1,38 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+pkgname=libfprint
+pkgver=1.94.100.aurora2
+pkgrel=1
+pkgdesc='libfprint with the public Aurora Apple SEP ABI v4 driver'
+arch=(aarch64)
+url=https://github.com/aurora-silicon/aurora-sep-userspace
+license=(LGPL-2.1-or-later NIST-PD)
+depends=('glibc>=2.38' libgcc glib2 libgusb pixman libgudev openssl systemd-libs)
+provides=('libfprint-2.so' 'libfprint-aurora-sep=4')
+makedepends=(glib2-devel git meson ninja gobject-introspection gtk-doc)
+checkdepends=(python-gobject python-cairo umockdev)
+source=(
+  'libfprint-v1.94.100.tar.gz::https://gitlab.freedesktop.org/libfprint/libfprint/-/archive/v1.94.100/libfprint-v1.94.100.tar.gz'
+  'sep::git+https://github.com/aurora-silicon/aurora-sep-userspace.git#commit=4cd00a488f97889d3d2f068e5f2694d7f9aaf5ed'
+)
+sha256sums=(edc90e02f330a7595ceaf37f2c6ec32ed43541347fe936d3273b0bb2524fd19c SKIP)
+prepare() {
+  cd libfprint-v1.94.100
+  patch --fuzz=0 -p1 < ../sep/libfprint/libfprint-1.94.100-apple-sep.patch
+  patch --fuzz=0 -p1 < ../sep/libfprint/0002-aurora-report-unusable-captures-as-retries.patch
+  install -Dm644 ../sep/libfprint/apple-sep.h aurora-uapi/linux/apple-sep.h
+}
+build() {
+  CFLAGS="$CFLAGS -I$srcdir/libfprint-v1.94.100/aurora-uapi" \
+    meson setup build libfprint-v1.94.100 --prefix=/usr --libdir=lib --buildtype=release \
+    -Ddrivers=all -Ddoc=false -Dintrospection=true -Dinstalled-tests=false
+  meson compile -C build -j "${OMARCHY_BUILD_JOBS:-10}"
+}
+check() {
+  meson test -C build --print-errorlogs --timeout-multiplier 10 --num-processes 4
+}
+package() {
+  DESTDIR="$pkgdir" meson install -C build
+  install -Dm644 sep/LICENSES/LGPL-2.1-or-later.txt "$pkgdir/usr/share/licenses/$pkgname/LGPL-2.1-or-later.txt"
+  install -Dm644 sep/README.md "$pkgdir/usr/share/doc/$pkgname/aurora-sep-public-source.md"
+}

@@ -1,0 +1,33 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+pkgname=upower
+pkgver=1.91.4.aurora1
+pkgrel=1
+pkgdesc='UPower with public Aurora macsmc kernel time-estimate support'
+arch=(aarch64)
+url=https://github.com/aurora-silicon/upower
+license=(GPL-2.0-or-later)
+depends=(glib2 'glibc>=2.42' libgcc libgudev polkit systemd-libs libimobiledevice libplist)
+provides=(libupower-glib.so)
+makedepends=(glib2-devel git meson ninja gobject-introspection gtk-doc docbook-xsl)
+checkdepends=(python-gobject python-dbus python-dbusmock umockdev)
+backup=(etc/UPower/UPower.conf)
+source=('upower::git+https://github.com/aurora-silicon/upower.git#commit=00e8cb66b408e2a7e5f1c527accbe0634a12996c')
+sha256sums=(SKIP)
+prepare() {
+  [[ $(git -C upower rev-parse HEAD) == 00e8cb66b408e2a7e5f1c527accbe0634a12996c ]]
+  [[ -z $(git -C upower status --porcelain --untracked-files=all --ignored=matching) ]]
+}
+build() {
+  meson setup build upower --prefix=/usr --libdir=lib --libexecdir=lib --sysconfdir=/etc \
+    --localstatedir=/var --buildtype=release -Dgtk-doc=false -Dman=true \
+    -Dintrospection=enabled -Didevice=enabled -Dpolkit=enabled -Dinstalled_tests=false
+  meson compile -C build -j "${OMARCHY_BUILD_JOBS:-10}"
+}
+check() {
+  meson test -C build --print-errorlogs
+}
+package() {
+  DESTDIR="$pkgdir" meson install -C build
+  install -Dm644 upower/COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+}

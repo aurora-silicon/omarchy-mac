@@ -1,0 +1,71 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# Public-source reuse: source archive and both strict builds are hash-pinned.
+# No compilation is claimed for this packaging-only reuse operation.
+pkgname=m1n1-aurora
+pkgver=1.6.1.aurora20261014.c4331a9
+pkgrel=3
+pkgdesc='Aura Stage1/2 public-source candidate (bare Stage1; no boot policy changes)'
+arch=('aarch64')
+url='https://github.com/aurora-silicon/aura'
+license=('MIT AND GPL-2.0-only' 'CC0-1.0' 'OFL-1.1' 'Zlib' 'BSD-2-Clause OR GPL-2.0-or-later' 'BSD-3-Clause OR GPL-2.0-or-later')
+provides=("m1n1=$pkgver" "aura=$pkgver")
+conflicts=('m1n1' 'aurora-neo-boot')
+depends=('asahi-scripts>=20260127.1' 'dtc')
+options=('!strip' '!debug')
+makedepends=('git' 'clang22' 'llvm22' 'lld' 'rust' 'cargo' 'python')
+source=('aura::git+https://github.com/aurora-silicon/aura.git#commit=c4331a90ef324eab33d34d1515d7e42748a293ab'
+  select-board pre-remove 10-aurora-neo-boot-remove.hook 94-aurora-neo-boot.hook)
+sha256sums=(SKIP
+  '91c7b35601a59c69f37de92e92d82cb2ed713f2bb695bc2b5766091ed9ba5479'
+  'f31578def95ff21076a0c31449f9e0bff43484c82bba1e6d84df8db35ef6b3e1'
+  '0d11f637e655d133821198320acb7a07ae90046834c81064c9870d0267478e6d'
+  '9159ccb86028a21019860030e98c95fa7324ae4d1b3f5c0cc15239e700eba738'
+)
+prepare() {
+  [[ $(git -C aura rev-parse HEAD) == c4331a90ef324eab33d34d1515d7e42748a293ab ]]
+  [[ -z $(git -C aura status --porcelain --untracked-files=all --ignored=matching) ]]
+  git -C aura submodule update --init --recursive
+  cargo fetch --locked --manifest-path aura/rust/Cargo.toml
+}
+build() {
+  [[ $(/usr/lib/llvm22/bin/clang --version) == *"clang version 22."* ]]
+  export AURA_VERSION_TAG=aura-dev-c4331a90ef324eab33d34d1515d7e42748a293ab
+  export CARGO_NET_OFFLINE=true RUSTFLAGS=-Dwarnings
+  for stage in stage1 stage2; do
+    cp -a aura "$stage"
+  done
+  make -C stage1 -j"${OMARCHY_BUILD_JOBS:-10}" USE_CLANG=1 TOOLCHAIN=/usr/lib/llvm22/bin/ LLDDIR=/usr/lib/llvm22/bin/ RELEASE=1 CHAINLOADING=1 BUILTIN_LOGO=aurora EXTRA_CFLAGS=-Werror
+  make -C stage2 -j"${OMARCHY_BUILD_JOBS:-10}" USE_CLANG=1 TOOLCHAIN=/usr/lib/llvm22/bin/ LLDDIR=/usr/lib/llvm22/bin/ RELEASE=1 CHAINLOADING=1 BUILTIN_LOGO=aurora EXTRA_CFLAGS=-Werror ESP_STAGE2=1
+  cp stage1/build/aura.bin aura-stage1.bin
+  cp stage2/build/aura.bin aura-stage2.bin
+  for stage in STAGE1 STAGE2; do
+    printf 'kind: aura\ncommit: %s\nbuild-mode: clean public-source build\n' \
+      c4331a90ef324eab33d34d1515d7e42748a293ab > "$stage-BUILD-INFO.txt"
+  done
+}
+check() {
+  python3 - "$srcdir" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s1=(p/'aura-stage1.bin').read_bytes(); s2=(p/'aura-stage2.bin').read_bytes()
+assert s1.count(b'AURORA-S1-CFG01\0') == 1
+assert s2.count(b'AURORA-S1-CFG01\0') == 0
+assert b'##m1n1_ver##aura-dev-c4331a90ef324eab33d34d1515d7e42748a293ab' in s1
+assert b'##m1n1_ver##aura-dev-c4331a90ef324eab33d34d1515d7e42748a293ab' in s2
+PY
+}
+package() {
+  install -Dm644 select-board "$pkgdir/usr/lib/aurora-boot/select-board"
+  install -Dm755 pre-remove "$pkgdir/usr/lib/aurora-boot/pre-remove"
+  install -Dm644 10-aurora-neo-boot-remove.hook "$pkgdir/usr/share/libalpm/hooks/10-aurora-neo-boot-remove.hook"
+  install -Dm644 94-aurora-neo-boot.hook "$pkgdir/usr/share/libalpm/hooks/94-aurora-neo-boot.hook"
+  install -Dm644 aura-stage2.bin "$pkgdir/usr/lib/asahi-boot/m1n1.bin"
+  install -Dm644 aura-stage1.bin "$pkgdir/usr/lib/aura/aura-stage1.bin"
+  install -Dm644 aura/tools/fill_stage1_config.py "$pkgdir/usr/share/aura/fill_stage1_config.py"
+  install -Dm644 aura/docs/j700-install.md "$pkgdir/usr/share/doc/$pkgname/j700-install.md"
+  install -Dm644 STAGE1-BUILD-INFO.txt "$pkgdir/usr/share/doc/$pkgname/STAGE1-BUILD-INFO.txt"
+  install -Dm644 STAGE2-BUILD-INFO.txt "$pkgdir/usr/share/doc/$pkgname/STAGE2-BUILD-INFO.txt"
+  install -Dm644 aura/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  cp -a aura/LICENSES aura/3rdparty_licenses "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 aura/udev/80-aura.rules "$pkgdir/usr/lib/udev/rules.d/80-aura.rules"
+}

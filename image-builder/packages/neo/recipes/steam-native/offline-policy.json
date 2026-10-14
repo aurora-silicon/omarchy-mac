@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "manifest": "/usr/share/aurora-steam-native/offline/steam_client_publicbeta_linuxarm64",
+  "archives": "/usr/share/aurora-steam-native/offline/archives",
+  "manifest_sha256": "65079d08bbcc0e7fdc3d9b153aadc4c9befc62913c3e4ee0b02425690366f15f"
+}

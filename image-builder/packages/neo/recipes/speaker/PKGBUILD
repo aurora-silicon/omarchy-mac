@@ -1,0 +1,38 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+pkgname=speakerguardd
+pkgver=20261014
+pkgrel=2
+pkgdesc='Public reviewed complete-sense protection candidate for J700 (PR2 draft)'
+arch=(aarch64)
+url=https://github.com/aurora-silicon/speakerguardd/pull/2
+license=(MIT)
+depends=('glibc>=2.34' systemd)
+makedepends=(git rust python)
+options=(!lto !debug !strip)
+source=(use-feedback-guard 50-j700-guard.conf
+'speaker::git+https://github.com/aurora-silicon/speakerguardd.git#commit=d6ee942ddfa129d5685c03d2f4fd230216f4fb93')
+sha256sums=(1209fa895e1eb138dc0b9e7e1bc66f9c101e53757e8dff85645b76f61789370c 5bcc720660327927702f730719cd12fec8f0cf0e21991f158d08f4a733d71a81 SKIP)
+prepare() {
+  [[ $(git -C speaker rev-parse HEAD) == d6ee942ddfa129d5685c03d2f4fd230216f4fb93 ]]
+  [[ -z $(git -C speaker status --porcelain --untracked-files=all --ignored=matching) ]]
+}
+build() {
+  cd speaker
+  cargo test --locked
+  cargo build --locked --release --target aarch64-unknown-linux-gnu
+  install -Dm755 target/aarch64-unknown-linux-gnu/release/speakerguardd "$srcdir/speaker-built"
+}
+package() {
+  install -Dm755 speaker-built "$pkgdir/usr/bin/speakerguardd"
+  install -Dm644 speaker/conf/apple/j700.conf "$pkgdir/usr/share/speakerguardd/apple/j700.conf"
+  install -Dm644 speaker/95-speakerguardd.rules "$pkgdir/usr/lib/udev/rules.d/95-speakerguardd.rules"
+  install -Dm644 speaker/LICENSE "$pkgdir/usr/share/licenses/speakerguardd/LICENSE"
+  install -Dm644 speaker/speakerguardd.service "$pkgdir/usr/lib/systemd/system/speakerguardd.service"
+  sed -i 's|ExecStart=/usr/bin/speakerguardd -c /usr/share/speakerguardd$|ExecStart=/usr/bin/speakerguardd -c /usr/share/speakerguardd -C AppleJ700|' "$pkgdir/usr/lib/systemd/system/speakerguardd.service"
+  install -Dm755 use-feedback-guard "$pkgdir/usr/lib/speakerguardd/use-feedback-guard"
+  install -Dm644 50-j700-guard.conf "$pkgdir/usr/lib/systemd/system/speakersafetyd.service.d/50-j700-guard.conf"
+  install -d "$pkgdir/usr/share/doc/speakerguardd"
+  printf '%s\n' d6ee942ddfa129d5685c03d2f4fd230216f4fb93 > "$pkgdir/usr/share/doc/speakerguardd/source-revision"
+  printf '%s\n' 'Public PR2 draft; native source tests/build; exact-kernel physical safety remains unqualified.' > "$pkgdir/usr/share/doc/speakerguardd/QUALIFICATION"
+}

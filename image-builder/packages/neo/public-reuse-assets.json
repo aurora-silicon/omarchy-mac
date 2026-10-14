@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "publication_status": "Root must supply reviewed immutable public asset URLs before public reuse",
+  "components": {
+    "aura": {
+      "source_repository": "https://github.com/aurora-silicon/aura",
+      "source_commit": "c4331a90ef324eab33d34d1515d7e42748a293ab",
+      "assets": [
+        {
+          "name": "aura-stage1.bin",
+          "sha256": "5f61a64aab4a63e0d5e22ecbf9723ef3e6496fa33be1d3ef4a5291244ff9a19a",
+          "url": null
+        },
+        {
+          "name": "aura-stage2.bin",
+          "sha256": "0271f85eda06c52d2767e8c1812431fab85b0f0157b7576f240bce5adc7f9b1e",
+          "url": null
+        }
+      ]
+    },
+    "kernel": {
+      "source_repository": "https://github.com/aurora-silicon/linux",
+      "source_commit": "d32c6c259c49157b81bed62571c314710e585d98",
+      "original_cache_source": "cd46babc03d1193d2bdaa23de076a185bc602b57",
+      "mode": "exact public-source incremental build; SEP module rebuilt, Image/113DTBs unchanged",
+      "assets": [
+        {
+          "directory": "recipes/kernel",
+          "name": "kernel-runtime.tar",
+          "sha256": "2c1c2da09549d1e22263819013038121dcd486aefacc9320833e913b778286ca",
+          "url": null
+        },
+        {
+          "directory": "recipes/kernel",
+          "name": "reuse-receipt.json",
+          "sha256": "bad14fb2b131b8da2ab74b3cc254b98b25db1cb29f03d41f87b8633baac89ba8",
+          "url": null
+        },
+        {
+          "directory": "recipes/kernel",
+          "name": "config",
+          "sha256": "fb8a0c1e96bef82638829628ec4809c32856ba08214c7718b8aee2e9cbb9a971",
+          "url": null
+        },
+        {
+          "directory": "recipes/kernel/headers",
+          "name": "headers-stage.tar",
+          "sha256": "84bf6c230c5f83c192e4b2f65bd1144f4580c6b15793bd625b9883663c1562c6",
+          "url": null
+        },
+        {
+          "directory": "recipes/kernel/headers",
+          "name": "native-helper-receipt.json",
+          "sha256": "0ad7b3fe85cac695cfadcac48655bc6c3c5e2edbc45c57827d2413c8f7521a2c",
+          "url": null
+        },
+        {
+          "directory": "recipes/kernel/headers",
+          "name": "COPYING",
+          "sha256": "fb5a425bd3b3cd6071a3a9aff9909a859e7c1158d54d32e07658398cd67eb6a0",
+          "url": null
+        },
+        {
+          "directory": "recipes/kernel/headers",
+          "name": "LICENSES.tar",
+          "sha256": "4db3aa91b2d55c55297f54830fc926258ee0d00203c9654782409b9d68ebbd19",
+          "url": null
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# Qualified public-source incremental runtime, not a clean bit-reproducibility claim.
+# See BUILD.md for clean compilation and immutable public reuse inputs.
+pkgname=linux-aurora
+pkgver=7.1.12.aurora20261014.r2.gd32c6c2
+pkgrel=1
+pkgdesc='Public Aurora Neo kernel, modules and complete Apple DTB roster (candidate)'
+arch=('aarch64')
+url='https://github.com/aurora-silicon/linux'
+license=('GPL-2.0-only')
+depends=('coreutils' 'kmod' 'initramfs' 'm1n1>=1.6.1')
+provides=("linux-asahi=$pkgver" 'WIREGUARD-MODULE')
+conflicts=('linux-asahi')
+options=('!strip' '!debug')
+source=('kernel-runtime.tar' 'reuse-receipt.json' 'config')
+sha256sums=('2c1c2da09549d1e22263819013038121dcd486aefacc9320833e913b778286ca' 'bad14fb2b131b8da2ab74b3cc254b98b25db1cb29f03d41f87b8633baac89ba8' 'fb8a0c1e96bef82638829628ec4809c32856ba08214c7718b8aee2e9cbb9a971')
+check() {
+  python3 - "$srcdir" <<'VERIFY'
+from pathlib import Path
+import hashlib,json,sys
+r=Path(sys.argv[1]);m=json.loads((r/'reuse-receipt.json').read_text())
+assert m.get('actual_compile_source', m.get('actual_incremental_source'))=='d32c6c259c49157b81bed62571c314710e585d98'
+for name,digest in m['files'].items():
+ assert hashlib.file_digest((r/name).open('rb'),'sha256').hexdigest()==digest,name
+VERIFY
+}
+package() {
+  cp -a usr "$pkgdir/"
+  install -Dm644 reuse-receipt.json "$pkgdir/usr/share/doc/$pkgname/reuse-receipt.json"
+  install -Dm644 config "$pkgdir/usr/share/doc/$pkgname/build.config"
+}

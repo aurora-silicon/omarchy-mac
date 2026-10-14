@@ -1,0 +1,98 @@
+[
+  {
+    "path": ".",
+    "repository": "https://github.com/FEX-Emu/FEX.git",
+    "commit": "14c92681f4d62cf84d901460e0358de09c8847a7",
+    "tree": "246a19c0ca4493e0db2cac9f12ed7bd920c27d71"
+  },
+  {
+    "path": "External/Catch2",
+    "repository": "https://github.com/catchorg/Catch2.git",
+    "commit": "b3fb4b9feafcd8d91c5cb510a4775143fdbef02f",
+    "tree": "46a08efa7b84ca625bb83d1845def3e79586115e"
+  },
+  {
+    "path": "External/Vulkan-Headers",
+    "repository": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+    "commit": "ee2ec5fd83dafce291024683b50dc89219333076",
+    "tree": "086b8a8db05a51b9424e4d80d480787461351c71"
+  },
+  {
+    "path": "External/drm-headers",
+    "repository": "https://github.com/FEX-Emu/drm-headers.git",
+    "commit": "3e49836995c1dcb3df709440ad2f270b569c6a5f",
+    "tree": "da573f3c5f925db3764ac1544ffd43f279343a13"
+  },
+  {
+    "path": "External/fmt",
+    "repository": "https://github.com/fmtlib/fmt.git",
+    "commit": "c07e2aa4b130b4fd359a1c6455a5201b17af01fa",
+    "tree": "f7d6122a22a4b5a2241e9d14570817633b55ddc4"
+  },
+  {
+    "path": "External/jemalloc_glibc",
+    "repository": "https://github.com/FEX-Emu/jemalloc.git",
+    "commit": "8436195ad5e1bc347d9b39743af3d29abee59f06",
+    "tree": "96213ccc136839e13aabadaad60c7838c49a8dd7"
+  },
+  {
+    "path": "External/range-v3",
+    "repository": "https://github.com/ericniebler/range-v3.git",
+    "commit": "ca1388fb9da8e69314dda222dc7b139ca84e092f",
+    "tree": "bddf4cfede92ace82abac9847af08962a82f36cf"
+  },
+  {
+    "path": "External/range-v3/doc/gh-pages",
+    "repository": "https://github.com/ericniebler/range-v3.git",
+    "commit": "2dae74bb693e42d850fb0adcc9045c5b71fbdeae",
+    "tree": "cf416cdf221db7bd79dadedb0e43260f40f5f970"
+  },
+  {
+    "path": "External/rpmalloc",
+    "repository": "https://github.com/FEX-Emu/rpmalloc.git",
+    "commit": "09142d726429416bfa7b459151515fe3ab7622dd",
+    "tree": "8df22bc1162ac2da5d776bb20631f964598c8353"
+  },
+  {
+    "path": "External/tracy",
+    "repository": "https://github.com/wolfpld/tracy",
+    "commit": "650c98ece70da9e155e7ba1c2b3ee16004aae118",
+    "tree": "20b9ed39c68806dc5afd8220d346a7db9a21b6fe"
+  },
+  {
+    "path": "External/unordered_dense",
+    "repository": "https://github.com/martinus/unordered_dense.git",
+    "commit": "3234af2c03549bc85656bfd3a86993bf1cd8aef1",
+    "tree": "40f25261cffbae5c901319dd76013224ff3658dd"
+  },
+  {
+    "path": "External/vixl",
+    "repository": "https://github.com/FEX-Emu/vixl.git",
+    "commit": "585d860b12cdfc3a72f5fdad5e02e4d50a64c014",
+    "tree": "ae9489b803b0d575e4ee887c804a2cb5b49210b2"
+  },
+  {
+    "path": "External/xxhash",
+    "repository": "https://github.com/Cyan4973/xxHash.git",
+    "commit": "e626a72bc2321cd320e953a0ccf1584cad60f363",
+    "tree": "9d4f447c856962a98e22f144bd9b0315ab4d18f8"
+  },
+  {
+    "path": "External/zydis",
+    "repository": "https://github.com/zyantific/zydis.git",
+    "commit": "9bfadd6a55fc92dbd37fa3ba089bf8b36622df4f",
+    "tree": "74bbe660f1aaeca6afb9132b13e1fdb1405f9da1"
+  },
+  {
+    "path": "External/zydis/dependencies/zycore",
+    "repository": "https://github.com/zyantific/zycore-c",
+    "commit": "75a36c45ae1ad382b0f4e0ede0af84c11ee69928",
+    "tree": "dce4afb5c60931c6c8f698b0d3899853987550ec"
+  },
+  {
+    "path": "Source/Common/cpp-optparse",
+    "repository": "https://github.com/Sonicadvance1/cpp-optparse",
+    "commit": "9f94388a339fcbb0bc95c17768eb786c85988f6e",
+    "tree": "83f3445fe4f223102506c20b2ec583f712b28910"
+  }
+]

@@ -1,0 +1,270 @@
+{
+  "schema": 1,
+  "files": [
+    {
+      "path": "BUILD.md",
+      "sha256": "26e2210ade8ae0ba635ddb3e3b12ebfa24400fddc56cad70e40de455be35aabd",
+      "bytes": 10080
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "95b693af85a593af473c74c978eac9e29b8bb414b7889c13c81eb9e58a561cfa",
+      "bytes": 1248
+    },
+    {
+      "path": "LICENSES/GPL-2.0-only.txt",
+      "sha256": "9cbc7d104b54a1ca3656dfab71851e6df7f39f06ff9272cb7c7cedd52b50770c",
+      "bytes": 18605
+    },
+    {
+      "path": "ORIGINS.md",
+      "sha256": "f0380880ce8d1b212721549cf40b48e28500b6ab08b8ba388a5e0f15223f74ac",
+      "bytes": 3277
+    },
+    {
+      "path": "README.md",
+      "sha256": "352866529f744ffbc23718558a1723bf8f1c548ec026ca48f288d9b84d85fa64",
+      "bytes": 2760
+    },
+    {
+      "path": "public-reuse-assets.json",
+      "sha256": "053b4aae6b282f368bd232c54a832940b5e5ebc9c9eaa0dfb1b2b7b0b0db75a0",
+      "bytes": 2513
+    },
+    {
+      "path": "recipes/audio/PKGBUILD",
+      "sha256": "a96ddb6af80038baacd991fc60b3dad1f571bba804c8f7853bef3cc865d6fdc0",
+      "bytes": 1539
+    },
+    {
+      "path": "recipes/aura/10-aurora-neo-boot-remove.hook",
+      "sha256": "0d11f637e655d133821198320acb7a07ae90046834c81064c9870d0267478e6d",
+      "bytes": 342
+    },
+    {
+      "path": "recipes/aura/94-aurora-neo-boot.hook",
+      "sha256": "9159ccb86028a21019860030e98c95fa7324ae4d1b3f5c0cc15239e700eba738",
+      "bytes": 253
+    },
+    {
+      "path": "recipes/aura/PKGBUILD",
+      "sha256": "904a9e30d3c9bc2718f502901f3df04aacec9e65a4c9c7d699fec52aa643ce4b",
+      "bytes": 4030
+    },
+    {
+      "path": "recipes/aura/pre-remove",
+      "sha256": "f31578def95ff21076a0c31449f9e0bff43484c82bba1e6d84df8db35ef6b3e1",
+      "bytes": 549
+    },
+    {
+      "path": "recipes/aura/select-board",
+      "sha256": "91c7b35601a59c69f37de92e92d82cb2ed713f2bb695bc2b5766091ed9ba5479",
+      "bytes": 2940
+    },
+    {
+      "path": "recipes/fex/PKGBUILD",
+      "sha256": "076502a8c13043434710e4f479b3e654864f08643152495c8b4be6254ce69f17",
+      "bytes": 3536
+    },
+    {
+      "path": "recipes/fex/development-qualification.json",
+      "sha256": "07918cdeec4dab23b02b81ffadd4ef8ac1e8331653f05aefbda5f84c57c9c3a9",
+      "bytes": 704
+    },
+    {
+      "path": "recipes/fex/guest-rpms.lock.json",
+      "sha256": "9dc32568afc78eedc7ebb5ed764efd713fcd530aebf0c1e8ddee1281e7d63524",
+      "bytes": 39653
+    },
+    {
+      "path": "recipes/fex/license-notices.json",
+      "sha256": "652c41bb657ff25f9025e4fb11743b33122e6c8a56ec0e2b919187b3eb9224e5",
+      "bytes": 5016
+    },
+    {
+      "path": "recipes/fex/reuse.lock.json",
+      "sha256": "d086d930cffe9ca3410febfea721e25bd115c687e909aa99808ed485ac6dd42c",
+      "bytes": 640
+    },
+    {
+      "path": "recipes/fex/source-lock.json",
+      "sha256": "9c6f9286af5ac561fd543589f56ef461b9c21a2e938d1c6e4c62113ee82ad2f2",
+      "bytes": 3494
+    },
+    {
+      "path": "recipes/fex/sources.py",
+      "sha256": "155044d7158ae2591c3bb778f9d4137e544134f801e0f3a58cac483cfa286b7b",
+      "bytes": 6897
+    },
+    {
+      "path": "recipes/fex/x86-32.cmake",
+      "sha256": "a316c4b1b13c2c5786455d37062e986e8efc5dfdcf89aa00d7071a83782a1553",
+      "bytes": 1615
+    },
+    {
+      "path": "recipes/fex/x86-64.cmake",
+      "sha256": "e3bd6e37948a4ee530ff364a8ca4f9d8275640f0c12dbc7d61cd10505bdd81ae",
+      "bytes": 1611
+    },
+    {
+      "path": "recipes/gtk2/0001-Lower-severity-of-XID-collision-warnings.patch",
+      "sha256": "cbb55e57f06a1439f115d6c6dc4730f70011cc3926deb0ad1b32f2576ee99a0d",
+      "bytes": 759
+    },
+    {
+      "path": "recipes/gtk2/0002-Stop-looking-for-modules-in-cwd.patch",
+      "sha256": "2001b5e8a0ca35b9c2d30660fd55fef9978a986869b9cd7da6393c276bd2c3c2",
+      "bytes": 971
+    },
+    {
+      "path": "recipes/gtk2/LICENSE",
+      "sha256": "7056c04df17a4e0f0bac9f787f347c9cd892cee6323d1c89528090afd0b934a3",
+      "bytes": 646
+    },
+    {
+      "path": "recipes/gtk2/PKGBUILD",
+      "sha256": "354789d2abe78e3d0a48ded9a1a81f5816a18b2ed94a8f29c869f3a277e1b3fb",
+      "bytes": 2963
+    },
+    {
+      "path": "recipes/gtk2/REUSE.toml",
+      "sha256": "a729e51e5fa37d54537b3aa8a9283890568af2b26e662c868dff96420975847f",
+      "bytes": 603
+    },
+    {
+      "path": "recipes/gtk2/gtk-query-immodules-2.0.hook",
+      "sha256": "427e7ed2626465ea7a8986189b6c8340a0520b9f7b8e2a56cd1169d375da7425",
+      "bytes": 267
+    },
+    {
+      "path": "recipes/gtk2/gtk2.install",
+      "sha256": "7505dcb4fb5f422658bb30e077e6c6e723726a2ed23e8cccb78f27e682816ee6",
+      "bytes": 67
+    },
+    {
+      "path": "recipes/kernel/PKGBUILD",
+      "sha256": "163a815e2fc4766d62bbceea978fdb6877633d7f2ea7fff79b8049a510012542",
+      "bytes": 1496
+    },
+    {
+      "path": "recipes/kernel/config",
+      "sha256": "fb8a0c1e96bef82638829628ec4809c32856ba08214c7718b8aee2e9cbb9a971",
+      "bytes": 339726
+    },
+    {
+      "path": "recipes/kernel/headers/PKGBUILD",
+      "sha256": "bad254c651cbb6f36cc1bd8251c3e9f1ff39d91cb6eff6a9495fc891ea268b74",
+      "bytes": 1901
+    },
+    {
+      "path": "recipes/libfprint/PKGBUILD",
+      "sha256": "02e9ed7edc77d408468a97d384960777c4c660f1ed9784eadec58822af614770",
+      "bytes": 1849
+    },
+    {
+      "path": "recipes/mesa-overlays/Mesa-MLAA-License-Clarification-Email.txt",
+      "sha256": "68e7be52203a4457ea97d9c4744661a07fc3d78edb44a86b43349fb66f09147a",
+      "bytes": 3682
+    },
+    {
+      "path": "recipes/mesa-overlays/PKGBUILD",
+      "sha256": "1520b28fd5980a6e25e3d85493b68d74ca6e4b0710078761442cdc762d8d7a92",
+      "bytes": 16844
+    },
+    {
+      "path": "recipes/mesa-overlays/cross_x86",
+      "sha256": "ac90d197e93e8a09856ce1fee9a2a3aa26457e640c4d317584be650894191b08",
+      "bytes": 574
+    },
+    {
+      "path": "recipes/native-mesa/PKGBUILD",
+      "sha256": "81805a2fcf74dc081b7c7ec9b8e9003c7a53bac52078b038b8ccfdfffe1ddd91",
+      "bytes": 19543
+    },
+    {
+      "path": "recipes/runtime/RECIPE-LICENSE",
+      "sha256": "717ba1949502290f8e47688ae2e323acd06c8ca47aec9f7596b15f678c1af4a2",
+      "bytes": 1063
+    },
+    {
+      "path": "recipes/runtime/omarchy/PKGBUILD",
+      "sha256": "705b68cd787e262f8a1c51512f06a346be86cd88ebb69ef5a2dc702b929392ef",
+      "bytes": 7043
+    },
+    {
+      "path": "recipes/runtime/omarchy-settings/PKGBUILD",
+      "sha256": "607c7a67d05eb46db36d9cfb75600e4f52a863c551841f46637bc7aff86f3f21",
+      "bytes": 26817
+    },
+    {
+      "path": "recipes/runtime/omarchy-settings/omarchy-settings.install",
+      "sha256": "5714b40b50d8a50e8f04f2f8379c138339bbd8a7bf72c3e5afeb194740240fde",
+      "bytes": 2950
+    },
+    {
+      "path": "recipes/speaker/50-j700-guard.conf",
+      "sha256": "5bcc720660327927702f730719cd12fec8f0cf0e21991f158d08f4a733d71a81",
+      "bytes": 66
+    },
+    {
+      "path": "recipes/speaker/PKGBUILD",
+      "sha256": "738a6f4f32cc8f0f6b7d9c0d514bb663e7dd673ccaf3167be32c029b74526955",
+      "bytes": 2297
+    },
+    {
+      "path": "recipes/speaker/use-feedback-guard",
+      "sha256": "1209fa895e1eb138dc0b9e7e1bc66f9c101e53757e8dff85645b76f61789370c",
+      "bytes": 254
+    },
+    {
+      "path": "recipes/steam-native/PKGBUILD",
+      "sha256": "43075bcea3b94f1df2d56802e4b0bbb81bc1928278f61a49cdae7efad513f7cc",
+      "bytes": 2316
+    },
+    {
+      "path": "recipes/steam-native/offline-policy.json",
+      "sha256": "168294514eb71fe6a3dc7ab48919f5313d9a85f3ac1669de9bb6cc60596f469b",
+      "bytes": 263
+    },
+    {
+      "path": "recipes/steam-native/steam-first-launch.py",
+      "sha256": "c08a6d0f89218033c9facb5a3ae05201a8ba50d02174930b204bc2c4d89cddc5",
+      "bytes": 3014
+    },
+    {
+      "path": "recipes/uboot/PKGBUILD",
+      "sha256": "0ff7f3ce41ee772410f73463938966d7b0e94d23baf7e309987c25e863cc0a7c",
+      "bytes": 1406
+    },
+    {
+      "path": "recipes/upower/PKGBUILD",
+      "sha256": "7b6e730d93de2ab2234f30f8a53213829fc5bf20358f7f77b2b48b5636b61c10",
+      "bytes": 1418
+    },
+    {
+      "path": "recipes/userpages/PKGBUILD",
+      "sha256": "573869dc8c603bf35335ae1f2193ac6f895d4b75b21a2fa4ff1b339b6d7d2a87",
+      "bytes": 1119
+    },
+    {
+      "path": "recipes/xwayland/PKGBUILD",
+      "sha256": "92adcbcf72537743e7f3bb5667a02ec61a4b0bc60a0708f6023e6914b35a1b30",
+      "bytes": 1470
+    },
+    {
+      "path": "scripts/fetch-reuse.py",
+      "sha256": "f1b813d9ad3c84d4128f4f0a9ec1d6a10c2d7b4f30a9f9027d2f2fc912b67fe3",
+      "bytes": 2027
+    },
+    {
+      "path": "scripts/stage-kernel-inputs.py",
+      "sha256": "65f6315e6147f1228bf155be7b692cafe19eece86e387362f04e50d01e1aaddd",
+      "bytes": 7639
+    },
+    {
+      "path": "tests/test_recipes.py",
+      "sha256": "7b10bbf7b2d42020edbf84e8bfd3885a7e819e4093cabd9eaa9bffb652400ec3",
+      "bytes": 12297
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Retained exact model condition from the existing public image audio pipeline.
+test -r /proc/device-tree/compatible || exit 0
+tr "\000" "\n" < /proc/device-tree/compatible | grep -Fxq apple,j700 && exit 1
+exit 0

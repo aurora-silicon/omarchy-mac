@@ -1,0 +1,14 @@
+{
+  "expected": 107,
+  "sha256_passed": 107,
+  "bytes": 229843118,
+  "development_lock_sha256": "9dc32568afc78eedc7ebb5ed764efd713fcd530aebf0c1e8ddee1281e7d63524",
+  "issuer_key_ids_observed_in_rpm_headers": {
+    "655a4b02f577861e": 107
+  },
+  "without_parsed_issuer_key_id": [],
+  "cryptographic_rpm_signature_verification_performed": false,
+  "public_origin": "Exact public Koji getRPM/getBuild source-build metadata; signed/f577861e URLs; every107payload SHA matched.",
+  "initial_attempt": "37 matched;70HTTP404 from guessed binary-subpackage folders; corrected factual source-build folders; final107matched.",
+  "scope": "Development input fetch only; no FEX/compiler/container/package rebuild."
+}

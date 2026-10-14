@@ -1,0 +1,357 @@
+# Public recipe adaptation: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+# Maintainer: Jos Dehaes <jos.dehaes@gmail.com>
+# Maintainer: Matthias Kurz <m.kurz@irregular.at>
+
+highmem=1
+
+pkgbase=mesa
+pkgname=(mesa-fex-emu-overlay-x86_64 mesa-fex-emu-overlay-i386 mesa-dummy)
+pkgdesc="Mesa builds for the x86 FEX-Emu overlays"
+pkgver=26.3.0.devel.20261014.g524105a
+pkgrel=2
+_pkgver=${pkgver/.devel/-devel}
+# x86 only: the native aarch64 mesa package now comes from [extra] (ALARM).
+# This PKGBUILD only produces the FEX-Emu overlays (x86_64 + i386) and the
+# mesa-dummy package used inside the x86_64 FEX rootfs, so it must be built
+# on an x86_64 host.
+arch=('x86_64')
+# The overlays are erofs images consumed by FEX-Emu; nothing on the host links
+# against them, so the split packages carry no runtime depends.
+makedepends=('git' 'python-mako' 'libxml2' 'libx11' 'xorgproto' 'libdrm' 'libxshmfence' 'libxxf86vm'
+  'libxdamage' 'libva' 'wayland' 'wayland-protocols' 'zstd' 'elfutils' 'llvm' 'spirv-llvm-translator'
+  'libomxil-bellagio' 'libclc' 'clang' 'libglvnd' 'libunwind' 'lm_sensors' 'libxrandr'
+  'systemd' 'valgrind' 'glslang' 'vulkan-icd-loader' 'directx-headers' 'cmake' 'meson' 'python-pycparser' 'python-packaging' 'python-pyaml'
+  'erofs-utils' 'lz4' 'patchelf' 'rust-bindgen'
+  'lib32-llvm' 'lib32-llvm-libs' 'lib32-libpciaccess' 'lib32-libglvnd' 'lib32-libxrandr' 'lib32-spirv-tools'
+  'lib32-spirv-llvm-translator' 'lib32-clang' 'lib32-libxfixes' 'lib32-libva' 'lib32-xcb-util-keysyms')
+
+# to build the 32 bit overlay you need these on the host machine
+#    'lib32-llvm' 'lib32-llvm-libs' 'lib32-libpciaccess' 'lib32-libglvnd' 'lib32-libxrandr' 'lib32-spirv-tools'
+#    'lib32-spirv-llvm-translator' 'lib32-clang' 'lib32-libxfixes' 'lib32-libva' 'lib32-xcb-util-keysyms'
+
+url="https://www.mesa3d.org/"
+license=('MIT AND BSD-3-Clause AND SGI-B-2.0')
+options=('!debug' '!lto')
+source=('Mesa-MLAA-License-Clarification-Email.txt' 'cross_x86'
+'mesa-source::git+https://github.com/aurora-silicon/mesa.git#commit=524105acd30b58c7581ae7e0a1920e5775f9f792'
+'venus-protocol-v1.1.3.tar.gz::https://gitlab.freedesktop.org/virgl/venus-protocol/-/archive/v1.1.3/venus-protocol-v1.1.3.tar.gz'
+'bitflags-2.9.1.tar.gz::https://static.crates.io/crates/bitflags/2.9.1/download'
+'cfg-if-1.0.0.tar.gz::https://static.crates.io/crates/cfg-if/1.0.0/download'
+'equivalent-1.0.1.tar.gz::https://static.crates.io/crates/equivalent/1.0.1/download'
+'errno-0.3.12.tar.gz::https://static.crates.io/crates/errno/0.3.12/download'
+'hashbrown-0.14.1.tar.gz::https://static.crates.io/crates/hashbrown/0.14.1/download'
+'indexmap-2.2.6.tar.gz::https://static.crates.io/crates/indexmap/2.2.6/download'
+'libc-0.2.185.tar.gz::https://static.crates.io/crates/libc/0.2.185/download'
+'log-0.4.27.tar.gz::https://static.crates.io/crates/log/0.4.27/download'
+'mach2-0.7.0.tar.gz::https://static.crates.io/crates/mach2/0.7.0/download'
+'once_cell-1.8.0.tar.gz::https://static.crates.io/crates/once_cell/1.8.0/download'
+'paste-1.0.14.tar.gz::https://static.crates.io/crates/paste/1.0.14/download'
+'pest-2.8.0.tar.gz::https://static.crates.io/crates/pest/2.8.0/download'
+'pest_derive-2.8.0.tar.gz::https://static.crates.io/crates/pest_derive/2.8.0/download'
+'pest_generator-2.8.0.tar.gz::https://static.crates.io/crates/pest_generator/2.8.0/download'
+'pest_meta-2.8.0.tar.gz::https://static.crates.io/crates/pest_meta/2.8.0/download'
+'proc-macro2-1.0.86.tar.gz::https://static.crates.io/crates/proc-macro2/1.0.86/download'
+'quote-1.0.35.tar.gz::https://static.crates.io/crates/quote/1.0.35/download'
+'remain-0.2.12.tar.gz::https://static.crates.io/crates/remain/0.2.12/download'
+'roxmltree-0.20.0.tar.gz::https://static.crates.io/crates/roxmltree/0.20.0/download'
+'rustc-hash-2.1.1.tar.gz::https://static.crates.io/crates/rustc-hash/2.1.1/download'
+'rustix-1.1.4.tar.gz::https://static.crates.io/crates/rustix/1.1.4/download'
+'syn-2.0.87.tar.gz::https://static.crates.io/crates/syn/2.0.87/download'
+'thiserror-2.0.11.tar.gz::https://static.crates.io/crates/thiserror/2.0.11/download'
+'thiserror-impl-2.0.11.tar.gz::https://static.crates.io/crates/thiserror-impl/2.0.11/download'
+'ucd-trie-0.1.6.tar.gz::https://static.crates.io/crates/ucd-trie/0.1.6/download'
+'unicode-ident-1.0.12.tar.gz::https://static.crates.io/crates/unicode-ident/1.0.12/download'
+'windows-link-0.2.0.tar.gz::https://static.crates.io/crates/windows-link/0.2.0/download'
+'windows-sys-0.61.1.tar.gz::https://static.crates.io/crates/windows-sys/0.61.1/download'
+'xml-1.2.1.tar.gz::https://static.crates.io/crates/xml/1.2.1/download'
+'zerocopy-0.8.13.tar.gz::https://static.crates.io/crates/zerocopy/0.8.13/download'
+'zerocopy-derive-0.8.13.tar.gz::https://static.crates.io/crates/zerocopy-derive/0.8.13/download')
+sha256sums=('68e7be52203a4457ea97d9c4744661a07fc3d78edb44a86b43349fb66f09147a' 'ac90d197e93e8a09856ce1fee9a2a3aa26457e640c4d317584be650894191b08'
+SKIP
+'c5a362ca28e0a35042db1baeadaf9183500b216841e49d72714b80bae50b4445'
+'1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967'
+'baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd'
+'5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5'
+'cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18'
+'7dfda62a12f55daeae5015f81b0baea145391cb4520f86c248fc615d72640d12'
+'168fb715dda47215e360912c096649d23d58bf392ac62f73919e831745e40f26'
+'52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f'
+'13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94'
+'b0d28e293f2b8c9d2b2d1c0193bd3c1cbdc0d2cf396888dc01162f7cf9d6c3f3'
+'692fcb63b64b1758029e0a96ee63e049ce8c5948587f2f7208df04625e5f6b56'
+'de3145af08024dea9fa9914f381a17b8fc6034dfb00f3a84013f7ff43f29ed4c'
+'198db74531d58c70a361c42201efde7e2591e976d518caf7662a47dc5720e7b6'
+'d725d9cfd79e87dccc9341a2ef39d1b6f6353d68c4b33c177febbe1a402c97c5'
+'db7d01726be8ab66ab32f9df467ae8b1148906685bbe75c82d1e65d7f5b3f841'
+'7f9f832470494906d1fca5329f8ab5791cc60beb230c74815dff541cbd2b5ca0'
+'5e719e8df665df0d1c8fbfd238015744736151d4445ec0836b8e628aae103b77'
+'291ec9ab5efd934aaf503a6466c5d5251535d108ee747472c3977cc5acc868ef'
+'1ad5e011230cad274d0532460c5ab69828ea47ae75681b42a841663efffaf794'
+'6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97'
+'357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d'
+'b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190'
+'25aa4ce346d03a6dcd68dd8b4010bcb74e54e62c90c573f394c46eae99aba32d'
+'d452f284b73e6d76dd36758a0c8684b1d5be31f92b89d07fd5822175732206fc'
+'26afc1baea8a989337eeb52b6e72a039780ce45c3edfcc9c5b9d112feeb173c2'
+'ed646292ffc8188ef8ea4d1e0e0150fb15a5c2e12ad9b8fc191ae7a8a7f3c4b9'
+'3354b9ac3fae1ff6755cb6db53683adb661634f67557942dea4facebec0fee4b'
+'45e46c0661abb7180e7b9c281db115305d49ca1709ab8242adf09666d2173c65'
+'6f109e41dd4a3c848907eb83d5a42ea98b3769495597450cf6d153507b166f0f'
+'b8aa498d22c9bbaf482329839bc5620c46be275a19a812e9a22a2b07529a642a'
+'67914ab451f3bfd2e69e5e9d2ef3858484e7074d63f204fd166ec391b54de21d'
+'7988d73a4303ca289df03316bc490e934accf371af6bc745393cf3c2c5c4f25d')
+noextract=('venus-protocol-v1.1.3.tar.gz' 'bitflags-2.9.1.tar.gz' 'cfg-if-1.0.0.tar.gz' 'equivalent-1.0.1.tar.gz' 'errno-0.3.12.tar.gz' 'hashbrown-0.14.1.tar.gz' 'indexmap-2.2.6.tar.gz' 'libc-0.2.185.tar.gz' 'log-0.4.27.tar.gz' 'mach2-0.7.0.tar.gz' 'once_cell-1.8.0.tar.gz' 'paste-1.0.14.tar.gz' 'pest-2.8.0.tar.gz' 'pest_derive-2.8.0.tar.gz' 'pest_generator-2.8.0.tar.gz' 'pest_meta-2.8.0.tar.gz' 'proc-macro2-1.0.86.tar.gz' 'quote-1.0.35.tar.gz' 'remain-0.2.12.tar.gz' 'roxmltree-0.20.0.tar.gz' 'rustc-hash-2.1.1.tar.gz' 'rustix-1.1.4.tar.gz' 'syn-2.0.87.tar.gz' 'thiserror-2.0.11.tar.gz' 'thiserror-impl-2.0.11.tar.gz' 'ucd-trie-0.1.6.tar.gz' 'unicode-ident-1.0.12.tar.gz' 'windows-link-0.2.0.tar.gz' 'windows-sys-0.61.1.tar.gz' 'xml-1.2.1.tar.gz' 'zerocopy-0.8.13.tar.gz' 'zerocopy-derive-0.8.13.tar.gz')
+
+prepare() {
+  [[ $(git -C mesa-source rev-parse HEAD) == 524105acd30b58c7581ae7e0a1920e5775f9f792 ]]
+  [[ -z $(git -C mesa-source status --porcelain --untracked-files=all --ignored=matching) ]]
+  mkdir -p mesa-source/subprojects/packagecache
+  if [[ ! -d mesa-source/subprojects/venus-protocol-1.1.3 ]]; then
+    tar -xzf "$srcdir/venus-protocol-v1.1.3.tar.gz" -C mesa-source/subprojects
+    mv mesa-source/subprojects/venus-protocol-v1.1.3 mesa-source/subprojects/venus-protocol-1.1.3
+  fi
+  cp "$srcdir"/*.tar.gz mesa-source/subprojects/packagecache/
+  cd mesa-source
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    src="${src%.zst}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    patch -Np1 < "../$src"
+  done
+
+  # Include package release in version string so Chromium invalidates
+  # its GPU cache; otherwise it can cause pages to render incorrectly.
+  # https://bugs.launchpad.net/ubuntu/+source/chromium-browser/+bug/2020604
+  echo "$_pkgver-arch$pkgrel" >VERSION
+}
+
+
+meson_build() {
+  # We've gotten a report that enabling LTO for mesa breaks some games. See
+  # https://bugzilla.redhat.com/show_bug.cgi?id=1862771 for details.
+  # Disable LTO for now (b_lto)
+  meson setup mesa-source $BUILDDIR $CROSS \
+    --prefix=/usr \
+    --libdir=$LIBDIR \
+    --libexecdir=$LIBDIR \
+    --sbindir=bin \
+    --buildtype=release \
+    -Db_ndebug=true \
+    -Db_lto=false \
+    -Dplatforms=x11,wayland \
+    -Dgallium-drivers=llvmpipe,virgl,asahi,zink \
+    -Dgallium-va=enabled \
+    -Dgallium-mediafoundation=disabled \
+    -Dteflon=$TEFLON \
+    -Dgallium-rusticl=true \
+    -Dvulkan-drivers=swrast,virtio,asahi \
+    -Dvulkan-layers=device-select,anti-lag \
+    -Dgles1=enabled \
+    -Dgles2=enabled \
+    -Dopengl=true \
+    -Dgbm=enabled \
+    -Dglx=dri \
+    -Degl=enabled \
+    -Dglvnd=enabled \
+    -Dintel-rt=disabled \
+    -Dmicrosoft-clc=disabled \
+    -Dllvm=enabled \
+    -Dshared-llvm=enabled \
+    -Dvalgrind=disabled \
+    -Dbuild-tests=false \
+    -Dandroid-libbacktrace=disabled \
+    -Dspirv-tools=enabled \
+    -Dglx-read-only-text=$GLX_READ_ONLY_TEXT
+
+  # Print config
+  meson configure --no-pager $BUILDDIR
+
+  meson compile -C $BUILDDIR -j "${OMARCHY_BUILD_JOBS:-10}"
+
+  # fake installation to be seperated into packages
+  # outside of fakeroot but mesa doesn't need to chown/mod
+  DESTDIR="${srcdir}/fakeinstall" meson install -C $BUILDDIR
+}
+
+build() {
+  # Build only minimal debug info to reduce size
+  CFLAGS+=' -g1'
+  CXXFLAGS+=' -g1'
+  CROSS=''
+  LIBDIR=lib
+  TEFLON='true'
+  GLX_READ_ONLY_TEXT='false'
+  BUILDDIR=build
+
+  meson_build
+}
+
+_install() {
+  local src f dir
+  for src; do
+    f="${src#fakeinstall/}"
+    # If $f contains no slash (=directly in the root), then return empty string, otherwise parent folder (removing last /*)
+    dir="${pkgdir}/$([[ "$f" == */* ]] && printf "%s" "${f%/*}" || printf "")"
+    install -m755 -d "${dir}"
+    mv -v "${src}" "${dir}/"
+  done
+}
+
+create_overlay() {
+  OVERLAY_NAME=$1
+
+  # likewise glvnd
+  rm -vf fakeinstall/usr/$LIBDIR/libGLX_mesa.so
+  rm -vf fakeinstall/usr/$LIBDIR/libEGL_mesa.so
+  # XXX can we just not build this
+  rm -vf fakeinstall/usr/$LIBDIR/libGLES*
+
+  # glvnd needs a default provider for indirect rendering where it cannot
+  # determine the vendor
+  ln -s /usr/$LIBDIR/libGLX_mesa.so.0 fakeinstall/usr/$LIBDIR/libGLX_system.so.0
+
+  mkdir -p fexov
+
+  # Note: In order to effectively white-out the underlying RootFS Mesa's
+  # drivers, we install files into alternately named sub-directories and
+  # then symlink them to the original name. This hides the entire original
+  # directory in the underlying RootFS.
+
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/" \
+    fakeinstall/usr/$LIBDIR/libgallium-*.so
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/ovl_dri/" \
+    fakeinstall/usr/$LIBDIR/dri/libdril_dri.so
+  ln -s libdril_dri.so "fexov/usr/$LIBDIR/ovl_dri/apple_dri.so"
+  ln -s libdril_dri.so "fexov/usr/$LIBDIR/ovl_dri/asahi_dri.so"
+  ln -s ovl_dri "fexov/usr/$LIBDIR/dri"
+
+  install -Dpm0644 -t "fexov/usr/share/drirc.d/" \
+    fakeinstall/usr/share/drirc.d/00-mesa-defaults.conf \
+    fakeinstall/usr/share/drirc.d/00-asahi-defaults.conf \
+    fakeinstall/usr/share/drirc.d/00-hk-defaults.conf
+
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/" \
+    fakeinstall/usr/$LIBDIR/libEGL_mesa.so.0.0.0 \
+    fakeinstall/usr/$LIBDIR/libGLX_mesa.so.0.0.0
+  ln -s libEGL_mesa.so.0.0.0 "fexov/usr/$LIBDIR/libEGL_mesa.so.0"
+  ln -s libGLX_mesa.so.0.0.0 "fexov/usr/$LIBDIR/libGLX_mesa.so.0"
+  ln -s libGLX_mesa.so.0 "fexov/usr/$LIBDIR/libGLX_system.so.0"
+
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/" \
+    fakeinstall/usr/$LIBDIR/libRusticlOpenCL.so.1.0.0
+  ln -s libRusticlOpenCL.so.1.0.0 fexov/usr/$LIBDIR/libRusticlOpenCL.so.1
+  install -Dpm0644 -t "fexov/etc/OpenCL/ovl_vendors/" \
+    fakeinstall/etc/OpenCL/vendors/rusticl.icd
+  ln -s ovl_vendors "fexov/etc/OpenCL/vendors"
+
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/" \
+    fakeinstall/usr/$LIBDIR/libvulkan_asahi.so \
+    fakeinstall/usr/$LIBDIR/libVkLayer_MESA_device_select.so \
+    fakeinstall/usr/$LIBDIR/libVkLayer_MESA_anti_lag.so
+
+  install -Dpm0644 -t "fexov/usr/share/vulkan/ovl_icd.d/" \
+    fakeinstall/usr/share/vulkan/icd.d/asahi_icd.*.json
+  install -Dpm0644 -t "fexov/usr/share/vulkan/implicit_layer.d/" \
+    fakeinstall/usr/share/vulkan/implicit_layer.d/VkLayer_MESA_device_select.json \
+    fakeinstall/usr/share/vulkan/implicit_layer.d/VkLayer_MESA_anti_lag.json
+  ln -s ovl_icd.d "fexov/usr/share/vulkan/icd.d"
+
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/" \
+    fakeinstall/usr/$LIBDIR/libgbm.so.1.0.0
+  ln -s libgbm.so.1.0.0 "fexov/usr/$LIBDIR/libgbm.so.1"
+  install -Dpm0755 -s -t "fexov/usr/$LIBDIR/gbm/" \
+    fakeinstall/usr/$LIBDIR/gbm/dri_gbm.so
+
+  install -Dpm0644 -t "fexov/usr/share/glvnd/ovl_egl_vendor.d/" \
+    fakeinstall/usr/share/glvnd/egl_vendor.d/50_mesa.json
+  ln -s ovl_egl_vendor.d "fexov/usr/share/glvnd/egl_vendor.d"
+
+  # Hack to work around libcapsule bug:
+  # https://github.com/ValveSoftware/steam-runtime/issues/704
+  #
+  # The FEX overlays do not update ld.so.cache, so ld.so falls back
+  # to the system library paths. This works fine for ld.so since
+  # the dependencies are indeed in /usr/$LIBDIR[64], but libcapsule
+  # has the fallback harcoded to /lib:/usr/$LIBDIR, which fails on
+  # x86_64 systems.
+  patchelf --add-rpath /usr/$LIBDIR "fexov/usr/$LIBDIR/gbm/dri_gbm.so"
+  patchelf --add-rpath /usr/$LIBDIR "fexov/usr/$LIBDIR/libGLX_mesa.so.0.0.0"
+  patchelf --add-rpath /usr/$LIBDIR "fexov/usr/$LIBDIR/libEGL_mesa.so.0.0.0"
+  patchelf --add-rpath /usr/$LIBDIR "fexov/usr/$LIBDIR/libRusticlOpenCL.so.1.0.0"
+
+  #dnl erofs  ----------------------------
+  mkfs.erofs -z lz4 $OVERLAY_NAME fexov
+}
+
+package_mesa-fex-emu-overlay-x86_64() {
+  pkgdesc="Mesa FEX-Emu overlay for x86_64 guests"
+  arch=(any)
+  provides=('mesa-fex-emu-overlay-x86_64')
+  conflicts=('mesa-asahi-fex-emu-overlay-x86_64')
+  replaces=('mesa-asahi-fex-emu-overlay-x86_64')
+
+  rm -rf fexov
+  LIBDIR=lib
+  create_overlay mesa-x86_64.erofs
+  install -Dpm0644 -t ${pkgdir}/usr/share/fex-emu/overlays/ mesa-x86_64.erofs
+
+  install -Dpm0755 -t ${pkgdir}/usr/share/doc/mesa-fex-emu-overlay-x86_64/ Mesa-MLAA-License-Clarification-Email.txt
+}
+
+package_mesa-fex-emu-overlay-i386() {
+  pkgdesc="Mesa FEX-Emu overlay for i386 guests"
+  arch=(any)
+  provides=('mesa-fex-emu-overlay-i386')
+  conflicts=('mesa-asahi-fex-emu-overlay-i386')
+  replaces=('mesa-asahi-fex-emu-overlay-i386')
+
+  rm -rf buildx && mkdir -p buildx
+  rm -rf fexov
+  rm -rf fakeinstall
+  rm -rf ${pkgdir:?}/*
+
+  # Work around meson cross-build issue (32-bit build only)
+  # https://gitlab.archlinux.org/archlinux/packaging/packages/lib32-mesa/-/blob/1-24.3.3-2/PKGBUILD?ref_type=tags#L189
+  # https://bugs.gentoo.org/939803
+  # https://gitweb.gentoo.org/repo/gentoo.git/commit/?id=f3caa4db8e65ccf767a5b0b893ca3a28c1e39bea
+  # https://github.com/Frogging-Family/mesa-git/pull/50
+  export BINDGEN_EXTRA_CLANG_ARGS="-m32"
+
+  CFLAGS+=' -g1 -m32 -march=i686'
+  CXXFLAGS+=' -g1 -m32 -march=i686'
+  CROSS='--cross-file=../cross_x86'
+  LIBDIR=lib32
+  TEFLON='false'
+  GLX_READ_ONLY_TEXT='true'
+  BUILDDIR=buildx
+
+  meson_build
+
+  create_overlay mesa-i386.erofs
+  install -Dpm0644 -t ${pkgdir}/usr/share/fex-emu/overlays/ mesa-i386.erofs
+
+  install -Dpm0755 -t ${pkgdir}/usr/share/doc/mesa-fex-emu-overlay-i386/ Mesa-MLAA-License-Clarification-Email.txt
+}
+
+package_mesa-dummy() {
+  pkgdesc="Dummy package satisfying mesa dependencies inside the FEX rootfs"
+  arch=(any)
+  provides=(
+    'mesa' 'lib32-mesa'
+    'opengl-driver' 'lib32-opengl-driver'
+    'vulkan-driver' 'lib32-vulkan-driver'
+    'mesa-libgl' 'lib32-mesa-libgl'
+    'vulkan-swrast' 'lib32-vulkan-swrast'
+    'opencl-driver' 'lib32-opencl-driver'
+    'opencl-rusticl-mesa' 'lib32-opencl-rusticl-mesa'
+    'vulkan-virtio' 'lib32-vulkan-virtio'
+  )
+  #makedepends=() # not allowed to set here
+  depends=()
+  optdepends=()
+}

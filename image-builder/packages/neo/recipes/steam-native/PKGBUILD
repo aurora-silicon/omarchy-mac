@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MIT
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+pkgname=aurora-steam-native
+pkgver=0.1.0
+pkgrel=2
+pkgdesc='Native ARM64 Steam launcher with pinned offline first-launch bootstrap'
+arch=(any)
+url=https://github.com/aurora-silicon/aurora-steam-native
+license=(MIT LGPL-2.1-or-later)
+depends=(bash python coreutils aurora-userpages gtk2)
+optdepends=('FEX-Emu: x86 games through ARM64 Proton' 'vulkan-asahi: native Vulkan driver')
+makedepends=(git)
+source=('steam-native::git+https://github.com/aurora-silicon/aurora-steam-native.git#commit=a1b375b287fe6db4d2e95beb9d945af15b3ef9db'
+        steam-first-launch.py offline-policy.json)
+sha256sums=(SKIP
+  'c08a6d0f89218033c9facb5a3ae05201a8ba50d02174930b204bc2c4d89cddc5'
+  '168294514eb71fe6a3dc7ab48919f5313d9a85f3ac1669de9bb6cc60596f469b'
+)
+package() {
+  install -Dm755 steam-first-launch.py "$pkgdir/usr/lib/aurora-steam-native/steam-first-launch.py"
+  install -Dm644 offline-policy.json "$pkgdir/usr/share/aurora-steam-native/offline-policy.json"
+  printf '#!/bin/bash\nexec /usr/bin/python /usr/lib/aurora-steam-native/steam-first-launch.py "$@"\n' > steam-native4k
+  install -Dm755 steam-native4k "$pkgdir/usr/bin/steam-native4k"
+  cd steam-native
+  install -Dm755 libexec/steam-native4k-launch-loop.sh "$pkgdir/usr/libexec/steam-native4k-launch-loop.sh"
+  install -Dm755 bin/steam-native4k "$pkgdir/usr/share/aurora-steam-native/bin/steam-native4k"
+  install -Dm755 libexec/steam-native4k-launch-loop.sh "$pkgdir/usr/share/aurora-steam-native/libexec/steam-native4k-launch-loop.sh"
+  install -Dm755 install-steam-arm64.py "$pkgdir/usr/share/aurora-steam-native/install-steam-arm64.py"
+  printf '#!/bin/bash\nexec /usr/bin/python /usr/share/aurora-steam-native/install-steam-arm64.py "$@"\n' > "$pkgdir/usr/bin/install-steam-arm64.py"
+  chmod 755 "$pkgdir/usr/bin/install-steam-arm64.py"
+  cp -a share proton "$pkgdir/usr/share/aurora-steam-native/"
+  install -Dm644 share/applications/steam-native-arm64.desktop "$pkgdir/usr/share/applications/steam-native-arm64.desktop"
+  install -Dm644 LICENSES/MIT.txt "$pkgdir/usr/share/licenses/$pkgname/MIT.txt"
+  install -Dm644 LICENSES/LGPL-2.1-or-later.txt "$pkgdir/usr/share/licenses/$pkgname/LGPL-2.1-or-later.txt"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

@@ -1,0 +1,29 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+# SPDX-License-Identifier: MIT
+pkgname=aurora-userpages
+pkgver=1.d588f760941e
+pkgrel=1
+pkgdesc='Public Aurora per-process ARM64 userspace page-size launcher'
+arch=(aarch64)
+url=https://github.com/aurora-silicon/linux
+license=(GPL-2.0-only)
+depends=('glibc>=2.34')
+makedepends=(git make gcc)
+source=('linux::git+https://github.com/aurora-silicon/linux.git#commit=d588f760941edaa2cbf4a0a9ec12a47027581535')
+sha256sums=(SKIP)
+prepare() {
+  [[ $(git -C linux rev-parse HEAD) == d588f760941edaa2cbf4a0a9ec12a47027581535 ]]
+  [[ -z $(git -C linux status --porcelain --untracked-files=all --ignored=matching) ]]
+}
+build() {
+  make -C linux/tools/aurora-userpages
+}
+check() {
+  linux/tools/aurora-userpages/userpages --help
+  # Unsupported prctl must fail without executing the requested child.
+  if linux/tools/aurora-userpages/userpages invalid /usr/bin/true; then return 1; fi
+}
+package() {
+  install -Dm755 linux/tools/aurora-userpages/userpages "$pkgdir/usr/bin/userpages"
+  install -Dm644 linux/LICENSES/preferred/GPL-2.0 "$pkgdir/usr/share/licenses/$pkgname/GPL-2.0"
+}

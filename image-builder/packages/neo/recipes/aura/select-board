@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Sourced by the package-owned update-m1n1 configuration and boot checker.
+# Package ownership selects the installed kernel, independent of its suffix.
+export LC_ALL=C
+aurora_board=${OMARCHY_M1N1_BOARD:-}
+aurora_compatible=
+if [ -r /proc/device-tree/compatible ]; then
+  aurora_compatible=$(tr '\000\n' '  ' </proc/device-tree/compatible)
+fi
+if [ -n "$aurora_board" ]; then
+  if [ -d /run/systemd/system ] || [ "$aurora_board" != j700 ] || ! grep -qx 'platform=apple-silicon' /var/lib/omarchy/image/target || ! grep -qx 'board=apple,j700' /var/lib/omarchy/image/target; then
+    echo 'update-m1n1: invalid explicit Neo image context; boot image unchanged' >&2
+    return 1
+  fi
+else
+  case " $aurora_compatible " in
+    *' apple,j614s '*) aurora_board=unsupported ;;
+    *' apple,j700 '*) aurora_board=j700 ;;
+    *) aurora_board=unsupported ;;
+  esac
+fi
+if [ "$aurora_board" != j700 ]; then
+  echo 'update-m1n1: this candidate requires apple,j700; boot image unchanged' >&2
+  return 1
+fi
+
+# The public overlay helper selects only -ARCH kernels. Fail closed until it
+# can apply overlays to this kernel release without losing their contents.
+if [ -d /usr/lib/omarchy-mac-boot/dtb-overlays ] && find /usr/lib/omarchy-mac-boot/dtb-overlays -name '*.dtbo' -print -quit | grep -q .; then
+  echo 'update-m1n1: Neo DTB overlays require qualification; boot image unchanged' >&2
+  return 1
+fi
+M1N1=/usr/lib/asahi-boot/m1n1.bin
+U_BOOT=/usr/lib/asahi-boot/u-boot-nodtb.bin
+if [ "$(pacman -Qoq "$M1N1")" != m1n1-aurora ] || [ "$(pacman -Qoq "$U_BOOT")" != uboot-asahi ]; then
+  echo 'update-m1n1: boot component ownership mismatch; boot image unchanged' >&2
+  return 1
+fi
+DTBS=$(pacman -Qlq linux-aurora | grep '^/usr/lib/modules/[^/]*/dtbs/[^/]*\.dtb$' | sort)
+if [ -z "$DTBS" ]; then
+  echo 'update-m1n1: installed linux-aurora has no device trees; boot image unchanged' >&2
+  return 1
+fi
+aurora_modules=
+aurora_j700=
+for aurora_dtb in $DTBS; do
+  if [ ! -f "$aurora_dtb" ] || [ -L "$aurora_dtb" ]; then
+    echo 'update-m1n1: missing or linked package DTB; boot image unchanged' >&2
+    return 1
+  fi
+  aurora_parent=${aurora_dtb%/dtbs/*}
+  if [ -n "$aurora_modules" ] && [ "$aurora_modules" != "$aurora_parent" ]; then
+    echo 'update-m1n1: mixed kernel DTB releases; boot image unchanged' >&2
+    return 1
+  fi
+  aurora_modules=$aurora_parent
+  case "$aurora_dtb" in */t8140-j700.dtb) aurora_j700=$aurora_dtb ;; esac
+done
+if [ "$(cat "$aurora_modules/pkgbase")" != linux-aurora ] || [ -z "$aurora_j700" ] || [ ! -f "$aurora_modules/vmlinuz" ]; then
+  echo 'update-m1n1: incomplete Neo kernel closure; boot image unchanged' >&2
+  return 1
+fi
+case " $(fdtget "$aurora_j700" / compatible) " in
+  *' apple,j700 '*) ;;
+  *) echo 'update-m1n1: DTB does not identify apple,j700; boot image unchanged' >&2; return 1 ;;
+esac
+unset aurora_board aurora_compatible aurora_modules aurora_j700 aurora_dtb aurora_parent

@@ -1,0 +1,16 @@
+[Trigger]
+Operation = Remove
+Type = Package
+Target = linux-aurora
+Target = m1n1-aurora
+Target = uboot-asahi
+Target = asahi-scripts
+Target = omarchy-mac-boot
+Target = aurora-neo-boot
+
+[Action]
+Description = Protecting the active Neo boot package closure...
+When = PreTransaction
+Exec = /usr/lib/aurora-boot/pre-remove
+NeedsTargets
+AbortOnFail
