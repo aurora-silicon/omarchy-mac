@@ -2,7 +2,7 @@
 # Maintainer: Ryan Murray <ryan@aurorasilicon.org>
 pkgname=uboot-asahi
 pkgver=2026.10.14.aurora0cb6fed6
-pkgrel=1
+pkgrel=2
 pkgdesc='Public Aurora U-Boot candidate for Apple Silicon (hardware qualification pending)'
 arch=('aarch64')
 url='https://github.com/aurora-silicon/u-boot'
@@ -25,6 +25,17 @@ package() {
   cd uboot
   install -Dm644 build/u-boot-nodtb.bin "$pkgdir/usr/lib/asahi-boot/u-boot-nodtb.bin"
   install -Dm644 build/.config "$pkgdir/usr/share/doc/$pkgname/build.config"
+  local dtb model count=0
+  for dtb in build/dts/upstream/src/arm64/apple/*.dtb; do
+    model=$(fdtget "$dtb" / model)
+    case "$model" in
+      'Apple Mac'*|'Apple iMac'*)
+        install -Dm644 "$dtb" "$pkgdir/usr/lib/asahi-boot/dtb/${dtb##*/}"
+        count=$((count + 1))
+        ;;
+    esac
+  done
+  ((count > 0)) || { printf '%s\n' 'No compiled Apple Silicon Mac device trees' >&2; return 1; }
   install -Dm644 Licenses/README "$pkgdir/usr/share/licenses/$pkgname/README"
   cp -a Licenses "$pkgdir/usr/share/licenses/$pkgname/upstream"
   printf '%s\n' '0cb6fed6a10512d1013a4a80b6d83c3d56140f2f' > "$pkgdir/usr/share/doc/$pkgname/source-revision"

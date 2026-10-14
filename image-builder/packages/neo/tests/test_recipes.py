@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -235,6 +236,53 @@ class RecipeContractTests(unittest.TestCase):
                     text = file.read_text()
                     self.assertNotIn('/srv/aurora/', text, str(file))
                     self.assertNotIn('/work/evidence/', text, str(file))
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'Arch package() requires GNU install')
+class UBootDeviceTreePackagingTests(unittest.TestCase):
+    def package_fixture(self, models):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'uboot'
+            dtbs = source / 'build/dts/upstream/src/arm64/apple'
+            dtbs.mkdir(parents=True)
+            (source / 'build/u-boot-nodtb.bin').write_bytes(b'unchanged boot payload')
+            (source / 'build/.config').write_text('CONFIG_OF_BOARD=y\n')
+            (source / 'Licenses').mkdir()
+            (source / 'Licenses/README').write_text('upstream license fixture\n')
+            for name, model in models.items():
+                (dtbs / name).write_text(model + '\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            reader = tools / 'fdtget'
+            reader.write_text('#!/bin/sh\ncat "$1"\n')
+            reader.chmod(0o755)
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'], pkgdir=str(root / 'pkg'))
+            result = subprocess.run(['bash', '-e', '-c', 'source "$1"; package', 'fixture',
+                                     str(ROOT / 'recipes/uboot/PKGBUILD')], cwd=root, env=env,
+                                    text=True, capture_output=True)
+            selected = sorted(p.name for p in (root / 'pkg/usr/lib/asahi-boot/dtb').glob('*.dtb'))
+            if result.returncode == 0:
+                self.assertEqual((root / 'pkg/usr/lib/asahi-boot/u-boot-nodtb.bin').read_bytes(), b'unchanged boot payload')
+            return result, selected
+
+    def test_only_compiled_apple_silicon_mac_models_are_packaged(self):
+        result, selected = self.package_fixture({'t8103-j274.dtb': 'Apple Mac mini (M1, 2020)',
+            't8103-j456.dtb': 'Apple iMac (M1, 2021)', 't8012-j132.dtb': 'Apple T2 MacBookPro15,2',
+            's8000-n71.dtb': 'Apple iPhone 6s'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(selected, ['t8103-j274.dtb', 't8103-j456.dtb'])
+
+    def test_no_compiled_mac_model_refuses_package(self):
+        result, selected = self.package_fixture({'s8000-n71.dtb': 'Apple iPhone 6s'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No compiled Apple Silicon Mac device trees', result.stderr)
+        self.assertEqual(selected, [])
+
+    def test_missing_compiled_device_trees_refuses_package(self):
+        result, selected = self.package_fixture({})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(selected, [])
 
 
 if __name__ == '__main__':

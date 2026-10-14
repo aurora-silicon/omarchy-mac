@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MIT
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+pkgname=asahi-bless
+pkgver=0.4.4
+pkgrel=1
+pkgdesc='Public Asahi boot selection with arbitrary NVRAM bank support'
+arch=(aarch64)
+url=https://github.com/AsahiLinux/asahi-nvram
+license=(MIT)
+depends=(glibc libgcc)
+makedepends=(git rust cargo)
+options=('!lto' '!debug' '!strip')
+_commit=3df52c939fbcedb03344212090d25c98afe4dec1
+source=("asahi-nvram::git+https://github.com/AsahiLinux/asahi-nvram.git#commit=$_commit" readonly-bank.rs)
+sha256sums=(SKIP '50357b316b47f6fcb6fc28c1c30fd4f83c893493c72574862ba0a454aa439e36')
+prepare() {
+  [[ $(git -C asahi-nvram rev-parse HEAD) == "$_commit" ]]
+  [[ -z $(git -C asahi-nvram status --porcelain --untracked-files=all --ignored=matching) ]]
+  cargo fetch --locked --manifest-path asahi-nvram/Cargo.toml
+}
+build() {
+  CARGO_TARGET_DIR="$srcdir/build" cargo build --release --frozen --manifest-path asahi-nvram/Cargo.toml -p asahi-bless
+}
+check() {
+  CARGO_TARGET_DIR="$srcdir/build" cargo test --frozen --manifest-path asahi-nvram/Cargo.toml -p apple-nvram
+  local libraries=("$srcdir"/build/debug/deps/libapple_nvram-*.rlib)
+  ((${#libraries[@]} == 1))
+  rustc --edition=2021 "$srcdir/readonly-bank.rs" --extern "apple_nvram=${libraries[0]}" \
+    -L "dependency=$srcdir/build/debug/deps" -o "$srcdir/build/readonly-bank"
+  "$srcdir/build/readonly-bank"
+}
+package() {
+  install -Dm755 build/release/asahi-bless "$pkgdir/usr/bin/asahi-bless"
+  install -Dm644 asahi-nvram/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 asahi-nvram/Cargo.lock "$pkgdir/usr/share/doc/$pkgname/Cargo.lock"
+  printf '%s\n' "$_commit" > source-revision
+  install -Dm644 source-revision "$pkgdir/usr/share/doc/$pkgname/source-revision"
+}

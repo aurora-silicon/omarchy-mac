@@ -4,6 +4,10 @@ The runtime pair derives from omacom/omarchy-pkgs c33fd8c2547896b0c9ff355fd8e0d1
 
 Aura c4331a90ef324eab33d34d1515d7e42748a293ab and U-Boot 0cb6fed6a10512d1013a4a80b6d83c3d56140f2f are public aurora-silicon sources. The package-owned Neo selector/removal hooks retain their original GPL-2.0-only notices. Their current authored recipe/support sources must be published with this distribution, not represented as unchanged upstream code.
 
+U-Boot package release 2 includes its compiled upstream Apple Silicon Mac device trees, selected by each root model. These establish the package's model inventory and must all be covered by the selected Linux package. The generic U-Boot binary remains unchanged; Neo uses Aura's supplied public J700 Linux tree, with firmware-dependent boot fixups still requiring hardware qualification.
+
+asahi-bless 0.4.4 is built from public AsahiLinux/asahi-nvram 3df52c939fbcedb03344212090d25c98afe4dec1, including arbitrary NVRAM bank support. Its library fixture exercises synthetic valid and invalid 16/29-bank data without reading or writing hardware NVRAM.
+
 The kernel is aurora-silicon/linux 5f6c917f2c824b3c87497e8bd7dd92a6de0efe60. Current artifacts use a qualified incremental build seeded by cd46babc03d1193d2bdaa23de076a185bc602b57, with exact public5f6 SEP and built-in PMGR sources rebuilt and the J700 DTB updated. This is not a clean or bit-identical reproduction claim. Build configuration is included; Linux COPYING/LICENSES come from the pinned source.
 
 FEX source and source-only dependency commits/trees are in source-lock.json. Public development RPM inputs are in guest-rpms.lock.json. These are build-only inputs, not guest runtime authority or vendor-client licensing. License notices are individually pinned. The optional reviewed FEX package reuse digest is in reuse.lock.json; its public URL must be completed by the publisher before reuse is enabled.

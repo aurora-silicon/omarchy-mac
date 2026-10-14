@@ -14,6 +14,7 @@ packages: without them a pacman -Syu can downgrade and break the Mac.
 
   test_image_pin.py names IMPORT_JSON              prints the pinned packages
   test_image_pin.py render TEMPLATE IMPORT_JSON    prints the installed pacman.conf
+  test_image_pin.py render-apple TEMPLATE IMPORT_JSON  also supplies the required public Asahi repository
 """
 import json
 from pathlib import Path
@@ -21,6 +22,7 @@ import sys
 
 MARK = "# Test image only (omarchy-mac-installer image-builder): keeps the candidate set's runtime,"
 REASON = "# whose version sorts below the channel's. Keep these three lines: the channel has no Mac packages yet, so removing them can downgrade and break this Mac."
+ASAHI_ALARM_SERVER = "https://github.com/asahi-alarm/asahi-alarm/releases/download/$arch"
 
 
 def pinned(summary: dict) -> list[str]:
@@ -30,8 +32,18 @@ def pinned(summary: dict) -> list[str]:
                   if p.get("origin") == "commit" or p.get("origin", "").startswith("platform "))
 
 
-def render(template: bytes, names: list[str]) -> bytes:
+def render(template: bytes, names: list[str], *, ensure_asahi: bool = False) -> bytes:
     """TEMPLATE with the pin as the first lines of its [options] section."""
+    if ensure_asahi:
+        # Older public platform templates predate the required Asahi packages.
+        # Keep their repository order and normal signature policy, adding only
+        # the maintained public repository when it is absent.
+        sections = [line.strip() for line in template.decode().splitlines()
+                    if line.strip().startswith("[") and not line.lstrip().startswith("#")]
+        if sections.count("[asahi-alarm]") > 1:
+            raise ValueError("the pacman template repeats [asahi-alarm]")
+        if "[asahi-alarm]" not in sections:
+            template = template.rstrip(b"\n") + ("\n\n[asahi-alarm]\nServer = " + ASAHI_ALARM_SERVER + "\n").encode()
     if not names:
         return template
     lines = template.decode().splitlines(keepends=True)
@@ -46,9 +58,9 @@ def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "names":
         print(" ".join(pinned(json.loads(Path(argv[1]).read_text()))))
         return 0
-    if len(argv) == 3 and argv[0] == "render":
+    if len(argv) == 3 and argv[0] in ("render", "render-apple"):
         names = pinned(json.loads(Path(argv[2]).read_text()))
-        sys.stdout.buffer.write(render(Path(argv[1]).read_bytes(), names))
+        sys.stdout.buffer.write(render(Path(argv[1]).read_bytes(), names, ensure_asahi=argv[0] == "render-apple"))
         return 0
     print(__doc__, file=sys.stderr)
     return 64

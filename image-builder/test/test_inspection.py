@@ -738,6 +738,25 @@ class TestImagePinTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "options"):
             fixtures.test_image_pin.render(b"[core]\n", ["omarchy"])
 
+    def test_apple_adds_public_asahi_without_changing_signature_policy(self):
+        pin = fixtures.test_image_pin
+        template = self.TEMPLATE.replace(b"Architecture = auto", b"Architecture = auto\nSigLevel = Required DatabaseOptional")
+        result = pin.render(template, [], ensure_asahi=True)
+        self.assertTrue(result.startswith(template))
+        self.assertEqual(result.count(b"[asahi-alarm]"), 1)
+        self.assertIn(("Server = " + pin.ASAHI_ALARM_SERVER).encode(), result)
+        self.assertNotIn(b"TrustAll", result)
+        self.assertNotIn(b"file://", result)
+        self.assertEqual(pin.render(result, [], ensure_asahi=True), result)
+
+    def test_apple_preserves_existing_asahi_repository_bytes(self):
+        template = self.TEMPLATE + b"\n[asahi-alarm]\nServer = https://github.com/asahi-alarm/asahi-alarm/releases/download/aarch64\n"
+        self.assertEqual(fixtures.test_image_pin.render(template, [], ensure_asahi=True), template)
+
+    def test_apple_refuses_duplicate_asahi_sections(self):
+        with self.assertRaisesRegex(ValueError, "repeats"):
+            fixtures.test_image_pin.render(self.TEMPLATE + b"[asahi-alarm]\n[asahi-alarm]\n", [], ensure_asahi=True)
+
 
 class NeoStage1InspectionTest(unittest.TestCase):
     def test_common_stage1_exact_bytes_and_unfilled_role(self):

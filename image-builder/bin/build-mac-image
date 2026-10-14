@@ -985,7 +985,7 @@ write_installed_config() {
   [[ -f $mirrorlist ]] || mirrorlist=$templates/mirrorlist-aarch64
   [[ -f $repositories/pacman-$channel.conf ]] || fail "the image ships no Apple Silicon pacman configuration for $channel"
   [[ -f $mirrorlist ]] || fail "the runtime ships no aarch64 mirror list for $channel"
-  python3 "$ROOT/builder/test_image_pin.py" render "$repositories/pacman-$channel.conf" "$candidates/import.json" \
+  python3 "$ROOT/builder/test_image_pin.py" render-apple "$repositories/pacman-$channel.conf" "$candidates/import.json" \
     >"$work/pacman.conf" || fail "could not write the test image's pacman configuration"
   install -m 0644 "$work/pacman.conf" "$target/etc/pacman.conf"
   install -D -m 0644 "$mirrorlist" "$target/etc/pacman.d/mirrorlist"

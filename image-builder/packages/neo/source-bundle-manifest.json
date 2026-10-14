@@ -18,8 +18,8 @@
     },
     {
       "path": "ORIGINS.md",
-      "sha256": "624b475a3e9c347f770e5be80e3c38abf143c47a28f146ebd3a15a97b9dc34d2",
-      "bytes": 3320
+      "sha256": "91eb1ba86103bb02c60c6c27350b1c167202a31e1a2a479008f3dd03ab92cb54",
+      "bytes": 3971
     },
     {
       "path": "README.md",
@@ -30,6 +30,21 @@
       "path": "public-reuse-assets.json",
       "sha256": "96490630777a27743cab1c78bfd1ccf8447f34d46be8436c181b7a7e93495a61",
       "bytes": 2578
+    },
+    {
+      "path": "recipes/asahi-bless/BUILD.md",
+      "sha256": "cf8e5bc39e4fa69c94855dce983d60a7ccc83ec46f3e2afe71707335cffeb808",
+      "bytes": 1094
+    },
+    {
+      "path": "recipes/asahi-bless/PKGBUILD",
+      "sha256": "f67dd5720f5ba07207e4b0f4a5300f10d0177aef1c9446dfba85d6da2223e95a",
+      "bytes": 1759
+    },
+    {
+      "path": "recipes/asahi-bless/readonly-bank.rs",
+      "sha256": "50357b316b47f6fcb6fc28c1c30fd4f83c893493c72574862ba0a454aa439e36",
+      "bytes": 691
     },
     {
       "path": "recipes/audio/PKGBUILD",
@@ -60,6 +75,51 @@
       "path": "recipes/aura/select-board",
       "sha256": "91c7b35601a59c69f37de92e92d82cb2ed713f2bb695bc2b5766091ed9ba5479",
       "bytes": 2940
+    },
+    {
+      "path": "recipes/fex/PKGBUILD",
+      "sha256": "076502a8c13043434710e4f479b3e654864f08643152495c8b4be6254ce69f17",
+      "bytes": 3536
+    },
+    {
+      "path": "recipes/fex/development-qualification.json",
+      "sha256": "07918cdeec4dab23b02b81ffadd4ef8ac1e8331653f05aefbda5f84c57c9c3a9",
+      "bytes": 704
+    },
+    {
+      "path": "recipes/fex/guest-rpms.lock.json",
+      "sha256": "9dc32568afc78eedc7ebb5ed764efd713fcd530aebf0c1e8ddee1281e7d63524",
+      "bytes": 39653
+    },
+    {
+      "path": "recipes/fex/license-notices.json",
+      "sha256": "652c41bb657ff25f9025e4fb11743b33122e6c8a56ec0e2b919187b3eb9224e5",
+      "bytes": 5016
+    },
+    {
+      "path": "recipes/fex/reuse.lock.json",
+      "sha256": "d086d930cffe9ca3410febfea721e25bd115c687e909aa99808ed485ac6dd42c",
+      "bytes": 640
+    },
+    {
+      "path": "recipes/fex/source-lock.json",
+      "sha256": "9c6f9286af5ac561fd543589f56ef461b9c21a2e938d1c6e4c62113ee82ad2f2",
+      "bytes": 3494
+    },
+    {
+      "path": "recipes/fex/sources.py",
+      "sha256": "155044d7158ae2591c3bb778f9d4137e544134f801e0f3a58cac483cfa286b7b",
+      "bytes": 6897
+    },
+    {
+      "path": "recipes/fex/x86-32.cmake",
+      "sha256": "a316c4b1b13c2c5786455d37062e986e8efc5dfdcf89aa00d7071a83782a1553",
+      "bytes": 1615
+    },
+    {
+      "path": "recipes/fex/x86-64.cmake",
+      "sha256": "e3bd6e37948a4ee530ff364a8ca4f9d8275640f0c12dbc7d61cd10505bdd81ae",
+      "bytes": 1611
     },
     {
       "path": "recipes/fex-steam/PKGBUILD",
@@ -121,51 +181,6 @@
       "resolved_sha256": "e3bd6e37948a4ee530ff364a8ca4f9d8275640f0c12dbc7d61cd10505bdd81ae",
       "sha256": "b5d46f852313a3a53eac0b9b7bc26c8fcd721b4aa2abef4583bbea86fe709a9d",
       "bytes": 19
-    },
-    {
-      "path": "recipes/fex/PKGBUILD",
-      "sha256": "076502a8c13043434710e4f479b3e654864f08643152495c8b4be6254ce69f17",
-      "bytes": 3536
-    },
-    {
-      "path": "recipes/fex/development-qualification.json",
-      "sha256": "07918cdeec4dab23b02b81ffadd4ef8ac1e8331653f05aefbda5f84c57c9c3a9",
-      "bytes": 704
-    },
-    {
-      "path": "recipes/fex/guest-rpms.lock.json",
-      "sha256": "9dc32568afc78eedc7ebb5ed764efd713fcd530aebf0c1e8ddee1281e7d63524",
-      "bytes": 39653
-    },
-    {
-      "path": "recipes/fex/license-notices.json",
-      "sha256": "652c41bb657ff25f9025e4fb11743b33122e6c8a56ec0e2b919187b3eb9224e5",
-      "bytes": 5016
-    },
-    {
-      "path": "recipes/fex/reuse.lock.json",
-      "sha256": "d086d930cffe9ca3410febfea721e25bd115c687e909aa99808ed485ac6dd42c",
-      "bytes": 640
-    },
-    {
-      "path": "recipes/fex/source-lock.json",
-      "sha256": "9c6f9286af5ac561fd543589f56ef461b9c21a2e938d1c6e4c62113ee82ad2f2",
-      "bytes": 3494
-    },
-    {
-      "path": "recipes/fex/sources.py",
-      "sha256": "155044d7158ae2591c3bb778f9d4137e544134f801e0f3a58cac483cfa286b7b",
-      "bytes": 6897
-    },
-    {
-      "path": "recipes/fex/x86-32.cmake",
-      "sha256": "a316c4b1b13c2c5786455d37062e986e8efc5dfdcf89aa00d7071a83782a1553",
-      "bytes": 1615
-    },
-    {
-      "path": "recipes/fex/x86-64.cmake",
-      "sha256": "e3bd6e37948a4ee530ff364a8ca4f9d8275640f0c12dbc7d61cd10505bdd81ae",
-      "bytes": 1611
     },
     {
       "path": "recipes/firmware-order/PKGBUILD",
@@ -293,6 +308,11 @@
       "bytes": 1063
     },
     {
+      "path": "recipes/runtime/omarchy/PKGBUILD",
+      "sha256": "705b68cd787e262f8a1c51512f06a346be86cd88ebb69ef5a2dc702b929392ef",
+      "bytes": 7043
+    },
+    {
       "path": "recipes/runtime/omarchy-settings/PKGBUILD",
       "sha256": "607c7a67d05eb46db36d9cfb75600e4f52a863c551841f46637bc7aff86f3f21",
       "bytes": 26817
@@ -301,11 +321,6 @@
       "path": "recipes/runtime/omarchy-settings/omarchy-settings.install",
       "sha256": "5714b40b50d8a50e8f04f2f8379c138339bbd8a7bf72c3e5afeb194740240fde",
       "bytes": 2950
-    },
-    {
-      "path": "recipes/runtime/omarchy/PKGBUILD",
-      "sha256": "705b68cd787e262f8a1c51512f06a346be86cd88ebb69ef5a2dc702b929392ef",
-      "bytes": 7043
     },
     {
       "path": "recipes/speaker/50-j700-guard.conf",
@@ -349,8 +364,8 @@
     },
     {
       "path": "recipes/uboot/PKGBUILD",
-      "sha256": "0ff7f3ce41ee772410f73463938966d7b0e94d23baf7e309987c25e863cc0a7c",
-      "bytes": 1406
+      "sha256": "4e13614921249f5b9325fa44b0848ff79b6da1358d057394328bdcbb0e082896",
+      "bytes": 1807
     },
     {
       "path": "recipes/upower/PKGBUILD",
@@ -399,8 +414,8 @@
     },
     {
       "path": "tests/test_recipes.py",
-      "sha256": "e2b64c35ecc7d1631d6481ebd627f0f8220b315bfc81ad67f3cdefc90bfc0f03",
-      "bytes": 13740
+      "sha256": "e6ec3818ae6436d8a29f54c1fbb7aa92af4ee873b04de7d0003de4e786e8a961",
+      "bytes": 16386
     }
   ]
 }

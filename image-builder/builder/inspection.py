@@ -610,7 +610,7 @@ def check_pacman_config(root: Path, channel: str, candidates: Candidates) -> str
     kind, template, mirrorlist = pacman_templates(root, channel)
     require(template.is_file(), f"the image ships no Apple Silicon pacman configuration for {channel}")
     pinned = test_image_pin.pinned(candidates.summary)
-    require((root / "etc/pacman.conf").read_bytes() == test_image_pin.render(limine.regular(template), pinned),
+    require((root / "etc/pacman.conf").read_bytes() == test_image_pin.render(limine.regular(template), pinned, ensure_asahi=True),
             f"/etc/pacman.conf is not {kind} {channel} configuration"
             + (" with the test image's pin" if pinned else ""))
     require((root / "etc/pacman.d/mirrorlist").read_bytes() == limine.regular(mirrorlist),
