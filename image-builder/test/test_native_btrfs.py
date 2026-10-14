@@ -20,7 +20,7 @@ class NativeBtrfsTests(unittest.TestCase):
         self.source.mkdir()
         self.header = b'\x7fELF\x02\x01' + bytes(12) + b'\x3e\x00' + bytes(44)
         self.files = {}
-        for name in ('btrfs', 'ld-linux-x86-64.so.2', 'libc.so.6'):
+        for name in ('btrfs', 'snapper', 'ld-linux-x86-64.so.2', 'libc.so.6'):
             (self.source / name).write_bytes(self.header)
             self.files[name] = hashlib.sha256(self.header).hexdigest()
         self.write_receipt()
@@ -35,7 +35,13 @@ class NativeBtrfsTests(unittest.TestCase):
         module.freeze(self.source, target, self.sha)
         self.assertEqual(set(p.name for p in target.iterdir()), {'receipt.json', 'bin', *self.files})
         module.validate(target, self.sha)
-        self.assertIn('exec /native-btrfs/ld-linux-x86-64.so.2', (target / 'bin/btrfs').read_text())
+        self.assertIn('tool_root=/run/omarchy-builder/native-btrfs', (target / 'bin/btrfs').read_text())
+        self.assertIn('tool_root=/native-btrfs', (target / 'bin/btrfs').read_text())
+        self.assertIn('$tool_root/snapper', (target / 'bin/snapper').read_text())
+        runner = (target / 'bin/snapper-leaf-run').read_text()
+        self.assertIn('mount --make-rprivate /', runner)
+        self.assertIn('exec /bin/bash /run/omarchy-builder/original-snapper.sh', runner)
+        self.assertNotIn('mkinitcpio', runner)
         self.assertFalse((target / 'bin/btrfs').stat().st_mode & 0o222)
         self.assertFalse(target.stat().st_mode & 0o222)
 

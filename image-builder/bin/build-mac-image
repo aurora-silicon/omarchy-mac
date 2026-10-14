@@ -124,9 +124,14 @@ inspection holds the image to exactly that overlay; any other image refuses it.
 --native-btrfs DIR --native-btrfs-sha256 SHA256 selects a pinned Linux x86_64
 build-host Btrfs tool closure for QEMU-user builders lacking Btrfs ioctl support.
 DIR holds receipt.json (schema=1, version, files mapping names to SHA256), btrfs,
+stock native snapper,
 ld-linux-x86-64.so.2 and its explicitly listed ELF libraries. The builder freezes
 and validates only those files, mounts them read-only and uses the native tool
-for its Btrfs commands and final Python inspection. PROVENANCE records the
+for its Btrfs commands and final Python inspection. Private chroot mount
+namespaces route only the installed Snapper setup leaf through a second private
+namespace with verified btrfs/Snapper wrappers. Absolute and sudo calls retain
+the normal operations, while every other leaf and mkinitcpio sees stock ARM
+files. No target package files change after namespace exit. PROVENANCE records the
 actual version and receipt SHA256; the receipt accompanies the output. Target
 runtime packages and all filesystem inspection requirements are unchanged.
 
@@ -276,6 +281,7 @@ host_main() {
   if [[ -n $native_btrfs || -n $native_btrfs_sha ]]; then
     [[ -n $native_btrfs && -n $native_btrfs_sha ]] || fail "native Btrfs requires a directory and receipt SHA256"
     python3 "$ROOT/builder/native_btrfs.py" "$native_btrfs" --sha256 "$native_btrfs_sha" --output "$host_work/native-btrfs" || fail "native Btrfs tool closure does not verify"
+    [[ -f $host_work/native-btrfs/snapper ]] || fail "native Btrfs closure needs stock native Snapper for the runtime setup"
     native_mounts=(-v "$host_work/native-btrfs:/native-btrfs:ro" -e "MAC_IMAGE_NATIVE_BTRFS_SHA256=$native_btrfs_sha")
   fi
   if [[ -n $(record_field candidate_trust_policy_sha256 "$inputs") ]]; then
@@ -653,6 +659,21 @@ prepare_isolated_api() {
     _isolated_mount "$root/dev/$node" --bind "$name"
   done < <(losetup -n -O NAME,BACK-FILE --list 2>/dev/null || true)
   _isolated_mount "$root/run" -t tmpfs -o mode=0755,nosuid,noexec tmpfs
+  # Only the system-setup Snapper leaf enters a second private mount namespace.
+  # Other runtime leaves, package hooks and mkinitcpio see the real ARM tools.
+  if ((record == 0)) && [[ ${OMARCHY_ISOLATED_NATIVE_FS_TOOLS:-0} == 1 && -n ${MAC_IMAGE_NATIVE_BTRFS_SHA256:-} ]]; then
+    local native_root=$root/run/omarchy-builder/native-btrfs
+    local leaf=$root/usr/share/omarchy/install/config/snapper.sh
+    [[ -f $leaf && ! -L $leaf ]] || fail "native Snapper context has no installed runtime leaf"
+    mkdir -p "$native_root"
+    _isolated_mount "$native_root" --bind /native-btrfs
+    mount -o remount,bind,ro,exec,nosuid,nodev "$native_root" || fail "could not freeze native chroot tools"
+    touch "$root/run/omarchy-builder/original-snapper.sh"
+    _isolated_mount "$root/run/omarchy-builder/original-snapper.sh" --bind "$leaf"
+    mount -o remount,bind,ro,nosuid,nodev "$root/run/omarchy-builder/original-snapper.sh" || fail "could not freeze runtime Snapper leaf"
+    _isolated_mount "$leaf" --bind /native-btrfs/bin/snapper-leaf
+    mount -o remount,bind,ro,exec,nosuid,nodev "$leaf" || fail "could not freeze native Snapper leaf launcher"
+  fi
   # systemd-tmpfiles never runs here: the installer takes its lock under /run/lock.
   mkdir -m 0755 -p "$root/run/lock"
   _isolated_mount "$root/tmp" -t tmpfs -o mode=1777,strictatime,nodev,nosuid tmpfs
@@ -701,7 +722,7 @@ isolated_chroot() {
   local root=$1
   shift
   unshare --mount --pid --fork --mount-proc \
-    env OMARCHY_BUILDER_TARGET_PROFILE="$image_target_profile" OMARCHY_ISOLATED_ROOT="$root" OMARCHY_ISOLATED_WORK="$work" OMARCHY_ISOLATED_LOOPS="${isolated_loops:-1}" \
+    env OMARCHY_BUILDER_TARGET_PROFILE="$image_target_profile" OMARCHY_ISOLATED_ROOT="$root" OMARCHY_ISOLATED_WORK="$work" OMARCHY_ISOLATED_LOOPS="${isolated_loops:-1}" OMARCHY_ISOLATED_NATIVE_FS_TOOLS="${isolated_native_fs_tools:-0}" \
     "$BASH" "$ROOT/bin/build-mac-image" --isolated-chroot "$@"
 }
 
@@ -994,7 +1015,7 @@ run_system_setup() {
   rm -f "$target/etc/resolv.conf"
   cp /etc/resolv.conf "$target/etc/resolv.conf" || fail "could not lend the builder's resolver to the image"
   chmod 0644 "$target/etc/resolv.conf"
-  isolated_chroot "$target" env -i "${BOARD_CONTEXT[@]}" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin HOME=/root TERM=dumb \
+  isolated_native_fs_tools=1 isolated_chroot "$target" env -i "${BOARD_CONTEXT[@]}" PATH=/usr/local/sbin:/usr/local/bin:/usr/bin HOME=/root TERM=dumb \
     LANG=C.UTF-8 OMARCHY_MAC_IMAGE_BUILD=1 OMARCHY_PATH=/usr/share/omarchy \
     /usr/bin/omarchy-apply-system --defer-provisioning --first-install >>"$logs/system-setup.log" 2>&1 ||
     { cp "$target/var/log/omarchy-install.log" "$logs/" 2>/dev/null || true
@@ -1491,6 +1512,7 @@ write_provenance() {
     if [[ -n ${MAC_IMAGE_NATIVE_BTRFS_SHA256:-} ]]; then
       printf 'native_btrfs_receipt_sha256=%s\n' "$MAC_IMAGE_NATIVE_BTRFS_SHA256"
       printf 'native_btrfs_version=%s\n' "$(btrfs version | head -1)"
+      printf 'native_snapper_version=%s\n' "$(/native-btrfs/ld-linux-x86-64.so.2 --library-path /native-btrfs /native-btrfs/snapper --version | head -1)"
       cp /native-btrfs/receipt.json /out/native-btrfs-receipt.json
     fi
     printf 'inputs_sha256=%s\n' "$(sha256_of /inputs)"

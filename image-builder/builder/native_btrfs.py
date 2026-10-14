@@ -55,13 +55,38 @@ def freeze(source, destination, expected):
     destination.mkdir()
     for name in ['receipt.json', *data['files']]:
         shutil.copyfile(source / name, destination / name)
-        (destination / name).chmod(0o500 if name in {'btrfs', 'ld-linux-x86-64.so.2'} else 0o400)
+        (destination / name).chmod(0o500 if name in {'btrfs', 'snapper', 'ld-linux-x86-64.so.2'} else 0o400)
     validate(destination, expected)
     wrappers = destination / 'bin'
     wrappers.mkdir(mode=0o700)
-    wrapper = wrappers / 'btrfs'
-    wrapper.write_text('#!/bin/bash\nexec /native-btrfs/ld-linux-x86-64.so.2 --library-path /native-btrfs /native-btrfs/btrfs "$@"\n')
-    wrapper.chmod(0o500)
+    for tool in ('btrfs', 'snapper'):
+        if tool not in data['files']:
+            continue
+        wrapper = wrappers / tool
+        wrapper.write_text('#!/bin/bash\n'
+                           'if [[ "$0" == /native-btrfs/bin/* ]]; then\n'
+                           '  tool_root=/native-btrfs\n'
+                           'else\n'
+                           '  tool_root=/run/omarchy-builder/native-btrfs\n'
+                           'fi\n'
+                           'exec "$tool_root/ld-linux-x86-64.so.2" --library-path "$tool_root" '
+                           f'"$tool_root/{tool}" "$@"\n')
+        wrapper.chmod(0o500)
+    if 'snapper' in data['files']:
+        launcher = wrappers / 'snapper-leaf'
+        launcher.write_text('#!/bin/bash\nset -euo pipefail\n'
+                            'exec unshare --mount --fork /bin/bash '
+                            '/run/omarchy-builder/native-btrfs/bin/snapper-leaf-run\n')
+        runner = wrappers / 'snapper-leaf-run'
+        runner.write_text('#!/bin/bash\nset -euo pipefail\n'
+                          'mount --make-rprivate /\n'
+                          'for tool in btrfs snapper; do\n'
+                          '  mount --bind "/run/omarchy-builder/native-btrfs/bin/$tool" "/usr/bin/$tool"\n'
+                          '  mount -o remount,bind,ro,exec,nosuid,nodev "/usr/bin/$tool"\n'
+                          'done\n'
+                          'exec /bin/bash /run/omarchy-builder/original-snapper.sh\n')
+        launcher.chmod(0o500)
+        runner.chmod(0o500)
     wrappers.chmod(0o500)
     destination.chmod(0o500)
 
