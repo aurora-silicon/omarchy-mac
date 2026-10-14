@@ -1,8 +1,8 @@
 # Maintainer: Ryan Murray <ryan@aurorasilicon.org>
-# Qualified public-source incremental runtime, not a clean bit-reproducibility claim.
-# See BUILD.md for clean compilation and immutable public reuse inputs.
+# Incremental build of public 5f6c917 from the preserved d32 cache.
+# Rebuilt PMGR and SEP, relinked Image and updated the J700 DTB.
 pkgname=linux-aurora
-pkgver=7.1.12.aurora20261014.r2.gd32c6c2
+pkgver=7.1.12.aurora20261014.r3.g5f6c917
 pkgrel=1
 pkgdesc='Public Aurora Neo kernel, modules and complete Apple DTB roster (candidate)'
 arch=('aarch64')
@@ -13,13 +13,13 @@ provides=("linux-asahi=$pkgver" 'WIREGUARD-MODULE')
 conflicts=('linux-asahi')
 options=('!strip' '!debug')
 source=('kernel-runtime.tar' 'reuse-receipt.json' 'config')
-sha256sums=('2c1c2da09549d1e22263819013038121dcd486aefacc9320833e913b778286ca' 'bad14fb2b131b8da2ab74b3cc254b98b25db1cb29f03d41f87b8633baac89ba8' 'fb8a0c1e96bef82638829628ec4809c32856ba08214c7718b8aee2e9cbb9a971')
+sha256sums=('b7c594cfdc8465f33d86caee53c2edea2e69536a99c5b05c42802309201dd306' 'd4f70caee5f054132e48381a5722dffa1950b7feadfa13c9e9e10c8195a93d3a' 'fb8a0c1e96bef82638829628ec4809c32856ba08214c7718b8aee2e9cbb9a971')
 check() {
   python3 - "$srcdir" <<'VERIFY'
 from pathlib import Path
 import hashlib,json,sys
 r=Path(sys.argv[1]);m=json.loads((r/'reuse-receipt.json').read_text())
-assert m.get('actual_compile_source', m.get('actual_incremental_source'))=='d32c6c259c49157b81bed62571c314710e585d98'
+assert m['actual_incremental_source']=='5f6c917f2c824b3c87497e8bd7dd92a6de0efe60'
 for name,digest in m['files'].items():
  assert hashlib.file_digest((r/name).open('rb'),'sha256').hexdigest()==digest,name
 VERIFY

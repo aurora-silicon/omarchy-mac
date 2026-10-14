@@ -4,7 +4,7 @@ The runtime pair derives from omacom/omarchy-pkgs c33fd8c2547896b0c9ff355fd8e0d1
 
 Aura c4331a90ef324eab33d34d1515d7e42748a293ab and U-Boot 0cb6fed6a10512d1013a4a80b6d83c3d56140f2f are public aurora-silicon sources. The package-owned Neo selector/removal hooks retain their original GPL-2.0-only notices. Their current authored recipe/support sources must be published with this distribution, not represented as unchanged upstream code.
 
-The kernel is aurora-silicon/linux d32c6c259c49157b81bed62571c314710e585d98. Current artifacts use a qualified incremental build seeded by cd46babc03d1193d2bdaa23de076a185bc602b57, with exact public d32 SEP source rebuilt. This is not a clean or bit-identical reproduction claim. Build configuration is included; Linux COPYING/LICENSES come from the pinned source.
+The kernel is aurora-silicon/linux 5f6c917f2c824b3c87497e8bd7dd92a6de0efe60. Current artifacts use a qualified incremental build seeded by cd46babc03d1193d2bdaa23de076a185bc602b57, with exact public5f6 SEP and built-in PMGR sources rebuilt and the J700 DTB updated. This is not a clean or bit-identical reproduction claim. Build configuration is included; Linux COPYING/LICENSES come from the pinned source.
 
 FEX source and source-only dependency commits/trees are in source-lock.json. Public development RPM inputs are in guest-rpms.lock.json. These are build-only inputs, not guest runtime authority or vendor-client licensing. License notices are individually pinned. The optional reviewed FEX package reuse digest is in reuse.lock.json; its public URL must be completed by the publisher before reuse is enabled.
 

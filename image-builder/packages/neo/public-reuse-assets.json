@@ -20,20 +20,20 @@
     },
     "kernel": {
       "source_repository": "https://github.com/aurora-silicon/linux",
-      "source_commit": "d32c6c259c49157b81bed62571c314710e585d98",
+      "source_commit": "5f6c917f2c824b3c87497e8bd7dd92a6de0efe60",
       "original_cache_source": "cd46babc03d1193d2bdaa23de076a185bc602b57",
-      "mode": "exact public-source incremental build; SEP module rebuilt, Image/113DTBs unchanged",
+      "mode": "Actual incremental5f6 public-source build from preserved d32 cache: rebuilt PMGR in Image, SEP and J700 DTB; no clean or bit-reproducibility claim.",
       "assets": [
         {
           "directory": "recipes/kernel",
           "name": "kernel-runtime.tar",
-          "sha256": "2c1c2da09549d1e22263819013038121dcd486aefacc9320833e913b778286ca",
+          "sha256": "b7c594cfdc8465f33d86caee53c2edea2e69536a99c5b05c42802309201dd306",
           "url": null
         },
         {
           "directory": "recipes/kernel",
           "name": "reuse-receipt.json",
-          "sha256": "bad14fb2b131b8da2ab74b3cc254b98b25db1cb29f03d41f87b8633baac89ba8",
+          "sha256": "d4f70caee5f054132e48381a5722dffa1950b7feadfa13c9e9e10c8195a93d3a",
           "url": null
         },
         {
@@ -45,13 +45,13 @@
         {
           "directory": "recipes/kernel/headers",
           "name": "headers-stage.tar",
-          "sha256": "84bf6c230c5f83c192e4b2f65bd1144f4580c6b15793bd625b9883663c1562c6",
+          "sha256": "64bafeb70f7df85c4aff087325f9dcf1d4d4197fbb85870aa15785c65e9107b0",
           "url": null
         },
         {
           "directory": "recipes/kernel/headers",
           "name": "native-helper-receipt.json",
-          "sha256": "0ad7b3fe85cac695cfadcac48655bc6c3c5e2edbc45c57827d2413c8f7521a2c",
+          "sha256": "967c1587b2eb8cf84bb511ea007d558cf3b34f5c60e4c31a20e02d42278a8047",
           "url": null
         },
         {

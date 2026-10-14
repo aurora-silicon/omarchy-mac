@@ -1,7 +1,7 @@
 # Maintainer: Ryan Murray <ryan@aurorasilicon.org>
-# Pinned public headers plus native ARM HOSTCC helpers; runtime reused unchanged.
+# Matching kernel symbols, System.map and vmlinux with native ARM helpers.
 pkgname=linux-aurora-headers
-pkgver=7.1.12.aurora20261014.r2.gd32c6c2
+pkgver=7.1.12.aurora20261014.r3.g5f6c917
 pkgrel=1
 pkgdesc='Public Aurora Neo kernel headers with native AArch64 build helpers'
 arch=('aarch64')
@@ -12,7 +12,7 @@ provides=("linux-asahi-headers=$pkgver")
 conflicts=('linux-asahi-headers')
 options=('!strip' '!debug')
 source=('headers-stage.tar' 'native-helper-receipt.json' 'COPYING' 'LICENSES.tar')
-sha256sums=('84bf6c230c5f83c192e4b2f65bd1144f4580c6b15793bd625b9883663c1562c6' '0ad7b3fe85cac695cfadcac48655bc6c3c5e2edbc45c57827d2413c8f7521a2c' 'fb5a425bd3b3cd6071a3a9aff9909a859e7c1158d54d32e07658398cd67eb6a0' '4db3aa91b2d55c55297f54830fc926258ee0d00203c9654782409b9d68ebbd19')
+sha256sums=('64bafeb70f7df85c4aff087325f9dcf1d4d4197fbb85870aa15785c65e9107b0' '967c1587b2eb8cf84bb511ea007d558cf3b34f5c60e4c31a20e02d42278a8047' 'fb5a425bd3b3cd6071a3a9aff9909a859e7c1158d54d32e07658398cd67eb6a0' '4db3aa91b2d55c55297f54830fc926258ee0d00203c9654782409b9d68ebbd19')
 check() {
   python3 - "$srcdir" <<'PY'
 from pathlib import Path

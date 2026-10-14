@@ -42,13 +42,13 @@ The two source copies produce bare build/aura.bin assets. No per-install UUID/pa
 
 ## Kernel clean source route
 
-Use a native aarch64 Linux environment, public Linux d32c6c259c49157b81bed62571c314710e585d98, the included exact config, Rust1.97.1, LLVM/Clang22 and bindgen0.73.2 with matching libclang. The current incremental module used those inputs. This bundle does not contain them as opaque binaries; install/build those public toolchain versions through their normal sources.
+Use a native aarch64 Linux environment, public Linux 5f6c917f2c824b3c87497e8bd7dd92a6de0efe60, the included exact config, Rust1.97.1, LLVM/Clang22 and bindgen0.73.2 with matching libclang. The current incremental module used those inputs. This bundle does not contain them as opaque binaries; install/build those public toolchain versions through their normal sources.
 
 ```sh
 mkdir linux-source
 git -C linux-source init
 git -C linux-source remote add origin https://github.com/aurora-silicon/linux.git
-git -C linux-source fetch --depth=1 origin d32c6c259c49157b81bed62571c314710e585d98
+git -C linux-source fetch --depth=1 origin 5f6c917f2c824b3c87497e8bd7dd92a6de0efe60
 git -C linux-source checkout --detach FETCH_HEAD
 mkdir linux-build
 cp recipes/kernel/config linux-build/.config
@@ -63,9 +63,9 @@ make -C linux-source O="$PWD/linux-build" BINDGEN=bindgen -j10 Image modules dtb
 python3 scripts/stage-kernel-inputs.py linux-source linux-build clean-kernel-inputs
 ```
 
-Staging creates local build-input archives/config/license/receipts only; it never installs to the live system or loads a module. It checks the exact public source, unchanged effective config, complete113-DTB roster and native AArch64 header helpers. Staging emits ready-to-makepkg kernel/header recipe directories with checksums derived from those actual new outputs. Run makepkg inside each generated directory; no hand-editing public reuse hashes or recipe checksums is required. Those generated recipes explicitly identify new clean-source outputs, distinct from the immutable old reuse route. The kernel recipe accepts an actual clean d32 compile receipt as well as the retained qualified incremental d32 receipt. External C module rebuild tests remain mandatory for new header outputs; Rust external modules additionally require matching generated Rust metadata and are not qualified here.
+Staging creates local build-input archives/config/license/receipts only; it never installs to the live system or loads a module. It checks the exact public source, unchanged effective config, complete113-DTB roster and native AArch64 header helpers. Staging emits ready-to-makepkg kernel/header recipe directories with checksums derived from those actual new outputs. Run makepkg inside each generated directory; no hand-editing public reuse hashes or recipe checksums is required. Those generated recipes explicitly identify new clean-source outputs, distinct from the immutable old reuse route. The kernel recipe accepts an actual clean 5f6 compile receipt as well as the retained qualified incremental 5f6 receipt. External C module rebuild tests remain mandatory for new header outputs; Rust external modules additionally require matching generated Rust metadata and are not qualified here.
 
-Current delivered artifacts use an exact-public-source incremental d32 build from the recorded cd46 cache: SEP was rebuilt with the new alias/default, while Image and113 DTBs were unchanged. The package recipe preserves that actual identity instead of calling it a new clean build. To reproduce those existing bytes by reuse, publish the frozen runtime/header input archives and receipts with the exact hashes/URLs in public-reuse-assets.json and materialize them with scripts/fetch-reuse.py. Private cache directories alone are not a public reproduction route. Headers keep their original native-helper source/reuse identity; a source-only schema delta is not a reason to fabricate a fresh compile claim.
+Current delivered artifacts use an exact-public-source incremental 5f6 build from the recorded cd46 cache: SEP and the built-in PMGR driver were rebuilt, the Image was relinked and the J700 DTB changed; all113 Apple DTBs are packaged and112 are unchanged. The package recipe preserves that actual identity instead of calling it a new clean build. To reproduce those existing bytes by reuse, publish the frozen runtime/header input archives and receipts with the exact hashes/URLs in public-reuse-assets.json and materialize them with scripts/fetch-reuse.py. Private cache directories alone are not a public reproduction route. Headers keep their original native-helper source/reuse identity; a source-only schema delta is not a reason to fabricate a fresh compile claim.
 
 All fresh compiler/metadata routes above are source-normalized and fixture-checked, not full-rebuilt by this task. Root/native workers own actual archive qualification and publication. The source recipe bundle cannot replace dependency, firmware, initrd/UKI, installation or physical qualification.
 

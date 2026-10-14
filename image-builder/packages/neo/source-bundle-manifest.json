@@ -3,8 +3,8 @@
   "files": [
     {
       "path": "BUILD.md",
-      "sha256": "26e2210ade8ae0ba635ddb3e3b12ebfa24400fddc56cad70e40de455be35aabd",
-      "bytes": 10080
+      "sha256": "f16f6a70410f1ae493d2c00498b80c200ca501df72219acc1becbfe5b90d70c4",
+      "bytes": 10145
     },
     {
       "path": "LICENSE",
@@ -18,18 +18,18 @@
     },
     {
       "path": "ORIGINS.md",
-      "sha256": "f0380880ce8d1b212721549cf40b48e28500b6ab08b8ba388a5e0f15223f74ac",
-      "bytes": 3277
+      "sha256": "624b475a3e9c347f770e5be80e3c38abf143c47a28f146ebd3a15a97b9dc34d2",
+      "bytes": 3320
     },
     {
       "path": "README.md",
-      "sha256": "352866529f744ffbc23718558a1723bf8f1c548ec026ca48f288d9b84d85fa64",
+      "sha256": "5a565d0a067531ba55b6fd340c5b3286c04b0c4dcf93361461d6496ef67a7509",
       "bytes": 2760
     },
     {
       "path": "public-reuse-assets.json",
-      "sha256": "053b4aae6b282f368bd232c54a832940b5e5ebc9c9eaa0dfb1b2b7b0b0db75a0",
-      "bytes": 2513
+      "sha256": "96490630777a27743cab1c78bfd1ccf8447f34d46be8436c181b7a7e93495a61",
+      "bytes": 2578
     },
     {
       "path": "recipes/audio/PKGBUILD",
@@ -148,8 +148,8 @@
     },
     {
       "path": "recipes/kernel/PKGBUILD",
-      "sha256": "163a815e2fc4766d62bbceea978fdb6877633d7f2ea7fff79b8049a510012542",
-      "bytes": 1496
+      "sha256": "ed4381c9be03fba2fa21d22634b79f63f37d34313030adeabde04635d0544877",
+      "bytes": 1435
     },
     {
       "path": "recipes/kernel/config",
@@ -158,8 +158,8 @@
     },
     {
       "path": "recipes/kernel/headers/PKGBUILD",
-      "sha256": "bad254c651cbb6f36cc1bd8251c3e9f1ff39d91cb6eff6a9495fc891ea268b74",
-      "bytes": 1901
+      "sha256": "eedf08cba58aa96c200631582bfc80171d196a65f0501c559292abee5efbacb8",
+      "bytes": 1894
     },
     {
       "path": "recipes/libfprint/PKGBUILD",
@@ -273,7 +273,7 @@
     },
     {
       "path": "scripts/stage-kernel-inputs.py",
-      "sha256": "65f6315e6147f1228bf155be7b692cafe19eece86e387362f04e50d01e1aaddd",
+      "sha256": "7d9b7cf777d87074c863ca1d7c47030e42a69e1e103e1bec5e06a08b6ef86bc4",
       "bytes": 7639
     },
     {

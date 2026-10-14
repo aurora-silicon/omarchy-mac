@@ -12,7 +12,7 @@ import subprocess
 import tarfile
 import tempfile
 
-PIN = 'd32c6c259c49157b81bed62571c314710e585d98'
+PIN = '5f6c917f2c824b3c87497e8bd7dd92a6de0efe60'
 
 
 def sha(path):
