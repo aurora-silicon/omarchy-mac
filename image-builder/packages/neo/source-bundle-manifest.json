@@ -379,8 +379,8 @@
     },
     {
       "path": "recipes/xwayland/PKGBUILD",
-      "sha256": "92adcbcf72537743e7f3bb5667a02ec61a4b0bc60a0708f6023e6914b35a1b30",
-      "bytes": 1470
+      "sha256": "0253ba978c6143efc6f468c2bba887b6052435687b6cd8e3a3b2157d67e003c5",
+      "bytes": 1673
     },
     {
       "path": "scripts/fetch-reuse.py",

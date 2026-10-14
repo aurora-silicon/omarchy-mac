@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 pkgname=xorg-xwayland
 pkgver=24.1.14.aurora1
-pkgrel=1
+pkgrel=2
 pkgdesc='Xwayland from the current licensed public Aurora source'
 arch=(aarch64)
 url=https://github.com/aurora-silicon/xserver
@@ -27,6 +27,8 @@ check() {
 }
 package() {
   DESTDIR="$pkgdir" meson install -C build
+  # The required stock xorg-server-common owns these shared server documents.
+  rm -f "$pkgdir/usr/lib/xorg/protocol.txt" "$pkgdir/usr/share/man/man1/Xserver.1" "$pkgdir/usr/share/man/man1/Xserver.1.gz"
   install -Dm644 xserver/COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
   install -d "$pkgdir/usr/share/doc/$pkgname"
   printf '%s\n' d958b4e84c903e8d5851b5ea587b998e4834ce62 > "$pkgdir/usr/share/doc/$pkgname/source-revision"
