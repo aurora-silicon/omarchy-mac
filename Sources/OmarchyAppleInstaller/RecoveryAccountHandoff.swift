@@ -210,6 +210,8 @@
           do {
             try requireLivePartitions(evidence: evidence, listing: diskList)
           } catch { continue }
+          // Recovery already finished this one: it is installed, not waiting.
+          if recoveryFinished(current) { continue }
           found.append(
             CompletedRecoveryInstallation(
               binding: file.deletingPathExtension().lastPathComponent, target: current,
@@ -223,6 +225,32 @@
           "More than one completed installation is waiting for Recovery.")
       }
       return found.first
+    }
+
+    /// Recovery's Finish Installation writes this receipt on the installed
+    /// System volume only after it has authorized and enrolled the boot.
+    static let recoveryReceiptPath = "Aurora/Recovery/State/installation.json"
+
+    static func isFinishedRecoveryReceipt(_ data: Data) -> Bool {
+      (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["status"] as? String
+        == "installed"
+    }
+
+    /// Whether Recovery completed the installation on `target`. The System
+    /// volume is mounted read-only to look, if macOS has not mounted it.
+    static func recoveryFinished(_ target: RecoveryAccountTarget) -> Bool {
+      guard var info = try? AccountNativeCommand.disk(target.systemUUID) else { return false }
+      if (info["MountPoint"] as? String ?? "").isEmpty {
+        _ = try? AccountNativeCommand.checked(
+          "/usr/sbin/diskutil", ["mount", "readOnly", target.systemUUID])
+        guard let mounted = try? AccountNativeCommand.disk(target.systemUUID) else { return false }
+        info = mounted
+      }
+      guard let mount = info["MountPoint"] as? String, !mount.isEmpty,
+        let receipt = try? RecoveryAccountInstaller.protectedRead(
+          URL(fileURLWithPath: mount).appendingPathComponent(recoveryReceiptPath), limit: 65536)
+      else { return false }
+      return isFinishedRecoveryReceipt(receipt)
     }
 
     static func requireLivePartitions(evidence: [String: Data], listing: [String: Any]) throws {
