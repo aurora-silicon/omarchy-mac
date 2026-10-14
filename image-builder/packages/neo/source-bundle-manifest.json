@@ -314,8 +314,8 @@
     },
     {
       "path": "recipes/speaker/PKGBUILD",
-      "sha256": "738a6f4f32cc8f0f6b7d9c0d514bb663e7dd673ccaf3167be32c029b74526955",
-      "bytes": 2297
+      "sha256": "12fe41c6cfa3e6fc2a80baff9aeba0900066fc4efda59d85a3a8791f806788e9",
+      "bytes": 2304
     },
     {
       "path": "recipes/speaker/use-feedback-guard",

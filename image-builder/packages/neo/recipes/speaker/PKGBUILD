@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: MIT
 pkgname=speakerguardd
 pkgver=20261014
-pkgrel=2
+pkgrel=3
 pkgdesc='Public reviewed complete-sense protection candidate for J700 (PR2 draft)'
 arch=(aarch64)
 url=https://github.com/aurora-silicon/speakerguardd/pull/2
 license=(MIT)
-depends=('glibc>=2.34' systemd)
+depends=('glibc>=2.34' libgcc systemd)
 makedepends=(git rust python)
 options=(!lto !debug !strip)
 source=(use-feedback-guard 50-j700-guard.conf
