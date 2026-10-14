@@ -8,7 +8,7 @@
 
   @MainActor
   final class InstallerSessionTests: XCTestCase {
-    func testRecoveryHandoffShutsDownForCompletedInstall() async throws {
+    func testRecoveryHandoffCanShutDownBeforeCreatingAccount() async throws {
       let environment = MockInstallerEnvironment()
       environment.shutdownAccepted = true
       environment.host = HostDisplay(
@@ -21,13 +21,22 @@
         dataUUID: "22222222-2222-4222-8222-222222222222",
         groupUUID: "33333333-3333-4333-8333-333333333333",
         prebootUUID: "44444444-4444-4444-8444-444444444444")
-      environment.accountReply = RecoveryAccountReply(ticket: "bound-ticket", target: target)
-      let session = InstallerSession(environment: environment)
-      await session.inspect()
-      let accepted = try await session.prepareRecoveryHandoffAndShutdown()
-      XCTAssertTrue(accepted)
-      XCTAssertEqual(environment.requestShutdownCount, 1)
-      XCTAssertEqual(environment.accountCalls, ["inspect", "inspect", "handoff:bound-ticket"])
+      for phase in [nil, "allocating", "creating", "prepared", "awaiting-ownership", "finalized"]
+        as [String?]
+      {
+        environment.accountReply = RecoveryAccountReply(
+          ticket: "bound-ticket", target: target,
+          record: phase.map {
+            RecoveryAccountRecord(
+              target: target, username: "owner", generatedUID: UUID().uuidString, phase: $0)
+          })
+        let session = InstallerSession(environment: environment)
+        await session.inspect()
+        let before = environment.requestShutdownCount
+        let accepted = try await session.prepareRecoveryHandoffAndShutdown()
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(environment.requestShutdownCount, before + 1)
+      }
     }
     func testRecoveryHandoffFailureDoesNotShutDown() async throws {
       let environment = MockInstallerEnvironment()
@@ -56,7 +65,7 @@
       }
     }
 
-    func testCompletedInstallResumesOnlyRecoveryHandoffWithoutExecutingAgain() async throws {
+    func testCompletedInstallResumesOnlyAccountSetupWithoutExecutingAgain() async throws {
       let environment = MockInstallerEnvironment()
       environment.host = HostDisplay(
         chipAndSpace: "Apple A18 Pro", supported: true,
@@ -74,8 +83,8 @@
       await session.inspect()
       XCTAssertEqual(session.recoveryAccount?.target, target)
       XCTAssertFalse(session.canChangeChannel)
-      _ = try await session.prepareRecoveryHandoffAndShutdown()
-      XCTAssertEqual(environment.accountCalls, ["inspect", "inspect", "handoff:bound-ticket"])
+      try await session.prepareRecoveryAccount(username: "owner", password: Data("short".utf8))
+      XCTAssertEqual(environment.accountCalls, ["inspect", "prepare:bound-ticket:owner"])
       XCTAssertEqual(environment.executeCount, 0)
       XCTAssertEqual(environment.prepareCount, 0)
       XCTAssertEqual(environment.prefetchStartCount, 0)
@@ -1501,6 +1510,12 @@
     func inspectRecoveryAccount() async throws -> RecoveryAccountReply? {
       accountCalls.append("inspect")
       return accountReply
+    }
+    func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
+      -> RecoveryAccountReply
+    {
+      accountCalls.append("prepare:\(ticket):\(username)")
+      return accountReply!
     }
     var host = MockInstallerEnvironment.supportedHost
     var plan = MockInstallerEnvironment.samplePlan

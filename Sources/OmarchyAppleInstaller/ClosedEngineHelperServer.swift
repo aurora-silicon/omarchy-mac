@@ -183,9 +183,7 @@
       async throws -> RecoveryAccountReply
     {
       guard !isRetiring else { throw ClosedEngineHelperError.retiring }
-      // Only the Recovery handoff remains. The XPC call keeps its username and
-      // password parameters so its selector stays stable; they are ignored.
-      guard ["inspect", "handoff"].contains(action) else {
+      guard ["inspect", "handoff", "prepare", "finalize"].contains(action) else {
         throw ClosedEngineHelperError.invalidOperation
       }
       try work.beginJob()
@@ -200,7 +198,10 @@
         let id = UUID().uuidString
         recoveryAccountTargets = recoveryAccountTargets.filter { $0.value.1 > Date() }
         recoveryAccountTargets[id] = (completed, Date().addingTimeInterval(1800))
-        return RecoveryAccountReply(ticket: id, target: completed.target)
+        let record = try await Task.detached {
+          try RecoveryAccountInstaller.inspect(completed.target)
+        }.value
+        return RecoveryAccountReply(ticket: id, target: completed.target, record: record)
       }
       guard let (approved, expiry) = recoveryAccountTargets[ticket], expiry > Date(),
         let observed = try await Task.detached(operation: {
@@ -209,14 +210,23 @@
         observed == approved
       else {
         throw AccountSetupFailure(
-          "The installation target changed or expired. Reopen this installer to inspect it again.")
+          "The account target changed or expired. Reopen this installer to inspect it again.")
       }
-      try await Task.detached {
-        try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
-        try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
+      let record: RecoveryAccountRecord? = try await Task.detached {
+        if action == "handoff" {
+          try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
+          try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
+          return try RecoveryAccountInstaller.inspect(observed.target)
+        }
+        if action == "prepare" {
+          try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
+          return try RecoveryAccountInstaller.prepare(
+            observed.target, username: username, password: password)
+        }
+        return try RecoveryAccountInstaller.finalize(observed.target, password: password)
       }.value
       recoveryAccountTargets[ticket] = (observed, Date().addingTimeInterval(1800))
-      return RecoveryAccountReply(ticket: ticket, target: observed.target)
+      return RecoveryAccountReply(ticket: ticket, target: observed.target, record: record)
     }
 
     public func removal(
@@ -569,7 +579,7 @@
         } catch {
           let message =
             (error as? AccountSetupFailure)?.message
-            ?? "The helper could not prepare the Recovery handoff. Your installation has been preserved."
+            ?? "The helper could not finish the recovery account setup. Your installation has been preserved."
           reply(try? JSONEncoder().encode(RecoveryAccountReply(message: message)), nil)
         }
       }

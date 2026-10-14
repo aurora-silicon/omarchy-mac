@@ -6,13 +6,16 @@
   public struct RecoveryAccountReply: Codable, Equatable, Sendable {
     public let ticket: String?
     public let target: RecoveryAccountTarget?
+    public let record: RecoveryAccountRecord?
     public let message: String?
 
     public init(
-      ticket: String? = nil, target: RecoveryAccountTarget? = nil, message: String? = nil
+      ticket: String? = nil, target: RecoveryAccountTarget? = nil,
+      record: RecoveryAccountRecord? = nil, message: String? = nil
     ) {
       self.ticket = ticket
       self.target = target
+      self.record = record
       self.message = message
     }
   }
@@ -222,7 +225,7 @@
       let identities = Set(found.map { $0.target.systemUUID + ":" + $0.espUUID })
       guard identities.count <= 1 else {
         throw AccountSetupFailure(
-          "More than one completed installation is waiting for Recovery.")
+          "Choose which completed installation should receive a recovery account.")
       }
       return found.first
     }
@@ -338,7 +341,7 @@
       guard (efi["DiskUUID"] as? String)?.uppercased() == esp,
         system["APFSContainerReference"] as? String == data["APFSContainerReference"] as? String,
         system["APFSContainerReference"] as? String == boot["APFSContainerReference"] as? String
-      else { throw AccountSetupFailure("The installation volume identities changed.") }
+      else { throw AccountSetupFailure("The recovery account volume identities changed.") }
       let target = RecoveryAccountTarget(
         volumeName: name, systemUUID: systemUUID.uppercased(), dataUUID: dataUUID.uppercased(),
         groupUUID: group, prebootUUID: preboot)

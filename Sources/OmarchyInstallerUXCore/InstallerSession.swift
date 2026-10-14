@@ -715,6 +715,24 @@
       return accepted
     }
 
+    public func prepareRecoveryAccount(username: String, password: Data) async throws {
+      guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
+      isBusy = true
+      defer { isBusy = false }
+      recoveryAccount = try await environment.prepareRecoveryAccount(
+        ticket: ticket, username: username, password: password)
+    }
+
+    public func finalizeRecoveryAccount(password: Data) async throws {
+      guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
+      isBusy = true
+      defer { isBusy = false }
+      recoveryAccount = try await environment.finalizeRecoveryAccount(
+        ticket: ticket, password: password)
+    }
+
+    public func openStartupDisk() -> Bool { environment.openStartupDisk() }
+
     public var powerButtonGuide: MacPowerButtonGuide { lastHost?.powerButtonGuide ?? .generic }
 
     public func prepareRecoveryHandoffAndShutdown() async throws -> Bool {
