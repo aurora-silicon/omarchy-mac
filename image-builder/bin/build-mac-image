@@ -990,7 +990,8 @@ run_system_setup() {
 apply_presets() {
   local preset units=() filtered=() name
   for preset in "$target"/usr/lib/systemd/system-preset/80-omarchy-mac*.preset \
-    "$target"/usr/lib/systemd/system-preset/80-omarchy-apple.preset; do
+    "$target"/usr/lib/systemd/system-preset/80-omarchy-apple.preset \
+    "$target"/usr/lib/systemd/system-preset/81-omarchy-aurora.preset; do
     [[ -f $preset ]] || continue
     mapfile -t -O "${#units[@]}" units < <(awk '$1 == "enable" { print $2 }' "$preset")
   done

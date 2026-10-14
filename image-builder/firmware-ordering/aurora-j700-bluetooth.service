@@ -1,0 +1,15 @@
+[Unit]
+Description=Admit the MacBook Neo Bluetooth radio after vendor firmware
+ConditionFirmware=device-tree-compatible(apple,j700)
+ConditionPathExists=/sys/bus/pci/devices/0000:01:00.1
+Requires=omarchy-vendor-firmware.service
+After=omarchy-vendor-firmware.service systemd-modules-load.service
+Before=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/aurora-j700/bluetooth-admit
+
+[Install]
+WantedBy=multi-user.target

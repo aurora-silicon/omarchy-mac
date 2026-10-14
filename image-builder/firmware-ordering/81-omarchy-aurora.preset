@@ -1,0 +1,2 @@
+enable aurora-sep.service
+enable aurora-j700-bluetooth.service

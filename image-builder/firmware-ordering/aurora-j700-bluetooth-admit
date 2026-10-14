@@ -1,0 +1,40 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Based on the public build6 admission helper and the d32 MT7932 driver.
+# Never unload, reset or reprobe a bound or previously admitted radio.
+set -euo pipefail
+
+grep -aq 'apple,j700' /sys/firmware/devicetree/base/compatible || exit 0
+dev=/sys/bus/pci/devices/0000:01:00.1
+gate=/sys/module/mt7932_bt_pcie/parameters/enable
+[[ -d $dev && -r $dev/vendor && -r $dev/device ]] || exit 0
+[[ $(<"$dev/vendor") == "0x14c3" && $(<"$dev/device") == "0x793b" ]] || exit 0
+[[ ! -e $dev/driver && ! -L $dev/driver ]] || exit 0
+if [[ -f $gate ]]; then
+  case $(<"$gate") in Y|y|1) echo 'Aurora: Bluetooth is enabled but unbound; cold reboot required, never warm reprobe' >&2; exit 1 ;; esac
+fi
+[[ -e /sys/bus/pci/devices/0000:01:00.0/driver ]] || {
+  echo 'Aurora: Wi-Fi function 0 is not bound; Bluetooth admission deferred' >&2; exit 1;
+}
+
+has_firmware() {
+  [[ -s /lib/firmware/vendor/$1 || -s /lib/firmware/$1 ]]
+}
+for name in \
+  mediatek/MT7932B0_OS_TypeB_0.1.44.0_241001003711.bin \
+  mediatek/MT7932_PTB_IzubaA_0.1.0.0_20251021141303.ptx \
+  mediatek/j700-mt7932-btcal.bin mediatek/j700-mt7932-bdaddr.bin; do
+  has_firmware "$name" || { echo "Aurora: Bluetooth firmware missing: $name; admission deferred" >&2; exit 1; }
+done
+has_firmware mediatek/MT7932B1_OS_TypeB_2.0.177.0_260706180356.bin \
+  || has_firmware mediatek/MT7932B1_OS_TypeB_0.1.133.0_260128190103.bin \
+  || { echo 'Aurora: Bluetooth B1 firmware missing; admission deferred' >&2; exit 1; }
+
+# Current public kernels default enable=true. Close the gate on a fresh load
+# so only this ordered service requests its one cold probe after firmware.
+modprobe mt7932_bt_pcie enable=0
+[[ ! -e $dev/driver && ! -L $dev/driver ]] || exit 0
+[[ -r $gate && -w $gate ]] || { echo 'Aurora: Bluetooth admission gate is unavailable' >&2; exit 1; }
+case $(<"$gate") in N|n|0) ;; *) echo 'Aurora: Bluetooth gate already enabled while unbound; cold reboot required' >&2; exit 1 ;; esac
+echo 1 >"$gate"
+echo 0000:01:00.1 >/sys/bus/pci/drivers_probe

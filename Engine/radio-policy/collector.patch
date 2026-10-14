@@ -1,0 +1,100 @@
+diff --git a/omarchy_mt7932.py b/omarchy_mt7932.py
+--- a/omarchy_mt7932.py
++++ b/omarchy_mt7932.py
+@@ -12,8 +12,8 @@
+ - the Bluetooth firmware and PTX: /usr/share/firmware/bluetooth;
+ - the Bluetooth address: the device tree's /chosen.
+ 
+-The country policy (policy/world-XZ.bin, J7RP) is not derived here yet, so
+-Wi-Fi does not start without it; Bluetooth does not need it.
++The world-XZ policy is derived locally from the hash-pinned 26.6.2/25G83
++stock driver and tables. No pre-collected policy or country relabelling.
+ 
+ Every output is checked the way the drivers check it before it is used.
+ """
+@@ -233,7 +233,7 @@
+         return source.read()
+ 
+ 
+-def collect(root="/", chosen=None):
++def collect(root="/", chosen=None, policy=None):
+     """{firmware path: bytes} for this Mac's MT7932, all checked.
+ 
+     Firmware paths are relative to /lib/firmware, as the drivers request them.
+@@ -280,4 +280,10 @@ def collect(root="/", chosen=None):
+     files["mediatek/j700-mt7932-bdaddr.bin"] = bluetooth_address(
+         device_tree_chosen() if chosen is None else chosen
+     )
++    import mt7932_policy
++    try:
++        data = mt7932_policy.collect(root) if policy is None else policy
++        files[mt7932_policy.POLICY_PATH] = mt7932_policy.validate_policy(data)
++    except (OSError, ValueError) as error:
++        raise Mt7932Error(str(error)) from error
+     return files
+diff --git a/omarchy_asahi.py b/omarchy_asahi.py
+--- a/omarchy_asahi.py
++++ b/omarchy_asahi.py
+@@ -637,7 +637,7 @@
+             stub.AlsFWCollection, stub.ISPFWCollection, stub.subprocess = old_als, old_isp, old_process
+ 
+ 
+-def stub_installer(sysinfo, dutil, osinfo):
++def stub_installer(sysinfo, dutil, osinfo, neo_policy=None):
+     """A StubInstaller that reads macOS 26 firmware's bootcaches.plist and
+     writes Omarchy's own step2.sh as its Recovery setup."""
+     installer = stub.StubInstaller(sysinfo, dutil, osinfo)
+@@ -657,7 +657,7 @@ def stub_installer(sysinfo, dutil, osinfo):
+     def collect_firmware_from_an_encrypted_recovery(pkg):
+         with _newer_trackpad_keys(), _neo_peripheral_collectors(installer):
+             result = _collect_firmware(pkg)
+-        _collect_neo_radios(installer, pkg)
++        _collect_neo_radios(installer, pkg, policy=neo_policy)
+         _collect_neo_touch_id(installer, pkg)
+         if getattr(getattr(installer, "sysinfo", None), "device_class", "") == "j700ap":
+             _validate_neo_firmware_package(pkg)
+@@ -723,17 +723,17 @@ def _validate_neo_firmware_package(pkg):
+         raise AsahiAdapterError("MacBook Neo firmware package is incomplete: " + ", ".join(sorted(missing)))
+ 
+ 
+-def _collect_neo_radios(installer, pkg, collect=omarchy_mt7932.collect):
++def _collect_neo_radios(installer, pkg, collect=omarchy_mt7932.collect, policy=None):
+     """Require the Neo's complete MT7932 Wi-Fi and Bluetooth input set."""
+     if getattr(getattr(installer, "sysinfo", None), "device_class", "") != "j700ap":
+         return
+     try:
+-        files = collect()
++        files = collect() if policy is None else collect(policy=policy)
+         required = {
+             "mediatek/mt7932/" + name for name in (
+                 omarchy_mt7932.WIFI_PATCH, omarchy_mt7932.WIFI_RAM,
+-                "ppr.bin", "oca2.bin", "wcal.bin", "config-original.bin",
++                "ppr.bin", "oca2.bin", "wcal.bin", "config-original.bin", "policy/world-XZ.bin",
+             )
+         } | {"mediatek/" + name for name in omarchy_mt7932.BT_FIRMWARE} | {
+             "mediatek/" + omarchy_mt7932.BT_PTX,
+             "mediatek/j700-mt7932-btcal.bin", "mediatek/j700-mt7932-bdaddr.bin",
+@@ -1152,6 +1152,15 @@ class AsahiStage1Adapter:
+     def preflight(self, plan):
+         if self.preflight_complete:
+             return
++        neo_policy = None
++        if self.installer.sysinfo.device_class == "j700ap":
++            # Check stock revisions AND native emulator loading before resize,
++            # replacement removal or partition creation. Reuse these bytes.
++            import mt7932_policy
++            try:
++                neo_policy = mt7932_policy.collect()
++            except (OSError, ValueError) as error:
++                raise AsahiAdapterError("MacBook Neo radio-policy preflight failed: " + str(error)) from error
+         metadata = self._load_metadata()
+         templates = [
+             template
+@@ -1196,6 +1205,7 @@ class AsahiStage1Adapter:
+             self.installer.sysinfo,
+             self.installer.dutil,
+             self.installer.osinfo,
++            neo_policy=neo_policy,
+         )
+         self.installer.ins.load_ipsw(ipsw)
+         self.os_firmware = ipsw.version.split(maxsplit=1)[0]

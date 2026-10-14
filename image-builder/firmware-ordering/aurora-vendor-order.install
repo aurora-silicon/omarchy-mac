@@ -7,8 +7,12 @@ build() {
   add_module aop
   add_module aop_als
   add_module mt7932-fullmac
-  add_file /usr/lib/firmware/mediatek/mt7932/policy/US.bin
-  add_file /usr/lib/firmware/mediatek/mt7932/policy/world-XZ.bin
+  # Legacy signed policy packages remain usable. New policy-free images get
+  # this Mac's derived world policy from ESP vendor extraction at boot.
+  for policy in US world-XZ; do
+    [[ ! -f /usr/lib/firmware/mediatek/mt7932/policy/$policy.bin ]] ||
+      add_file "/usr/lib/firmware/mediatek/mt7932/policy/$policy.bin"
+  done
   add_file /usr/lib/modprobe.d/aurora-firmware-order.conf
   if [[ -f /usr/lib/modprobe.d/aurora-sep-firmware-order.conf ]]; then
     add_file /usr/lib/modprobe.d/aurora-sep-firmware-order.conf

@@ -15,7 +15,7 @@ J700_FILES = (
     'mediatek/MT7932B1_OS_TypeB_0.1.133.0_260128190103.bin',
     'mediatek/MT7932_PTB_IzubaA_0.1.0.0_20251021141303.ptx',
     'mediatek/j700-mt7932-btcal.bin', 'mediatek/j700-mt7932-bdaddr.bin',
-    'mediatek/mt7932/policy/US.bin', 'mediatek/mt7932/policy/world-XZ.bin',
+    'mediatek/mt7932/policy/world-XZ.bin',
 )
 
 
