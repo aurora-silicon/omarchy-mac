@@ -12,7 +12,7 @@ cd Recovery
 open "build/Omarchy Installer.app" --args --preview
 ```
 
-Use `--recovery-preview` to preview repair. This build always defines `OMARCHY_STEP2_PREVIEW` and cannot enroll or modify startup software even when launched in Recovery. Keep only one review app instance open.
+Use `--recovery-preview` to preview repair. This build always defines `OMARCHY_STEP2_PREVIEW` and cannot enroll or modify startup software even when launched in Recovery. Keep only one review app instance open. Previewing does not implement the main installer's proposed new Recovery-account creation flow.
 
 ## Actual Recovery build
 
@@ -29,7 +29,7 @@ Configuration schema 2 includes `volumeName`, `systemUUID`, `groupUUID`, `preboo
 
 The legacy `Finish Installation.app/Contents/Resources/boot.bin` remains for upstream resume detection; its `step2.sh` becomes a relative launcher for `Omarchy Installer.app`. The new app remains on the stub after completion removes `.IAPhysicalMedia`, and the `aura` command opens its actual executable or invokes recovery actions. The localized `CFBundleDisplayName` must remain present: Recovery's Springboard requires it for this direct native launch contract.
 
-Enrollment rechecks root, the configured target volume and paired power-button 1TR, then resolves a real target volume owner from APFS and target Preboot metadata. When no eligible target owner exists, the explicitly configured `source-volume-owner` bootstrap can use the original macOS owner. That path binds the original System volume and APFS group UUIDs, requires the volume still exists, and intersects copied target administrator metadata with both the specifically authorized source owner UUID recorded by Stage 1 and its current APFS VolumeOwner list. Ambiguous or unmatched owners are rejected. Existing bputil/kmutil prompt handling stays in the native PTY backend. Normal macOS is rejected before writes. The app retains persistent attempt logs and bounded UI log rendering.
+Enrollment rechecks root, the configured target volume and paired power-button 1TR, then resolves a real target volume owner from APFS and target Preboot metadata. When no eligible target owner exists, the explicitly configured `source-volume-owner` bootstrap can use the original macOS owner. That path binds the original System volume and APFS group UUIDs, requires the volume still exists, and intersects copied target administrator metadata with both the specifically authorized source owner UUID recorded by Stage 1 and its current APFS VolumeOwner list. Ambiguous or unmatched owners are rejected. The recorded recovery account takes precedence once APFS reports it as a volume owner; a finalized account that loses ownership is rejected. Existing bputil/kmutil prompt handling stays in the native PTY backend. Normal macOS is rejected before writes. The app retains persistent attempt logs and bounded UI log rendering.
 
 The bootstrap System UUID names the underlying System-role APFS volume, not the boot snapshot mounted at `/`. For older configurations that recorded a snapshot UUID, Recovery resolves the unique System volume in the recorded source group and verifies that the recorded snapshot belongs to it before querying ownership. Snapshot enumeration can require mounting that source volume read-only. A missing snapshot, changed group, ambiguous System volume, or unregistered owner remains an error.
 
@@ -37,9 +37,13 @@ The bootstrap System UUID names the underlying System-role APFS volume, not the 
 
 The strict configuration fixture, original enrollment/owner/boot-selection fixtures, native prompt fixture, Python staging/checksum/target-identity fixtures and source formatting are tested. Both real and preview builds compile and pass signing and localized-name checks. The normal-macOS CLI rejection is tested. These are build and fixture results, not a completed fresh-install or Recovery boot qualification.
 
-The main installer ends with shutdown instructions. Its authenticated helper verifies the completed installation and updates that target’s Recovery app before requesting shutdown.
+The main installer ends with shutdown instructions. Its authenticated helper verifies the completed installation and updates that target’s Recovery app before requesting shutdown. It does not create an account in macOS.
 
-Step 2 enrolls startup software with `bputil` and `kmutil` as the target's volume owner or, on a fresh stub, the explicitly bound existing macOS owner, as Asahi's installer does. It creates no additional account and needs no Startup Disk authorization. The final Restart button restarts into Omarchy, which the macOS handoff already verified as the selected startup disk.
+Step 2 enrolls startup software using the explicitly bound existing macOS owner, then asks for a new recovery username, password and confirmation. Account creation uses the existing native implementation: immutable target identity checks, empty-database/APFS-user guards, native password verification and a resumable, password-free receipt. The account form is the penultimate screen; successful creation leads to the final Startup Disk handoff. If interrupted after enrollment but before account creation finishes, reopening Step 2 resumes the form. Older repair receipts do not force a new account.
+
+The final Restart button opens Apple’s Recovery Startup Disk application. The user selects the new OS and completes Apple’s authorization prompt there. Once APFS reports the recorded account as a volume owner, subsequent enrollment uses that account and can complete its existing metadata finalization. The full new ordering and subsequent paired-Recovery login still require a fresh hardware test; creating an ordinary account is not proof of native ownership or a working Recovery login.
+
+Account preparation now invokes the existing conditional finalizer before the Startup Disk handoff. A matching APFS credential must pass password verification before missing SecureToken metadata can be reconciled; the native record must finish saving without changing its UUID or password hash. Returning from Startup Disk or reopening Recovery resumes prepared and awaiting-ownership accounts. The UI reports authorization as pending until finalization and current ownership readback succeed.
 
 The first-stage engine reads back the selected APFS volume group after `bless`. The macOS shutdown handoff also verifies that the target group remains selected. A successful process exit without the expected selection cannot complete the handoff.
 

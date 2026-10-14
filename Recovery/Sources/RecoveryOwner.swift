@@ -39,6 +39,12 @@ enum RecoveryOwnerError: Error, LocalizedError {
 }
 
 enum RecoveryOwnerResolver {
+  static func isOwner(_ owner: RecoveryOwner, users: [String: Any]) -> Bool {
+    (users["Users"] as? [[String: Any]] ?? []).contains {
+      ($0["APFSCryptoUserUUID"] as? String).flatMap(UUID.init(uuidString:)) == owner.uuid
+        && $0["VolumeOwner"] as? Bool == true
+    }
+  }
   // Preboot supplies account names; APFS supplies actual ownership. Never use
   // the host login, root, or a stale admin record as an implicit fallback.
   static func resolve(admins: [String: Any], cryptoUsers: [String: Any]) throws -> RecoveryOwner {
@@ -72,9 +78,17 @@ enum RecoveryOwnerResolver {
   // explicitly to the source recorded by stage 1, never to the Recovery login.
   static func resolve(
     admins: [String: Any], targetUsers: [String: Any], bootstrap: BootstrapAuthorization?,
+    pendingAccount: RecoveryOwner? = nil,
     source: () throws -> (info: [String: Any], users: [String: Any], snapshots: Set<String>)
   ) throws -> RecoveryOwner {
+    if let pendingAccount, isOwner(pendingAccount, users: targetUsers) {
+      return pendingAccount
+    }
     do {
+      // Before Apple's final Startup Disk handoff, the newly created account
+      // has no ownership. Initial enrollment uses only the explicitly bound
+      // source owner; another target account must not silently replace it.
+      if pendingAccount != nil { throw RecoveryOwnerError.noOwner }
       return try resolve(admins: admins, cryptoUsers: targetUsers)
     } catch RecoveryOwnerError.noOwner {
       guard let bootstrap else { throw RecoveryOwnerError.noOwner }
