@@ -8,7 +8,6 @@ let package = Package(
     .macOS(.v15)
   ],
   products: [
-    .plugin(name: "OmarchyInstallerIdentityPlugin", targets: ["OmarchyInstallerIdentityPlugin"]),
     .library(
       name: "OmarchyAppleInstallerTrustCore",
       targets: ["OmarchyAppleInstallerTrustCore"]
@@ -34,6 +33,7 @@ let package = Package(
       targets: ["OmarchyCanaryPhysicalTool"]
     ),
   ],
+  dependencies: [.package(path: "BuildTools/InstallerIdentity")],
   targets: [
     .target(name: "RecoveryAuthorization", path: "Recovery/Native", publicHeadersPath: "."),
     .target(
@@ -54,20 +54,11 @@ let package = Package(
       dependencies: ["OmarchyAppleInstallerTrustCore"],
       path: "Development/ReadinessCheck"
     ),
-    .executableTarget(
-      name: "OmarchyInstallerIdentityGenerator",
-      path: "Sources/OmarchyInstallerIdentityGenerator"
-    ),
-    .plugin(
-      name: "OmarchyInstallerIdentityPlugin",
-      capability: .buildTool(),
-      dependencies: ["OmarchyInstallerIdentityGenerator"]
-    ),
     .target(
       name: "OmarchyAppleInstallerTrustCore",
       dependencies: ["OmarchyInstallerSystem", "RecoveryAccountCore"],
       path: "Sources/OmarchyAppleInstaller",
-      plugins: ["OmarchyInstallerIdentityPlugin"]
+      plugins: [.plugin(name: "OmarchyInstallerIdentityPlugin", package: "InstallerIdentity")]
     ),
     .target(
       name: "OmarchyInstallerUXCore",

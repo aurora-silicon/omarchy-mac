@@ -12,7 +12,7 @@ let package = Package(
   name: "OmarchyRecovery",
   platforms: [.macOS(.v13)],
   products: [.executable(name: "OmarchyRecovery", targets: ["OmarchyRecovery"])],
-  dependencies: [.package(name: "InstallerIdentity", path: "..")],
+  dependencies: [.package(path: "../BuildTools/InstallerIdentity")],
   targets: [
     .target(name: "RecoveryStandaloneAuthorization", path: "Native", publicHeadersPath: "."),
     .executableTarget(

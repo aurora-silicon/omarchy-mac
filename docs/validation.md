@@ -54,7 +54,7 @@ Scott has an M3 Air and an M4 Pro available with macOS. Either can be the primar
 3. Lint with Xcode's bundled formatter, then run both Swift configurations:
 
 ```bash
-xcrun swift-format lint --strict --recursive Package.swift Sources Tests
+xcrun swift-format lint --strict --recursive Package.swift Sources BuildTools Tests
 xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug
 xcodebuildmcp swift-package test --package-path "$PWD" --configuration release
 ```

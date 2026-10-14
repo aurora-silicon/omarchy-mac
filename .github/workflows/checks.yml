@@ -94,7 +94,7 @@ jobs:
           echo "$tool_bin" >> "$GITHUB_PATH"
           "$tool_bin/xcodebuildmcp" --version | tee -a "$RUNNER_TEMP/installer-ci/toolchain.txt"
       - name: Check Swift formatting
-        run: xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-format.log"
+        run: xcrun swift-format lint --strict --recursive Package.swift Sources BuildTools Tests 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-format.log"
       - name: Run debug Swift tests
         run: xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-debug.log"
       - name: Run release Swift tests
