@@ -123,6 +123,11 @@ def kernel_cmdline(root: Path) -> str:
         raise ContractError("expected one generated Limine kernel command line")
     cmdline = lines[0]
     words = shlex.split(cmdline)
+    target = root / "var/lib/omarchy/image/target"
+    if target.exists() or target.is_symlink():
+        profile = regular(target).decode()
+        if re.search(r"^image_target_profile=neo-j700$", profile, re.M) and words.count("arm64.nowfxt") != 1:
+            raise ContractError("Neo's UEFI kernel command line requires one arm64.nowfxt token")
     roots = [word for word in words if word.startswith("root=")]
     flags = [word for word in words if word.startswith("rootflags=")]
     if (len(roots) != 1 or not re.fullmatch(r"root=UUID=[0-9a-fA-F-]{36}", roots[0])

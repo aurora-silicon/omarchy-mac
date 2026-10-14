@@ -84,7 +84,7 @@ set_assignment() {
 }
 
 configure_grub_defaults() {
-  local grub
+  local grub cmdline="zswap.enabled=0 rootfstype=btrfs" target_profile
   grub=$(path etc/default/grub)
   mkdir -p -- "${grub%/*}"
   [[ -e $grub ]] || : >"$grub"
@@ -94,7 +94,13 @@ configure_grub_defaults() {
   set_assignment "$grub" GRUB_TIMEOUT 1
   set_assignment "$grub" GRUB_TIMEOUT_STYLE hidden
   set_assignment "$grub" GRUB_VIDEO_BACKEND efi_gop
-  set_assignment "$grub" GRUB_CMDLINE_LINUX "zswap.enabled=0 rootfstype=btrfs"
+  target_profile=$(path var/lib/omarchy/image/target)
+  # UEFI load options replace Aura's DT bootargs. Preserve the T8140 WFxT
+  # workaround in the generated UKI and in later first-boot rebuilds.
+  if [[ -f $target_profile ]] && grep -qx 'image_target_profile=neo-j700' "$target_profile"; then
+    cmdline+=" arm64.nowfxt"
+  fi
+  set_assignment "$grub" GRUB_CMDLINE_LINUX "$cmdline"
   # The Mac's device tree registers a serial console, and Plymouth drops to its
   # text view while one is active: mx-mac's qualified boot line ignores it.
   set_assignment "$grub" GRUB_CMDLINE_LINUX_DEFAULT "quiet splash loglevel=0 systemd.show_status=false rd.udev.log_level=0 vt.global_cursor_default=0 plymouth.ignore-serial-consoles"
