@@ -4,6 +4,7 @@
 #include <poll.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -18,6 +19,9 @@
 #endif
 
 #define LOG_LIMIT (64 * 1024)
+#ifndef AUTHORIZATION_TIMEOUT_SECONDS
+#define AUTHORIZATION_TIMEOUT_SECONDS 300
+#endif
 enum { INVALID=-1, PTY_FAILED=-2, TERMINAL_FAILED=-3, FORK_FAILED=-4,
        TIMED_OUT=-5, UNEXPECTED_CONFIRMATION=-6, REPEATED_CONFIRMATION=-7,
        REPEATED_PASSWORD=-8, REPEATED_USERNAME=-9, INPUT_FAILED=-10,
@@ -92,6 +96,9 @@ static int authorization_run_logged(const char *executable, char *const argument
        strpbrk(username,"\r\n") || strpbrk(password,"\r\n"))return INVALID;
     int master,slave;
     if(openpty(&master,&slave,NULL,NULL,NULL))return PTY_FAILED;
+    if(fcntl(master,F_SETFD,FD_CLOEXEC)<0 || fcntl(slave,F_SETFD,FD_CLOEXEC)<0) {
+        close(master);close(slave);return PTY_FAILED;
+    }
     struct termios term;
     if(tcgetattr(slave,&term)) { close(master);close(slave);return TERMINAL_FAILED; }
     /* Leave echo enabled for non-secret input. Password readers turn it off
@@ -105,7 +112,9 @@ static int authorization_run_logged(const char *executable, char *const argument
         close(master);
         if(setsid()<0)_exit(121);
         if(ioctl(slave,TIOCSCTTY,0)<0)_exit(122);
-        for(int fd=0;fd<3;fd++)if(dup2(slave,fd)<0)_exit(123);
+        for(int fd=0;fd<3;fd++) {
+            if(dup2(slave,fd)<0 || fcntl(fd,F_SETFD,0)<0)_exit(123);
+        }
         if(slave>2)close(slave);
         execv(executable,arguments);_exit(127);
     }
@@ -115,7 +124,7 @@ static int authorization_run_logged(const char *executable, char *const argument
     unsigned user_sent=0,password_sent=0,confirmation_sent=0;
     char pending[4096]={0}, line[4096]={0}, raw[LOG_LIMIT];
     size_t used=0,raw_used=0;
-    time_t deadline=time(NULL)+300;
+    time_t deadline=time(NULL)+AUTHORIZATION_TIMEOUT_SECONDS;
     for(;;) {
         if(!exited) {
             pid_t done=waitpid(child,&status,WNOHANG);
@@ -182,6 +191,9 @@ static int authorization_run_logged(const char *executable, char *const argument
             used=0;pending[0]=0;
         }
     }
+    /* The session belongs exclusively to this launch. Also terminate a helper
+     * holding the PTY after its direct parent has already exited. */
+    kill(-child,SIGKILL);
     if(!exited) { kill(child,SIGKILL);while(waitpid(child,&status,0)<0 && errno==EINTR){} }
     output_snapshot(raw,raw_used,password,truncated,output,context);
     volatile char *wipe=pending;for(size_t i=0;i<sizeof(pending);i++)wipe[i]=0;

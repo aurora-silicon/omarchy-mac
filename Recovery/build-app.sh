@@ -11,7 +11,13 @@ cp Resources/OmarchyVolumeIcon.png "$APP/Contents/Resources/OmarchyVolumeIcon.pn
 mkdir -p "$APP/Contents/Resources/en.lproj"
 cp Resources/en.lproj/InfoPlist.strings "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 # Build the standalone Recovery target with XcodeBuildMCP before packaging.
-"${XCODEBUILDMCP:-xcodebuildmcp}" swift-package build --package-path "$PWD" --configuration release
+if command -v "${XCODEBUILDMCP:-xcodebuildmcp}" >/dev/null 2>&1; then
+  "${XCODEBUILDMCP:-xcodebuildmcp}" swift-package build --package-path "$PWD" --configuration release
+else
+  # Release builders need only Xcode's bundled Swift tools.
+  xcrun swift build --package-path "$PWD" --configuration release
+fi
+./test-all.sh "$OUT/checks"
 cp .build/release/OmarchyRecovery "$APP/Contents/MacOS/OmarchyRecovery"
 [[ "$("$APP/Contents/MacOS/OmarchyRecovery" --build-mode)" == "$MODE" ]]
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -30,10 +36,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-xcrun swiftc Sources/RecoveryOwner.swift Sources/InstallConfiguration.swift Tests/InstallConfigurationCheck.swift -o "$OUT/configuration-check"
-"$OUT/configuration-check"
-xcrun swiftc Sources/RecoveryBaseline.swift Tests/RecoveryBaselineCheck.swift -o "$OUT/baseline-check"
-"$OUT/baseline-check"
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Foundation Tests/BundleLookupCheck.m -o "$OUT/bundle-lookup-check"

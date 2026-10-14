@@ -215,7 +215,12 @@
           lastHost = host
           phase = .existingInstallRefused(host: host)
           if host.supported, !environment.installationBlocked {
-            recoveryAccount = try await environment.inspectRecoveryAccount()
+            // Optional handoff records must not hide a still-removable install.
+            do {
+              recoveryAccount = try await environment.inspectRecoveryAccount()
+            } catch {
+              recoveryAccount = nil
+            }
           }
         } else if host.supported, !environment.installationBlocked,
           let shortfall = host.spaceShortfall

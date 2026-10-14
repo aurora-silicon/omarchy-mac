@@ -467,14 +467,29 @@ def fill_aurora_stage1(image, uuid, path, window_ms):
     return image[:offset] + block + image[offset + STAGE1_BLOCK:]
 
 
-def board_stage1(device_class, os_firmware, members=()):
+def board_stage1(device_class, os_firmware, members=(), *, common_allowed=False):
     """The Aurora Stage 1 this Mac and OS firmware boot through, or None."""
     if COMMON_STAGE1.member in members:
+        if not common_allowed:
+            raise AsahiAdapterError("common Stage 1 requires explicit signed-template qualification")
         return COMMON_STAGE1
     board = BOARD_STAGE1.get(device_class)
     if board is None or board.os_firmware not in (None, os_firmware):
         return None
     return board
+
+
+def common_stage1_allowed(template, device_class, os_firmware):
+    policy = template.get("aurora_stage1")
+    if policy is None:
+        return False
+    if (not isinstance(policy, dict) or set(policy) != {"kind", "qualified_machines"}
+            or policy["kind"] != "common-raw-v1" or not isinstance(policy["qualified_machines"], dict)):
+        raise AsahiAdapterError("invalid common Stage 1 qualification contract")
+    firmware = policy["qualified_machines"].get(device_class, [])
+    if not isinstance(firmware, list) or not all(isinstance(value, str) for value in firmware):
+        raise AsahiAdapterError("invalid qualified Stage 1 firmware list")
+    return os_firmware in firmware
 
 
 def read_board_stage1(board, read_member, next_object="m1n1/boot.bin"):
@@ -488,13 +503,16 @@ def read_board_stage1(board, read_member, next_object="m1n1/boot.bin"):
 
 
 def install_board_stage1(
-    device_class, os_firmware, read_member, esp_uuid, boot_object, next_object="m1n1/boot.bin"
+    device_class, os_firmware, read_member, esp_uuid, boot_object, next_object="m1n1/boot.bin",
+    *, common_allowed=False,
 ):
     """Use the common image when supplied, with legacy image compatibility."""
     try:
         common_image = read_member(COMMON_STAGE1.member)
     except KeyError:
         common_image = None
+    if common_image is not None and not common_allowed:
+        raise AsahiAdapterError("common Stage 1 requires explicit signed-template qualification")
     board = COMMON_STAGE1 if common_image is not None else board_stage1(device_class, os_firmware)
     if board is None:
         return
@@ -672,8 +690,9 @@ def stub_installer(sysinfo, dutil, osinfo):
     def collect_firmware_from_an_encrypted_recovery(pkg):
         with _newer_trackpad_keys(), _neo_peripheral_collectors(installer):
             result = _collect_firmware(pkg)
-        _collect_neo_radios(installer, pkg)
-        _collect_neo_touch_id(installer, pkg)
+        required = getattr(installer, "required_neo_peripherals", [])
+        _collect_neo_radios(installer, pkg, required="radio" in required)
+        _collect_neo_touch_id(installer, pkg, required="touch-id" in required)
         if getattr(getattr(installer, "sysinfo", None), "device_class", "") == "j700ap":
             _validate_neo_firmware_package(pkg)
         return result
@@ -724,8 +743,8 @@ def _validate_neo_firmware_package(pkg):
         raise AsahiAdapterError("MacBook Neo firmware package is incomplete: " + ", ".join(sorted(missing)))
 
 
-def _collect_neo_radios(installer, pkg, collect=None):
-    """Require the Neo's complete MT7932 Wi-Fi and Bluetooth input set.
+def _collect_neo_radios(installer, pkg, collect=None, *, required=False):
+    """Collect the Neo's complete MT7932 Wi-Fi and Bluetooth input set.
 
     The model-wide files are Apple's pinned 25G83 ones, fetched by the
     bundled decoder; the calibration and address are this Mac's own.
@@ -752,7 +771,10 @@ def _collect_neo_radios(installer, pkg, collect=None):
             raise omarchy_mt7932.Mt7932Error("missing required files: " + ", ".join(missing))
     except (OSError, ValueError, subprocess.CalledProcessError, omarchy_mt7932.Mt7932Error,
             omarchy_apple_aea.AppleInputError) as error:
-        raise AsahiAdapterError(f"MacBook Neo radio firmware collection failed: {error}") from error
+        if required:
+            raise AsahiAdapterError(f"MacBook Neo radio firmware collection failed: {error}") from error
+        logging.warning("MacBook Neo radio firmware unavailable; Wi-Fi and Bluetooth may be unavailable: %s", error)
+        return
     for name, data in sorted(files.items()):
         pkg.add_file(name, asahi_firmware.core.FWFile(name, data))
     logging.info("MacBook Neo radio firmware: %d files", len(files))
@@ -768,8 +790,8 @@ def _iboot_system_container(dutil):
 
 
 def _collect_neo_touch_id(installer, pkg, collect=omarchy_mesa.collect,
-                          sensor_present=omarchy_mesa.has_builtin_sensor):
-    """Require calibration on sensor-equipped Neos; skip absent hardware."""
+                          sensor_present=omarchy_mesa.has_builtin_sensor, *, required=False):
+    """Collect optional calibration; requiring it needs an explicit template opt-in."""
     if getattr(getattr(installer, "sysinfo", None), "device_class", "") != "j700ap":
         return
     try:
@@ -780,7 +802,10 @@ def _collect_neo_touch_id(installer, pkg, collect=omarchy_mesa.collect,
         if not files.get(omarchy_mesa.FIRMWARE_NAME):
             raise omarchy_mesa.MesaError("sensor is present but calibration is missing")
     except (OSError, KeyError, IndexError, subprocess.CalledProcessError, omarchy_mesa.MesaError) as error:
-        raise AsahiAdapterError(f"MacBook Neo Touch ID collection failed: {error}") from error
+        if required:
+            raise AsahiAdapterError(f"MacBook Neo Touch ID collection failed: {error}") from error
+        logging.warning("MacBook Neo Touch ID calibration unavailable; fingerprint support is optional: %s", error)
+        return
     for name, data in sorted(files.items()):
         pkg.add_file(name, asahi_firmware.core.FWFile(name, data))
     logging.info("MacBook Neo Touch ID calibration: %d bytes", sum(map(len, files.values())))
@@ -1212,10 +1237,17 @@ class AsahiStage1Adapter:
             self.installer.dutil,
             self.installer.osinfo,
         )
+        required = self.template.get("required_neo_peripherals", [])
+        if not isinstance(required, list) or any(item not in ("radio", "touch-id") for item in required):
+            raise AsahiAdapterError("unknown required Neo peripheral contract")
+        self.installer.ins.required_neo_peripherals = required
         self.installer.ins.load_ipsw(ipsw)
         self.os_firmware = ipsw.version.split(maxsplit=1)[0]
         esp_members = self._esp_members()
-        board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware, esp_members)
+        self.common_stage1 = common_stage1_allowed(
+            self.template, self.installer.sysinfo.device_class, self.os_firmware)
+        board = board_stage1(self.installer.sysinfo.device_class, self.os_firmware, esp_members,
+                             common_allowed=self.common_stage1)
         if board is not None:
             read_board_stage1(board, self.osins.pkg.read, self.template["next_object"])
         device_class = self.installer.sysinfo.device_class
@@ -1284,13 +1316,10 @@ class AsahiStage1Adapter:
         reference = container.get("ContainerReference")
         if not isinstance(reference, str) or not reference:
             raise AsahiAdapterError("existing stub container is unreadable")
-        # Keep the APFS store alive until its neighbouring partitions have
-        # been removed. deleteContainer may free that store outright or
-        # replace it with a new HFS partition identity.
-        for member in reversed(members[1:]):
-            self.installer.dutil.action(
-                "eraseVolume", "free", "none", member.uuid, verbose=True
-            )
+        # Delete the stub first: a rejected deleteContainer must leave its
+        # ESP and Linux partitions intact. Disk deletion is not atomic; the
+        # outer mutation journal refuses automatic replay after interruption.
+        # deleteContainer may free the store or replace it with an HFS identity.
         self.installer.dutil.action(
             "apfs", "deleteContainer", reference, verbose=True
         )
@@ -1307,6 +1336,10 @@ class AsahiStage1Adapter:
                 raise AsahiAdapterError("deleted stub left an unexpected partition")
             self.installer.dutil.action(
                 "eraseVolume", "free", "none", remaining[0].uuid, verbose=True
+            )
+        for member in reversed(members[1:]):
+            self.installer.dutil.action(
+                "eraseVolume", "free", "none", member.uuid, verbose=True
             )
         self._refresh_parts()
         freed = self._find_free_extent(plan)
@@ -1387,6 +1420,7 @@ class AsahiStage1Adapter:
             self.osins.efi_part.uuid,
             self.installer.ins.boot_obj_path,
             self.template.get("next_object", "m1n1/boot.bin"),
+            common_allowed=self.common_stage1,
         )
         install_esp_board_layout(
             self.installer.sysinfo.device_class,
@@ -1987,7 +2021,7 @@ class AsahiStage1Adapter:
         recovery_mode = self.template.get("recovery_gui")
         if recovery_mode not in (None, "omarchy-native-v1"):
             raise AsahiAdapterError("unknown Recovery GUI contract")
-        self.native_recovery_gui = recovery_mode is not None or recovery_manifest in members
+        self.native_recovery_gui = recovery_mode is not None
         if self.native_recovery_gui:
             try:
                 omarchy_recovery.validate_payload(self.osins.pkg)

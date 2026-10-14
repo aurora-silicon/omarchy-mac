@@ -263,6 +263,19 @@ def check_packages(verification: Verification, root: Path, runtime_packages: fro
     packages = installed_provides(root)
     installed = set(packages)
     filled = installed | {role for name in runtime_packages & installed for role in packages[name]}
+    # Exact Aurora replacements only. An arbitrary package claiming a required
+    # role must not satisfy image inspection. Candidate signature/source checks
+    # still happen independently before this installed-system check.
+    replacements = {
+        "aura": {"m1n1-aurora"}, "uboot-aurora": {"uboot-asahi"},
+        "mesa-aurora": {"mesa"}, "vulkan-asahi-aurora": {"vulkan-asahi"},
+        "aurora-bless": {"asahi-bless"},
+        "asahi-audio-aurora": {"asahi-audio"},
+        "alsa-ucm-conf-asahi-aurora": {"alsa-ucm-conf-asahi"},
+    }
+    for name, roles in replacements.items():
+        if name in installed:
+            filled.update(roles & packages[name])
     missing = [name for name in REQUIRED_PACKAGES if name not in filled]
     verification.record(
         "packages-required-present",
@@ -277,7 +290,7 @@ def check_packages(verification: Verification, root: Path, runtime_packages: fro
     versions = []
     for desc in (root / "var/lib/pacman/local").glob("*/desc"):
         fields = desc.read_text().splitlines()
-        if "%NAME%" in fields and fields[fields.index("%NAME%") + 1] == "asahi-bless":
+        if "%NAME%" in fields and fields[fields.index("%NAME%") + 1] in ("asahi-bless", "aurora-bless"):
             if "%VERSION%" in fields:
                 versions.append(fields[fields.index("%VERSION%") + 1])
     match = re.match(r"^(?:\d+:)?(\d+)\.(\d+)(?:\.(\d+))?", versions[0]) if len(versions) == 1 else None

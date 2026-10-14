@@ -7,6 +7,24 @@
   @testable import OmarchyAppleInstallerTrustCore
 
   final class ClosedEngineHelperServerTests: XCTestCase {
+    func testAccountMutationsCannotBeRequestedThroughHelper() async throws {
+      let fixture = try makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let server = ClosedEngineHelperServer(
+        workingDirectory: fixture.destination,
+        executor: RecordingHandoffExecutor(result: fixture.transcript),
+        credentialValidator: AcceptingMachineOwnerCredentialValidator())
+      for action in ["prepare", "finalize"] {
+        do {
+          _ = try await server.recoveryAccount(
+            action: action, ticket: "", username: "owner", password: Data("password".utf8))
+          XCTFail("The macOS helper must not create or promote Recovery accounts")
+        } catch {
+          XCTAssertEqual(error as? ClosedEngineHelperError, .invalidOperation)
+        }
+      }
+    }
+
     func testEndpointReportsItsHelperVersionAndEmptyWhenItHasNone() async throws {
       let fixture = try makeFixture()
       defer { try? FileManager.default.removeItem(at: fixture.root) }

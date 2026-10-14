@@ -46,12 +46,62 @@
       }
     }
 
+    private struct AppUpdateJournal: Codable {
+      let target: RecoveryAccountTarget
+      let backup: String
+      let snapshot: String
+      let originalFiles: [String]
+    }
+
+    private static func appUpdateFiles(_ system: URL) -> [URL] {
+      ["SystemVersion.plist", "SystemVersion-disabled.plist"].map {
+        system.appendingPathComponent("System/Library/CoreServices/" + $0)
+      }
+    }
+
+    private static func resumeAppUpdate(system: URL, target: RecoveryAccountTarget) throws {
+      let fm = FileManager.default
+      let state = system.appendingPathComponent("Aurora/Recovery/State")
+      let pending = state.appendingPathComponent("app-update.pending.json")
+      guard fm.fileExists(atPath: pending.path) else { return }
+      let journal = try JSONDecoder().decode(
+        AppUpdateJournal.self,
+        from: RecoveryAccountInstaller.protectedRead(pending, limit: 65536))
+      guard journal.target == target,
+        UUID(uuidString: String(journal.backup.dropLast(4))) != nil,
+        journal.backup.hasSuffix(".app"), journal.snapshot.hasPrefix("app-update-"),
+        UUID(uuidString: String(journal.snapshot.dropFirst("app-update-".count))) != nil
+      else {
+        throw AccountSetupFailure("An interrupted Recovery app update belongs to another target.")
+      }
+      let snapshot = state.appendingPathComponent(journal.snapshot)
+      let transaction = try RecoveryFileTransaction.resume(
+        directory: snapshot, files: appUpdateFiles(system),
+        originalFiles: journal.originalFiles.map { URL(fileURLWithPath: $0) })
+      let status = try? Data(contentsOf: snapshot.appendingPathComponent("status"))
+      if status != Data("committed\n".utf8) {
+        try transaction.restore()
+        let backup = system.appendingPathComponent("Aurora/Recovery/AppBackups/" + journal.backup)
+        let destination = system.appendingPathComponent(
+          InstallerProductIdentity.recoveryAppBundleName)
+        if fm.fileExists(atPath: backup.path) {
+          if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+          try fm.moveItem(at: backup, to: destination)
+          try RecoveryFileTransaction.flushDirectory(system)
+          try RecoveryFileTransaction.flushDirectory(backup.deletingLastPathComponent())
+        }
+      }
+      try fm.removeItem(at: pending)
+      try RecoveryFileTransaction.flushDirectory(state)
+    }
+
     static func updateRecoveryApp(for target: RecoveryAccountTarget) throws {
       // The helper's own copy first: an app run from its disk image installs
       // one with the helper, while the package leaves the app in /Applications.
       let fm = FileManager.default
       let found = [
-        InstallerProductIdentity.installedRecoveryTemplateDirectory + "/" + InstallerProductIdentity.recoveryAppBundleName,
+        InstallerProductIdentity.installedRecoveryTemplateDirectory + "/"
+          + InstallerProductIdentity.recoveryAppBundleName,
         "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppBundleName)",
       ].map { URL(fileURLWithPath: $0) }.first { fm.fileExists(atPath: $0.path) }
       guard let source = found else {
@@ -59,8 +109,17 @@
           "This installer is missing its native Recovery app. Reinstall the updated installer package."
         )
       }
+      guard
+        let requirement = ProcessInfo.processInfo.environment[
+          "OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT"],
+        requirement.range(of: "\\Acdhash H\"[0-9a-f]{40,64}\"\\z", options: .regularExpression)
+          != nil
+      else {
+        throw AccountSetupFailure(
+          "The helper has no verified Recovery-template identity. Reinstall this build’s helper.")
+      }
       _ = try AccountNativeCommand.checked(
-        "/usr/bin/codesign", ["--verify", "--deep", "--strict", source.path])
+        "/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=" + requirement, source.path])
       let info = try AccountNativeCommand.disk(target.systemUUID)
       guard (info["VolumeUUID"] as? String)?.uppercased() == target.systemUUID,
         let mount = info["MountPoint"] as? String, mount.hasPrefix("/Volumes/")
@@ -70,7 +129,9 @@
       }
       _ = try AccountNativeCommand.checked("/sbin/mount", ["-u", "-w", mount])
       let system = URL(fileURLWithPath: mount, isDirectory: true)
-      let destination = system.appendingPathComponent(InstallerProductIdentity.recoveryAppBundleName, isDirectory: true)
+      let destination = system.appendingPathComponent(
+        InstallerProductIdentity.recoveryAppBundleName, isDirectory: true)
+      try resumeAppUpdate(system: system, target: target)
       let oldResources = destination.appendingPathComponent("Contents/Resources", isDirectory: true)
       let configuration = try RecoveryAccountInstaller.protectedRead(
         oldResources.appendingPathComponent("install-config.json"), limit: 65536)
@@ -80,22 +141,17 @@
         config["prebootUUID"] as? String == target.prebootUUID
       else { throw AccountSetupFailure("The Recovery app does not match this installation.") }
       try RecoveryAccountInstaller.refreshMountedGroup(target)
-      try RecoveryVersionMetadata.hideForInitialRecovery(system: system)
-      let executable = "Contents/MacOS/OmarchyRecovery"
-      if try Data(contentsOf: destination.appendingPathComponent(executable))
-        == Data(contentsOf: source.appendingPathComponent(executable))
-      {
-        _ = try AccountNativeCommand.checked(
-          "/usr/bin/codesign", ["--verify", "--deep", "--strict", destination.path])
-        return
-      }
       let scratch = system.appendingPathComponent(
         ".omarchy-recovery-update-\(UUID().uuidString)", isDirectory: true)
       try fm.createDirectory(
         at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
       defer { try? fm.removeItem(at: scratch) }
-      let candidate = scratch.appendingPathComponent(InstallerProductIdentity.recoveryAppBundleName, isDirectory: true)
+      let candidate = scratch.appendingPathComponent(
+        InstallerProductIdentity.recoveryAppBundleName, isDirectory: true)
       try fm.copyItem(at: source, to: candidate)
+      _ = try AccountNativeCommand.checked(
+        "/usr/bin/codesign",
+        ["--verify", "--deep", "--strict", "-R=" + requirement, candidate.path])
       let resources = candidate.appendingPathComponent("Contents/Resources", isDirectory: true)
       try configuration.write(
         to: resources.appendingPathComponent("install-config.json"), options: .atomic)
@@ -111,10 +167,62 @@
       try fm.createDirectory(
         at: backup.deletingLastPathComponent(), withIntermediateDirectories: true,
         attributes: [.posixPermissions: 0o700])
-      try fm.moveItem(at: destination, to: backup)
-      do { try fm.moveItem(at: candidate, to: destination) } catch {
-        try fm.moveItem(at: backup, to: destination)
-        throw error
+      let state = system.appendingPathComponent("Aurora/Recovery/State")
+      try fm.createDirectory(
+        at: state, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+      let snapshot = state.appendingPathComponent("app-update-" + UUID().uuidString)
+      let files = appUpdateFiles(system)
+      let transaction = try RecoveryFileTransaction(directory: snapshot, files: files)
+      let pending = state.appendingPathComponent("app-update.pending.json")
+      try RecoveryFileTransaction.write(
+        try JSONEncoder().encode(
+          AppUpdateJournal(
+            target: target, backup: backup.lastPathComponent, snapshot: snapshot.lastPathComponent,
+            originalFiles: files.map(\.path))), to: pending)
+      do {
+        try fm.moveItem(at: destination, to: backup)
+        try RecoveryFileTransaction.flushDirectory(system)
+        try RecoveryFileTransaction.flushDirectory(backup.deletingLastPathComponent())
+        try fm.moveItem(at: candidate, to: destination)
+        try RecoveryFileTransaction.flushDirectory(system)
+        let movesVersion =
+          fm.fileExists(atPath: files[0].path)
+          && fm.fileExists(atPath: system.appendingPathComponent(".IAPhysicalMedia").path)
+        try RecoveryVersionMetadata.hideForInitialRecovery(system: system)
+        try transaction.commit(relocated: movesVersion ? [files[0].path: files[1]] : [:])
+        try fm.removeItem(at: pending)
+        try RecoveryFileTransaction.flushDirectory(state)
+      } catch {
+        let original = error
+        try resumeAppUpdate(system: system, target: target)
+        throw original
+      }
+      // Keep two previous GUI versions; payload/firmware baselines stay in the
+      // configured live app and are never taken from another installation.
+      let backups = backup.deletingLastPathComponent()
+      let versions = try fm.contentsOfDirectory(
+        at: backups, includingPropertiesForKeys: [.contentModificationDateKey],
+        options: [.skipsHiddenFiles]
+      ).filter {
+        $0.pathExtension == "app"
+          && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil
+      }
+      let ordered = versions.sorted {
+        ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+          ?? .distantPast)
+          > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? .distantPast)
+      }
+      for obsolete in ordered.dropFirst(2) {
+        let config = try? RecoveryAccountInstaller.protectedRead(
+          obsolete.appendingPathComponent("Contents/Resources/install-config.json"), limit: 65536)
+        if let config,
+          let object = try? JSONSerialization.jsonObject(with: config) as? [String: Any],
+          object["groupUUID"] as? String == target.groupUUID
+        {
+          try? fm.removeItem(at: obsolete)
+        }
       }
     }
 
@@ -196,29 +304,34 @@
       else { throw AccountSetupFailure("Couldn’t inspect the installed partitions.") }
       var found = [CompletedRecoveryInstallation]()
       for file in files {
-        let bytes = try RecoveryAccountInstaller.protectedRead(file, limit: 4 << 20)
-        let ended = bytes.split(separator: 10).last.flatMap {
-          try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]
-        }
-        guard ended?["type"] as? String == "completion" else { continue }
-        var evidence = [String: Data]()
-        for identifier in [
-          "apfs-target-prepared", "stub-and-esp-installed", "recovery-handoff-prepared",
-        ] {
-          evidence[identifier] = try RecoveryAccountInstaller.protectedRead(
-            URL(fileURLWithPath: file.path + ".\(identifier).evidence"), limit: 65536)
-        }
-        let identity = try completedEvidence(transcript: bytes, evidence: evidence)
-        if let current = try? liveTarget(group: identity.group, esp: identity.esp) {
-          do {
-            try requireLivePartitions(evidence: evidence, listing: diskList)
-          } catch { continue }
-          // Recovery already finished this one: it is installed, not waiting.
-          if recoveryFinished(current) { continue }
-          found.append(
-            CompletedRecoveryInstallation(
-              binding: file.deletingPathExtension().lastPathComponent, target: current,
-              espUUID: identity.esp))
+        do {
+          let bytes = try RecoveryAccountInstaller.protectedRead(file, limit: 4 << 20)
+          let ended = bytes.split(separator: 10).last.flatMap {
+            try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]
+          }
+          guard ended?["type"] as? String == "completion" else { continue }
+          var evidence = [String: Data]()
+          for identifier in [
+            "apfs-target-prepared", "stub-and-esp-installed", "recovery-handoff-prepared",
+          ] {
+            evidence[identifier] = try RecoveryAccountInstaller.protectedRead(
+              URL(fileURLWithPath: file.path + ".\(identifier).evidence"), limit: 65536)
+          }
+          let identity = try completedEvidence(transcript: bytes, evidence: evidence)
+          if let current = try? liveTarget(group: identity.group, esp: identity.esp) {
+            do {
+              try requireLivePartitions(evidence: evidence, listing: diskList)
+            } catch { continue }
+            // Recovery already finished this one: it is installed, not waiting.
+            if recoveryFinished(current) { continue }
+            found.append(
+              CompletedRecoveryInstallation(
+                binding: file.deletingPathExtension().lastPathComponent, target: current,
+                espUUID: identity.esp))
+          }
+        } catch {
+          // A historical or incomplete record is not a current handoff.
+          continue
         }
       }
       // Historical completed journals may name the same still-live target.

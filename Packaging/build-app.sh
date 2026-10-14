@@ -278,8 +278,10 @@ install -m 0444 "$package_directory/Design/Assets/MacBookPowerButton.png" "$reso
 install -m 0444 "$package_directory/Design/Assets/MacDesktopPowerButton.png" "$resources/MacDesktopPowerButton.png"
 mkdir -p "$resources/RecoveryTemplate"
 /usr/bin/ditto "$recovery_template" "$resources/RecoveryTemplate/Omarchy Installer.app"
-codesign --force --sign "$signing_identity" "${timestamp_arguments[@]}" \
-  "$resources/RecoveryTemplate/Omarchy Installer.app"
+if [[ $signing_identity != "none" ]]; then
+  codesign --force --sign "$signing_identity" "${timestamp_arguments[@]}" --options runtime \
+    "$resources/RecoveryTemplate/Omarchy Installer.app"
+fi
 if [[ ${OMARCHY_PRIVATE_LIMINE_TEST:-0} == "1" ]]; then
   install -m 0444 "$release_directory/limine-inputs.json" "$resources/Release/limine-inputs.json"
 fi
@@ -370,6 +372,12 @@ if [[ $signing_identity != "-" ]]; then
   plutil -replace SMPrivilegedExecutables \
     -json "{\"$helper_identifier\":$(printf '%s' "$helper_requirement" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')}" \
     "$contents/Info.plist"
+fi
+if [[ $signing_identity != "none" ]]; then
+  recovery_hash=$(codesign --display --verbose=4 "$resources/RecoveryTemplate/$INSTALLER_RECOVERY_APP_NAME.app" 2>&1 | sed -n 's/^CDHash=//p')
+  [[ $recovery_hash =~ ^[0-9a-f]{40,64}$ ]] || fail "cannot identify the signed Recovery template"
+  plutil -replace EnvironmentVariables.OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT \
+    -string "cdhash H\"$recovery_hash\"" "$contents/Library/LaunchDaemons/$daemon_plist_name"
 fi
 plutil -replace \
   EnvironmentVariables.OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT \

@@ -72,7 +72,11 @@ enum RecoveryActions {
   static var resources: URL { Bundle.main.resourceURL! }
   static var state: URL { volume.appendingPathComponent("Aurora/Recovery/State") }
   static var receipt: URL { state.appendingPathComponent("installation.json") }
-  static var recovering: Bool { FileManager.default.fileExists(atPath: receipt.path) }
+  static var pendingInstallation: URL { state.appendingPathComponent("installation.pending.json") }
+  static var recovering: Bool {
+    FileManager.default.fileExists(atPath: receipt.path)
+      && !FileManager.default.fileExists(atPath: pendingInstallation.path)
+  }
 
   static func check(_ condition: Bool, _ message: String) throws {
     if !condition { throw RecoveryFailure(message: message) }
@@ -125,7 +129,9 @@ enum RecoveryActions {
   static func resolveOwner() throws -> RecoveryOwner {
     try verifyVolume()
     let selected = try RecoveryAccountInstaller.selectedOwner(system: volume)
-    let userData = try run("/usr/sbin/diskutil", ["apfs", "listUsers", systemUUID, "-plist"])
+    let dataUUID = try RecoveryAccountInstaller.pairedDataUUID(
+      systemUUID: systemUUID, groupUUID: groupUUID)
+    let userData = try run("/usr/sbin/diskutil", ["apfs", "listUsers", dataUUID, "-plist"])
     guard
       let cryptoUsers = try PropertyListSerialization.propertyList(from: userData, format: nil)
         as? [String: Any]
@@ -207,8 +213,10 @@ enum RecoveryActions {
             throw RecoveryOwnerError.noOwner
           }
         }
+        let sourceDataUUID = try RecoveryAccountInstaller.pairedDataUUID(
+          systemUUID: id.uppercased(), groupUUID: bootstrap.sourceGroupUUID)
         let data = try run(
-          "/usr/sbin/diskutil", ["apfs", "listUsers", id, "-plist"])
+          "/usr/sbin/diskutil", ["apfs", "listUsers", sourceDataUUID, "-plist"])
         guard
           let users = try PropertyListSerialization.propertyList(from: data, format: nil)
             as? [String: Any]
@@ -349,70 +357,169 @@ enum RecoveryActions {
     }
     progress(0.15, "Checking the recovery environment")
     try run("/sbin/mount", ["-u", "-w", volume.path])
-    let operation = state.appendingPathComponent("operation-" + UUID().uuidString)
-    try FileManager.default.createDirectory(at: operation, withIntermediateDirectories: true)
+    let fm = FileManager.default
+    try fm.createDirectory(
+      at: state, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    let target = try esp().appendingPathComponent(destination)
+    let marker = volume.appendingPathComponent(".IAPhysicalMedia")
+    let disabledMarker = volume.appendingPathComponent("IAPhysicalMedia-disabled.plist")
+    let core = volume.appendingPathComponent("System/Library/CoreServices")
+    let visibleVersion = core.appendingPathComponent("SystemVersion.plist")
+    let hiddenVersion = core.appendingPathComponent("SystemVersion-disabled.plist")
+    let files = [target, marker, disabledMarker, visibleVersion, hiddenVersion, receipt]
+    let isc = URL(fileURLWithPath: "/System/Volumes/iSCPreboot/" + groupUUID)
+    let iscVar = isc.appendingPathComponent("var")
+    var journal: RecoveryInstallationJournal
+    var transaction: RecoveryFileTransaction
+    var operation: URL
+    if fm.fileExists(atPath: pendingInstallation.path) {
+      journal = try JSONDecoder().decode(
+        RecoveryInstallationJournal.self,
+        from: RecoveryAccountInstaller.protectedRead(pendingInstallation, limit: 65536))
+      try journal.validate(
+        system: systemUUID, group: groupUUID, esp: espUUID,
+        stage1: hash(stage1), stage2: hash(stage2))
+      operation = state.appendingPathComponent(journal.operation)
+      transaction = try RecoveryFileTransaction.resume(
+        directory: operation.appendingPathComponent("files"), files: files,
+        originalFiles: journal.originalFiles.map { URL(fileURLWithPath: $0) })
+      if journal.phase.mayRestoreFiles {
+        try transaction.restore()
+        try restoreISC(journal, at: iscVar)
+        journal.phase = .prepared
+      }
+      InstallerLog.shared.append("Resuming the recorded startup setup.")
+    } else {
+      operation = state.appendingPathComponent("operation-" + UUID().uuidString)
+      try fm.createDirectory(
+        at: operation, withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700])
+      transaction = try RecoveryFileTransaction(
+        directory: operation.appendingPathComponent("files"), files: files, dataOnly: [target])
+      journal = RecoveryInstallationJournal(
+        operation: operation.lastPathComponent, systemUUID: systemUUID, groupUUID: groupUUID,
+        espUUID: espUUID, stage1SHA256: hash(stage1), stage2SHA256: hash(stage2),
+        originalFiles: files.map(\.path),
+        replacedISC: fm.fileExists(atPath: isc.appendingPathComponent("boot").path),
+        iscVarWasPresent: fm.fileExists(atPath: iscVar.path), phase: .prepared)
+    }
+    func record(_ phase: RecoveryInstallationPhase) throws {
+      journal.phase = phase
+      try RecoveryFileTransaction.write(try JSONEncoder().encode(journal), to: pendingInstallation)
+    }
+    try record(journal.phase)
     InstallerLog.shared.persist(to: operation.appendingPathComponent("installer.log"))
     let stage1Path = operation.appendingPathComponent("stage1")
-    try atomic(stage1, to: stage1Path)
-    let target = try esp().appendingPathComponent(destination)
-    let old = try? Data(contentsOf: target)
-    if let old { try atomic(old, to: operation.appendingPathComponent("stage2.before")) }
-    try saveJSON(
-      ["status": "prepared", "mode": selection.mode.rawValue, "target": target.path],
-      to: operation.appendingPathComponent("journal.json"))
-    progress(0.3, "Authorizing the boot environment")
-    try authorized("/usr/bin/bputil", ["-nca", "-v", groupUUID], owner: owner, password: password)
-    let isc = URL(fileURLWithPath: "/System/Volumes/iSCPreboot/" + groupUUID)
-    if FileManager.default.fileExists(atPath: isc.appendingPathComponent("boot").path) {
-      try run("/usr/sbin/diskutil", ["mount", prebootUUID])
-      let preboot = try disk(prebootUUID)
-      guard let mount = preboot["MountPoint"] as? String else {
-        throw RecoveryFailure(message: "Cannot mount Preboot.")
-      }
-      let destination = isc.appendingPathComponent("var")
-      if FileManager.default.fileExists(atPath: destination.path) {
-        try run(
-          "/usr/bin/ditto",
-          [destination.path, operation.appendingPathComponent("isc-var.before").path])
-      }
-      try run("/usr/bin/ditto", [mount + "/" + groupUUID + "/var", destination.path])
-    }
-    progress(0.55, "Installing the startup software")
-    try atomic(stage2, to: target)
+    try RecoveryFileTransaction.write(stage1, to: stage1Path)
     do {
-      try authorized(
-        "/usr/bin/kmutil",
-        selection.mode.enrollmentArguments(stage1: stage1Path.path, volume: volume.path),
-        owner: owner, password: password)
+      try RecoveryInstallationCoordinator.run(
+        phase: journal.phase, persist: record,
+        authorizePolicy: {
+          try transaction.clearImmutableFlags()
+          progress(0.3, "Authorizing the boot environment")
+          try authorized(
+            "/usr/bin/bputil", ["-nc", "-v", groupUUID], owner: owner, password: password)
+        },
+        installBundle: {
+          if journal.replacedISC {
+            try run("/usr/sbin/diskutil", ["mount", prebootUUID])
+            let preboot = try disk(prebootUUID)
+            guard (preboot["VolumeUUID"] as? String)?.uppercased() == prebootUUID,
+              let mount = preboot["MountPoint"] as? String
+            else {
+              throw RecoveryFailure(message: "Cannot identify the mounted Preboot volume.")
+            }
+            try replaceISC(
+              journal,
+              source: URL(fileURLWithPath: mount)
+                .appendingPathComponent(groupUUID + "/var"), at: iscVar)
+          }
+          try atomic(stage2, to: target)
+        },
+        verifyBundle: {
+          try check(
+            try Data(contentsOf: target) == stage2,
+            "The pending startup bundle changed; its recovery record was preserved.")
+        },
+        enroll: {
+          progress(0.55, "Installing the startup software")
+          try authorized(
+            "/usr/bin/kmutil",
+            selection.mode.enrollmentArguments(stage1: stage1Path.path, volume: volume.path),
+            owner: owner, password: password)
+        },
+        finalize: {
+          progress(0.85, "Finishing installation")
+          // Keep autolaunch until both version metadata and receipt are durable.
+          try RecoveryVersionMetadata.showForStartupDisk(system: volume)
+          try RecoveryFileTransaction.flushDirectory(core)
+          try RecoveryFileTransaction.write(
+            try JSONSerialization.data(
+              withJSONObject: [
+                "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
+                "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
+                "nestedVirtualization": selection.nestedVirtualization, "status": "installed",
+                "recoveryAccountRequired": true, "operation": operation.path,
+              ], options: [.prettyPrinted, .sortedKeys]), to: receipt)
+          if fm.fileExists(atPath: marker.path) {
+            try RecoveryFileTransaction.write(Data(contentsOf: marker), to: disabledMarker)
+            try fm.removeItem(at: marker)
+            try RecoveryFileTransaction.flushDirectory(volume)
+          }
+        },
+        commit: {
+          try transaction.commit(relocated: [
+            marker.standardizedFileURL.path: disabledMarker,
+            hiddenVersion.standardizedFileURL.path: visibleVersion,
+          ])
+        })
+      try fm.removeItem(at: pendingInstallation)
+      try RecoveryFileTransaction.flushDirectory(state)
     } catch {
-      if let old { try atomic(old, to: target) }
-      throw error
+      let original = error
+      if journal.phase.mayRestoreFiles {
+        do {
+          try transaction.restore()
+          try restoreISC(journal, at: iscVar)
+          try fm.removeItem(at: pendingInstallation)
+          try RecoveryFileTransaction.flushDirectory(state)
+        } catch {
+          throw RecoveryFailure(
+            message:
+              "Setup stopped and file recovery needs review. Keep the saved operation at \(operation.path)."
+          )
+        }
+        InstallerLog.shared.append(
+          "Startup files restored. An authorized LocalPolicy change is not undone by file recovery."
+        )
+      } else {
+        InstallerLog.shared.append(
+          "The matching startup bundle and pending operation were retained. Continue again to finish this setup."
+        )
+      }
+      throw original
     }
-    progress(0.85, "Finishing installation")
-    // Keep the GUI, CLI, payloads and rollback record after disabling autolaunch.
-    let marker = volume.appendingPathComponent(".IAPhysicalMedia")
-    if FileManager.default.fileExists(atPath: marker.path) {
-      try atomic(
-        Data(contentsOf: marker),
-        to: volume.appendingPathComponent("IAPhysicalMedia-disabled.plist"))
-      try FileManager.default.removeItem(at: marker)
-    }
-    let core = volume.appendingPathComponent("System/Library/CoreServices")
-    let disabled = core.appendingPathComponent("SystemVersion-disabled.plist")
-    if FileManager.default.fileExists(atPath: disabled.path) {
-      try atomic(Data(contentsOf: disabled), to: core.appendingPathComponent("SystemVersion.plist"))
-      try FileManager.default.removeItem(at: disabled)
-    }
-    try saveJSON(
-      [
-        "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
-        "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
-        "nestedVirtualization": selection.nestedVirtualization, "status": "installed",
-        "recoveryAccountRequired": true,
-        "operation": operation.path,
-      ], to: receipt)
     progress(1, "Installation complete")
   }
+  private static func replaceISC(
+    _ journal: RecoveryInstallationJournal, source: URL, at target: URL
+  ) throws {
+    try RecoveryDirectorySwap.replace(
+      source: source, target: target, operation: journal.operation,
+      wasPresent: journal.iscVarWasPresent,
+      copy: {
+        _ = try run("/usr/bin/ditto", [$0.path, $1.path])
+      })
+  }
+
+  private static func restoreISC(_ journal: RecoveryInstallationJournal, at target: URL) throws {
+    guard journal.replacedISC else { return }
+    try RecoveryDirectorySwap.restore(
+      target: target, operation: journal.operation,
+      wasPresent: journal.iscVarWasPresent)
+  }
+
   static func targetIsDefaultBoot() throws -> Bool {
     let bytes = try run("/usr/sbin/bless", ["--getBoot", "--plist"])
     guard
@@ -531,6 +638,7 @@ enum RecoveryActions {
   static func createRecoveryAccount(username: String, password: Data) throws
     -> RecoveryAccountRecord
   {
+    try requireEnrollmentEnvironment()
     let target = try accountTarget()
     try RecoveryAccountInstaller.refreshMountedGroup(target)
     _ = try RecoveryAccountInstaller.prepare(target, username: username, password: password)
@@ -543,7 +651,7 @@ enum RecoveryActions {
 
 extension RecoveryActions {
   static func installed() throws -> [String: Any] {
-    guard
+    guard recovering,
       let value = try JSONSerialization.jsonObject(with: Data(contentsOf: receipt))
         as? [String: Any],
       value["status"] as? String == "installed"

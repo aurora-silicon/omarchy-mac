@@ -129,4 +129,14 @@ cleanup:
     return failure || !WIFEXITED(status) ? -1 : WEXITSTATUS(status);
 }
 
-void omarchy_account_free(void *buffer) { free(buffer); }
+void omarchy_account_wipe(void *buffer, long size)
+{
+    volatile unsigned char *bytes=buffer;
+    if(!bytes || size<=0)return;
+    for(long i=0;i<size;i++)bytes[i]=0;
+}
+void omarchy_account_free(void *buffer, long size)
+{
+    omarchy_account_wipe(buffer,size);
+    free(buffer);
+}

@@ -79,12 +79,15 @@
       plist["EnvironmentVariables"] = environment
       plist["Program"] = installed
       plist.removeValue(forKey: "BundleProgram")
+      let template = bundle.appendingPathComponent(
+        "Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppBundleName)",
+        isDirectory: true)
+      let templateRequirement = "cdhash H\"\(try Self.codeHash(at: template))\""
+      environment["OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT"] = templateRequirement
+      plist["EnvironmentVariables"] = environment
       let encoded = try PropertyListSerialization.data(
         fromPropertyList: plist, format: .xml, options: 0
       ).base64EncodedString()
-      let template = bundle.appendingPathComponent(
-        "Contents/Resources/RecoveryTemplate/\(InstallerProductIdentity.recoveryAppBundleName)", isDirectory: true)
-      let templateRequirement = "cdhash H\"\(try Self.codeHash(at: template))\""
       let templates = InstallerProductIdentity.installedRecoveryTemplateDirectory
       let quote = Self.shellQuote
       // Only this fixed text is elevated; the helper is verified again once it

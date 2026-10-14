@@ -8,6 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -129,13 +130,39 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(marker["ProductBuildVersion"], "00A191")
         self.assertIn("../../../Omarchy Installer.app/Contents/MacOS/OmarchyRecovery", self.step2.read_text())
         self.assertTrue(self.boot.is_file())
-        self.assertEqual(len(self.commands), 3)
+        self.assertEqual(len(self.commands), 4)
         self.assertEqual(self.commands[1][1:4], ["--force", "--sign", "-"])
 
-    def test_second_install_never_overwrites_existing_recovery_app(self):
-        self.stage()
-        with self.assertRaisesRegex(recovery.RecoveryError, "already exists"):
+    def test_second_install_reuses_only_matching_native_app(self):
+        first = self.stage()
+        binary = self.system / recovery.APP_NAME / "Contents/MacOS/OmarchyRecovery"
+        before = binary.read_bytes()
+        self.assertEqual(self.stage(), first)
+        self.assertEqual(binary.read_bytes(), before)
+        binary.write_bytes(b"foreign replacement")
+        with self.assertRaisesRegex(recovery.RecoveryError, "differs from its template"):
             self.stage()
+
+    def test_interrupted_marker_publication_restores_launcher_and_resumes(self):
+        before_marker = self.marker.read_bytes()
+        before_launcher = self.step2.read_bytes()
+        original = recovery._atomic_bytes
+        failed = False
+        def fail_once(path, data, mode=0o600):
+            nonlocal failed
+            if Path(path) == self.marker and not failed:
+                failed = True
+                raise OSError("simulated marker failure")
+            return original(path, data, mode)
+        with mock.patch.object(recovery, "_atomic_bytes", fail_once):
+            with self.assertRaisesRegex(OSError, "simulated marker failure"):
+                self.stage()
+        self.assertEqual(self.marker.read_bytes(), before_marker)
+        self.assertEqual(self.step2.read_bytes(), before_launcher)
+        self.assertTrue((self.system / ".omarchy-recovery-publication.json").is_file())
+        self.stage()
+        self.assertFalse((self.system / ".omarchy-recovery-publication.json").exists())
+        self.assertEqual(plistlib.loads(self.marker.read_bytes())["AppName"], recovery.APP_NAME)
 
     def test_wrong_target_esp_stops_before_any_mutation(self):
         before = self.marker.read_bytes()

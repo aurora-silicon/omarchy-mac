@@ -324,12 +324,33 @@ class AsahiStage1AdapterTests(unittest.TestCase):
 
     def test_generic_image_preflights_neo_without_legacy_board_payloads(self):
         self._common_payload()
+        metadata = self._target_metadata()
+        metadata["aurora_stage1"] = {
+            "kind": "common-raw-v1",
+            "qualified_machines": {"j700ap": ["14.8.3"]},
+        }
+        self._write_metadata([metadata])
         installer = FakeInstaller(FakeDiskUtil([[self.free]]))
         installer.sysinfo.device_class = "j700ap"
         adapter = self._adapter(installer)
         adapter.preflight(self.plan)
         self.assertTrue(adapter.preflight_complete)
         self.assertEqual(installer.dutil.add_calls, [])
+
+    def test_generic_image_requires_explicit_board_and_firmware_qualification(self):
+        self._common_payload()
+        for contract in (None, {"kind": "common-raw-v1", "qualified_machines": {
+            "j700ap": ["26.6.2"]}}):
+            metadata = self._target_metadata()
+            if contract is not None:
+                metadata["aurora_stage1"] = contract
+            self._write_metadata([metadata])
+            installer = FakeInstaller(FakeDiskUtil([[self.free]]))
+            installer.sysinfo.device_class = "j700ap"
+            adapter = self._adapter(installer)
+            with self.assertRaises(AsahiAdapterError):
+                adapter.preflight(self.plan)
+            self.assertEqual(installer.dutil.add_calls, [])
 
     def test_generic_image_rejects_invalid_boot_objects_before_disk_changes(self):
         for stage1, stage2 in ((b"invalid", b"stage2"), (j700_stage1(), b"")):
@@ -1862,12 +1883,20 @@ class BoardStage1Tests(unittest.TestCase):
         for board in ("j700ap", "j613ap", "j314sap", "j274ap"):
             with self.subTest(board=board), tempfile.TemporaryDirectory() as root:
                 target = self.write_generic(root)
-                install_board_stage1(board, "26.6.2", package.__getitem__, self.UUID, str(target))
+                install_board_stage1(board, "26.6.2", package.__getitem__, self.UUID, str(target), common_allowed=True)
                 image = target.read_bytes()
                 offset = image.index(b"AURORA-S1-CFG01\0") + 16
                 self.assertEqual(_struct.unpack_from("<II", image, offset), (1, 0))
                 self.assertIn(self.UUID.encode(), image)
                 self.assertIn(b";m1n1/boot.bin", image)
+
+    def test_common_stage1_presence_alone_does_not_authorize_it(self):
+        package = {"esp/aurora/stage1.bin": j700_stage1(window=5000)}
+        with tempfile.TemporaryDirectory() as root:
+            target = self.write_generic(root)
+            with self.assertRaisesRegex(AsahiAdapterError, "signed-template qualification"):
+                install_board_stage1("j700ap", "26.6.2", package.__getitem__, self.UUID, str(target))
+            self.assertEqual(target.read_bytes(), b"asahi stage 1")
 
     def test_invalid_common_stage1_cannot_fall_back_to_legacy(self):
         for blob in (b"", b"malformed"):
@@ -1875,7 +1904,7 @@ class BoardStage1Tests(unittest.TestCase):
                 target = self.write_generic(root)
                 package = {"esp/aurora/stage1.bin": blob, "esp/aurora/stage1-j700.bin": j700_stage1()}
                 with self.assertRaises(AsahiAdapterError):
-                    install_board_stage1("j700ap", "26.6.2", package.__getitem__, self.UUID, str(target))
+                    install_board_stage1("j700ap", "26.6.2", package.__getitem__, self.UUID, str(target), common_allowed=True)
                 self.assertEqual(target.read_bytes(), b"asahi stage 1")
 
     def test_a_neo_image_without_the_j700_stage1_is_refused(self):
@@ -2110,13 +2139,13 @@ class NeoRadioFirmwareTests(unittest.TestCase):
         radio.BT_PTX, "j700-mt7932-btcal.bin", "j700-mt7932-bdaddr.bin"
     )})
 
-    def run_hook(self, device_class, collect):
+    def run_hook(self, device_class, collect, required=True):
         package = SimpleNamespace(added=[])
         package.add_file = lambda name, data: package.added.append((name, data))
         installer = SimpleNamespace(sysinfo=SimpleNamespace(device_class=device_class))
         firmware = SimpleNamespace(core=SimpleNamespace(FWFile=lambda name, data: ("FWFile", name, data)))
         with patch("omarchy_asahi.asahi_firmware", firmware):
-            _collect_neo_radios(installer, package, collect=collect)
+            _collect_neo_radios(installer, package, collect=collect, required=required)
         return package.added
 
     def test_a_neo_adds_every_collected_file(self):
@@ -2148,7 +2177,7 @@ class NeoRadioFirmwareTests(unittest.TestCase):
 class NeoTouchIdCalibrationTests(unittest.TestCase):
     """The MacBook Neo's FSC2 calibration joins its vendor firmware package."""
 
-    def run_hook(self, device_class, collect, partitions=None, sensor_present=lambda: True):
+    def run_hook(self, device_class, collect, partitions=None, sensor_present=lambda: True, required=True):
         package = SimpleNamespace(added=[])
         package.add_file = lambda name, data: package.added.append((name, data))
         dutil = SimpleNamespace(
@@ -2161,7 +2190,7 @@ class NeoTouchIdCalibrationTests(unittest.TestCase):
         installer = SimpleNamespace(sysinfo=SimpleNamespace(device_class=device_class), dutil=dutil)
         firmware = SimpleNamespace(core=SimpleNamespace(FWFile=lambda name, data: ("FWFile", name, data)))
         with patch("omarchy_asahi.asahi_firmware", firmware):
-            _collect_neo_touch_id(installer, package, collect=collect, sensor_present=sensor_present)
+            _collect_neo_touch_id(installer, package, collect=collect, sensor_present=sensor_present, required=required)
         return package.added
 
     def test_a_neo_reads_the_raw_iboot_system_container(self):
@@ -2187,6 +2216,13 @@ class NeoTouchIdCalibrationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AsahiAdapterError, "found 0"):
             self.run_hook("j700ap", collect)
+
+    def test_unqualified_touch_id_does_not_block_os_installation(self):
+        import omarchy_mesa
+        def collect(device):
+            raise omarchy_mesa.MesaError("no calibration")
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(self.run_hook("j700ap", collect, required=False), [])
 
     def test_no_builtin_sensor_skips_the_raw_container(self):
         self.assertEqual(self.run_hook("j700ap", lambda device: self.fail("read container"),

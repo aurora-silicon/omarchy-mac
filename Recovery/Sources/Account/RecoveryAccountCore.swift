@@ -69,20 +69,6 @@ public struct AccountCommandResult: Sendable {
 }
 
 public enum AccountNativeCommand {
-  public static func volumeGroupUUID(device: String) throws -> String? {
-    var buffer = [CChar](repeating: 0, count: 37)
-    let status = buffer.withUnsafeMutableBufferPointer {
-      omarchy_apfs_volume_group_uuid(device, $0.baseAddress, $0.count)
-    }
-    // The native reader returns this when the mounted-volume registry has no
-    // group property yet. diskutil can infer a group and mask this condition.
-    if status == 0xc002 { return nil }
-    guard status == 0 else {
-      throw AccountSetupFailure("Couldn’t read the mounted APFS group metadata.")
-    }
-    return String(cString: buffer)
-  }
-
   public static func run(
     _ executable: String, _ arguments: [String], input: Data = Data(), timeout: UInt32 = 60
   ) throws -> AccountCommandResult {
@@ -97,14 +83,20 @@ public enum AccountNativeCommand {
     pointers.append(nil)
     var output: UnsafeMutablePointer<UInt8>?
     var size = 0
+    var commandInput = [UInt8](input)
+    defer {
+      commandInput.withUnsafeMutableBytes { bytes in
+        omarchy_account_wipe(bytes.baseAddress, bytes.count)
+      }
+    }
     let status = pointers.withUnsafeBufferPointer { argv in
-      input.withUnsafeBytes { bytes in
+      commandInput.withUnsafeBytes { bytes in
         omarchy_account_command(
           executable, argv.baseAddress, bytes.bindMemory(to: UInt8.self).baseAddress, input.count,
           &output, &size, timeout)
       }
     }
-    defer { omarchy_account_free(output) }
+    defer { omarchy_account_free(output, size) }
     guard status >= 0, status != 126, status != 127 else {
       throw AccountSetupFailure(
         "The native \(URL(fileURLWithPath: executable).lastPathComponent) command could not finish (status \(status)). Your installation has been preserved."
@@ -158,11 +150,6 @@ public enum RecoveryAccountInstaller {
       let device = before["DeviceIdentifier"] as? String,
       device.range(of: "\\Adisk[0-9]+s[0-9]+\\z", options: .regularExpression) != nil
     else { throw AccountSetupFailure("The account Data volume does not match the installation.") }
-    let mountedGroup = try AccountNativeCommand.volumeGroupUUID(device: "/dev/" + device)
-    if mountedGroup == target.groupUUID { return }
-    guard mountedGroup == nil else {
-      throw AccountSetupFailure("The mounted Data volume belongs to a different group.")
-    }
     // The Data volume is mounted before Asahi creates its paired System
     // volume. A normal remount refreshes the group property StorageKit reads.
     // Never force an unmount or change an on-disk group UUID.
@@ -171,7 +158,7 @@ public enum RecoveryAccountInstaller {
     let after = try AccountNativeCommand.disk(target.dataUUID)
     guard (after["VolumeUUID"] as? String)?.uppercased() == target.dataUUID,
       (after["APFSVolumeGroupID"] as? String)?.uppercased() == target.groupUUID,
-      try AccountNativeCommand.volumeGroupUUID(device: "/dev/" + device) == target.groupUUID
+      after["DeviceIdentifier"] as? String == device
     else {
       throw AccountSetupFailure(
         "The mounted APFS group metadata did not refresh. Your installation was preserved.")
@@ -418,7 +405,48 @@ public enum RecoveryAccountInstaller {
       "The native account has not finished saving. Continue again to resume.")
   }
 
+  public static func pairedDataUUID(systemUUID: String, groupUUID: String) throws -> String {
+    guard UUID(uuidString: systemUUID) != nil, UUID(uuidString: groupUUID) != nil,
+      (try AccountNativeCommand.disk(systemUUID)["VolumeUUID"] as? String)?.uppercased()
+        == systemUUID,
+      (try AccountNativeCommand.disk(systemUUID)["APFSVolumeGroupID"] as? String)?.uppercased()
+        == groupUUID
+    else { throw AccountSetupFailure("The System volume does not match its recorded APFS group.") }
+    let bytes = try AccountNativeCommand.checked("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
+    guard
+      let tree = try PropertyListSerialization.propertyList(from: bytes, format: nil)
+        as? [String: Any],
+      let containers = tree["Containers"] as? [[String: Any]], containers.count <= 64
+    else { throw AccountSetupFailure("Cannot inspect paired APFS volumes.") }
+    var found = [String]()
+    for container in containers {
+      let volumes = container["Volumes"] as? [[String: Any]] ?? []
+      guard volumes.count <= 128 else { throw AccountSetupFailure("Too many APFS volumes.") }
+      for volume in volumes where (volume["Roles"] as? [String] ?? []).contains("Data") {
+        guard let uuid = (volume["APFSVolumeUUID"] as? String)?.uppercased(),
+          UUID(uuidString: uuid) != nil
+        else { continue }
+        let info = try AccountNativeCommand.disk(uuid)
+        if (info["APFSVolumeGroupID"] as? String)?.uppercased() == groupUUID,
+          (info["VolumeUUID"] as? String)?.uppercased() == uuid
+        {
+          found.append(uuid)
+        }
+      }
+    }
+    guard found.count == 1 else {
+      throw AccountSetupFailure("The paired Data volume is missing or ambiguous.")
+    }
+    return found[0]
+  }
+
   static func users(_ target: RecoveryAccountTarget) throws -> [[String: Any]] {
+    guard
+      try pairedDataUUID(systemUUID: target.systemUUID, groupUUID: target.groupUUID)
+        == target.dataUUID
+    else {
+      throw AccountSetupFailure("The recovery account Data volume changed.")
+    }
     let bytes = try AccountNativeCommand.checked(
       "/usr/sbin/diskutil", ["apfs", "listUsers", "-plist", target.dataUUID])
     guard
@@ -634,11 +662,54 @@ public enum RecoveryAccountInstaller {
       separator: "/")
   }
 
+  private struct FinalizationJournal: Codable {
+    let target: RecoveryAccountTarget
+    let username: String
+    let directory: String
+    let files: [String]
+  }
+
+  private static func finalizationFiles(_ ctx: Context, username: String) -> [URL] {
+    [
+      "AdminUserRecoveryInfo.plist", "AllUsersInfo.plist", "CryptoUserInfo.plist",
+      "secureaccesstoken.plist",
+    ].map { ctx.metadata.appendingPathComponent($0) }
+      + [
+        ctx.database.appendingPathComponent("users/\(username).plist"), ctx.state,
+        ctx.system.appendingPathComponent(pointerRelativePath),
+        ctx.system.appendingPathComponent("System/Library/CoreServices/SystemVersion.plist"),
+        ctx.system.appendingPathComponent(
+          "System/Library/CoreServices/SystemVersion-disabled.plist"),
+      ]
+  }
+
+  private static func resumeFinalization(_ ctx: Context, target: RecoveryAccountTarget) throws {
+    let pending = ctx.state.deletingLastPathComponent().appendingPathComponent(
+      "finalize.pending.json")
+    guard FileManager.default.fileExists(atPath: pending.path) else { return }
+    let saved = try JSONDecoder().decode(
+      FinalizationJournal.self, from: protectedRead(pending, limit: 65536))
+    guard saved.target == target, validName(saved.username),
+      saved.directory.hasPrefix("finalize-"),
+      UUID(uuidString: String(saved.directory.dropFirst("finalize-".count))) != nil
+    else {
+      throw AccountSetupFailure("The interrupted account update targets another installation.")
+    }
+    let backup = ctx.state.deletingLastPathComponent().appendingPathComponent(saved.directory)
+    let transaction = try RecoveryFileTransaction.resume(
+      directory: backup, files: finalizationFiles(ctx, username: saved.username),
+      originalFiles: saved.files.map { URL(fileURLWithPath: $0) })
+    let status = try? Data(contentsOf: backup.appendingPathComponent("status"))
+    if status != Data("committed\n".utf8) { try transaction.restore() }
+    try FileManager.default.removeItem(at: pending)
+  }
+
   public static func finalize(_ target: RecoveryAccountTarget, password: Data) throws
     -> RecoveryAccountRecord
   {
     try validatePassword(password)
     let ctx = try context(target, writable: true)
+    try resumeFinalization(ctx, target: target)
     guard var record = try inspect(target) else {
       throw AccountSetupFailure("Create the recovery account before authorizing it.")
     }
@@ -652,111 +723,157 @@ public enum RecoveryAccountInstaller {
         ($0["APFSCryptoUserUUID"] as? String)?.uppercased() == record.generatedUID
       })
     else { return record }
-    let account = try user(ctx, record.username)
-    let authorities = account["authentication_authority"] as? [String] ?? []
-    if !authorities.contains(";SecureToken;") {
-      guard let hashes = account["ShadowHashData"] as? [Data], !hashes.isEmpty else {
-        throw AccountSetupFailure("The native account password record is unavailable.")
+    let backup = ctx.state.deletingLastPathComponent().appendingPathComponent(
+      "finalize-" + UUID().uuidString)
+    let transaction = try RecoveryFileTransaction(
+      directory: backup, files: finalizationFiles(ctx, username: record.username))
+    let pending = ctx.state.deletingLastPathComponent().appendingPathComponent(
+      "finalize.pending.json")
+    try RecoveryFileTransaction.write(
+      try JSONEncoder().encode(
+        FinalizationJournal(
+          target: target, username: record.username, directory: backup.lastPathComponent,
+          files: finalizationFiles(ctx, username: record.username).map(\.path))), to: pending)
+    var committed = false
+    do {
+      try transaction.clearImmutableFlags()
+      let account = try user(ctx, record.username)
+      let authorities = account["authentication_authority"] as? [String] ?? []
+      if !authorities.contains(";SecureToken;") {
+        guard let hashes = account["ShadowHashData"] as? [Data], !hashes.isEmpty else {
+          throw AccountSetupFailure("The native account password record is unavailable.")
+        }
+        var secret = password
+        secret.append(10)
+        let args = [
+          "apfs", "unlockVolume", target.dataUUID, "-user", record.generatedUID, "-verify",
+          "-stdinpassphrase",
+        ]
+        let verified = try AccountNativeCommand.run("/usr/sbin/diskutil", args, input: secret)
+        let rejected = try AccountNativeCommand.run(
+          "/usr/sbin/diskutil", args, input: Data((UUID().uuidString + "\n").utf8))
+        guard verified.status == 0,
+          String(decoding: verified.output, as: UTF8.self).contains("Passphrase valid"),
+          rejected.status != 0
+        else {
+          throw AccountSetupFailure(
+            "The matching APFS credential could not be verified. Account metadata was preserved.")
+        }
+        let source = ctx.database.appendingPathComponent("users/\(record.username).plist")
+        let backup = ctx.data.appendingPathComponent(
+          "private/var/db/omarchy-recovery-account/backups/\(UUID().uuidString)")
+        try directory(backup)
+        try FileManager.default.copyItem(
+          at: source, to: backup.appendingPathComponent("user.plist"))
+        _ = try ds(
+          ctx,
+          [
+            "-merge", "/Local/Target/Users/\(record.username)", "AuthenticationAuthority",
+            ";SecureToken;",
+          ])
+        try waitForTokenAuthority(
+          generatedUID: record.generatedUID, passwordHashes: hashes,
+          read: { try user(ctx, record.username) })
+        record.tokenReconciled = true
+        try save(record, ctx)
       }
-      var secret = password
-      secret.append(10)
-      let args = [
-        "apfs", "unlockVolume", target.dataUUID, "-user", record.generatedUID, "-verify",
-        "-stdinpassphrase",
-      ]
-      let verified = try AccountNativeCommand.run("/usr/sbin/diskutil", args, input: secret)
-      let rejected = try AccountNativeCommand.run(
-        "/usr/sbin/diskutil", args, input: Data((UUID().uuidString + "\n").utf8))
-      guard verified.status == 0,
-        String(decoding: verified.output, as: UTF8.self).contains("Passphrase valid"),
-        rejected.status != 0
+      guard crypto["VolumeOwner"] as? Bool == true else {
+        record.phase = "awaiting-ownership"
+        try save(record, ctx)
+        try transaction.commit()
+        committed = true
+        try FileManager.default.removeItem(at: pending)
+        return record
+      }
+      if record.phase != "finalized" {
+        let backup = ctx.data.appendingPathComponent(
+          "private/var/db/omarchy-recovery-account/backups/\(UUID().uuidString)")
+        try directory(backup)
+        for name in [
+          "AdminUserRecoveryInfo.plist", "AllUsersInfo.plist", "CryptoUserInfo.plist",
+          "secureaccesstoken.plist",
+        ] {
+          let file = ctx.metadata.appendingPathComponent(name)
+          if FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.copyItem(at: file, to: backup.appendingPathComponent(name))
+            guard chflags(file.path, 0) == 0 else {
+              throw AccountSetupFailure("Could not unlock target Preboot metadata.")
+            }
+          }
+        }
+        _ = try AccountNativeCommand.checked(
+          "/usr/sbin/diskutil",
+          ["apfs", "updatePreboot", target.dataUUID, "-od", ctx.database.path],
+          timeout: 90)
+      }
+      let adminBytes = try protectedRead(
+        ctx.metadata.appendingPathComponent("AdminUserRecoveryInfo.plist"), limit: 4 << 20)
+      guard
+        let admins = try PropertyListSerialization.propertyList(from: adminBytes, format: nil)
+          as? [String: Any],
+        let selected = admins[record.username] as? [String: Any],
+        (selected["GeneratedUID"] as? String)?.uppercased() == record.generatedUID
       else {
-        throw AccountSetupFailure(
-          "The matching APFS credential could not be verified. Account metadata was preserved.")
+        throw AccountSetupFailure("Recovery user metadata has not been generated for this account.")
       }
-      let source = ctx.database.appendingPathComponent("users/\(record.username).plist")
-      let backup = ctx.data.appendingPathComponent(
-        "private/var/db/omarchy-recovery-account/backups/\(UUID().uuidString)")
-      try directory(backup)
-      try FileManager.default.copyItem(at: source, to: backup.appendingPathComponent("user.plist"))
-      _ = try ds(
-        ctx,
-        [
-          "-merge", "/Local/Target/Users/\(record.username)", "AuthenticationAuthority",
-          ";SecureToken;",
-        ])
-      try waitForTokenAuthority(
-        generatedUID: record.generatedUID, passwordHashes: hashes,
-        read: { try user(ctx, record.username) })
-      record.tokenReconciled = true
-      try save(record, ctx)
-    }
-    guard crypto["VolumeOwner"] as? Bool == true else {
-      record.phase = "awaiting-ownership"
-      try save(record, ctx)
-      return record
-    }
-    if record.phase != "finalized" {
-      let backup = ctx.data.appendingPathComponent(
-        "private/var/db/omarchy-recovery-account/backups/\(UUID().uuidString)")
-      try directory(backup)
-      for name in [
-        "AdminUserRecoveryInfo.plist", "AllUsersInfo.plist", "CryptoUserInfo.plist",
-        "secureaccesstoken.plist",
-      ] {
-        let file = ctx.metadata.appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: file.path) {
-          try FileManager.default.copyItem(at: file, to: backup.appendingPathComponent(name))
-          _ = try AccountNativeCommand.checked("/usr/bin/chflags", ["noschg", file.path])
+      for name in ["AllUsersInfo.plist", "CryptoUserInfo.plist"] {
+        let bytes = try protectedRead(ctx.metadata.appendingPathComponent(name), limit: 4 << 20)
+        let value = try PropertyListSerialization.propertyList(from: bytes, format: nil)
+        guard containsUUID(value, record.generatedUID) else {
+          throw AccountSetupFailure("Recovery’s \(name) is missing the new owner.")
         }
       }
-      _ = try AccountNativeCommand.checked(
-        "/usr/sbin/diskutil", ["apfs", "updatePreboot", target.dataUUID, "-od", ctx.database.path],
-        timeout: 90)
-    }
-    let adminBytes = try protectedRead(
-      ctx.metadata.appendingPathComponent("AdminUserRecoveryInfo.plist"), limit: 4 << 20)
-    guard
-      let admins = try PropertyListSerialization.propertyList(from: adminBytes, format: nil)
-        as? [String: Any],
-      let selected = admins[record.username] as? [String: Any],
-      (selected["GeneratedUID"] as? String)?.uppercased() == record.generatedUID
-    else {
-      throw AccountSetupFailure("Recovery user metadata has not been generated for this account.")
-    }
-    for name in ["AllUsersInfo.plist", "CryptoUserInfo.plist"] {
-      let bytes = try protectedRead(ctx.metadata.appendingPathComponent(name), limit: 4 << 20)
-      let value = try PropertyListSerialization.propertyList(from: bytes, format: nil)
-      guard containsUUID(value, record.generatedUID) else {
-        throw AccountSetupFailure("Recovery’s \(name) is missing the new owner.")
+      let source = ctx.database.appendingPathComponent("secureaccesstoken.plist")
+      let token = try protectedRead(source, limit: 1 << 20)
+      guard
+        let values = try PropertyListSerialization.propertyList(from: token, format: nil)
+          as? [String: Any],
+        let wrapped = values["SecureAccessToken"] as? Data, !wrapped.isEmpty
+      else {
+        throw AccountSetupFailure("The target’s native Recovery disk token is not available yet.")
       }
+      let destination = ctx.metadata.appendingPathComponent("secureaccesstoken.plist")
+      try token.write(to: destination, options: .atomic)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600], ofItemAtPath: destination.path)
+      guard chown(destination.path, 0, 0) == 0,
+        try protectedRead(destination, limit: 1 << 20) == token
+      else { throw AccountSetupFailure("Recovery’s native disk token did not verify.") }
+      guard
+        try users(target).contains(where: {
+          ($0["APFSCryptoUserUUID"] as? String)?.uppercased() == record.generatedUID
+            && $0["VolumeOwner"] as? Bool == true
+        })
+      else { throw AccountSetupFailure("Recovery ownership changed during finalization.") }
+      let visibleVersion = ctx.system.appendingPathComponent(
+        "System/Library/CoreServices/SystemVersion.plist")
+      let hiddenVersion = ctx.system.appendingPathComponent(
+        "System/Library/CoreServices/SystemVersion-disabled.plist")
+      let movesVersion =
+        FileManager.default.fileExists(atPath: visibleVersion.path)
+        && FileManager.default.fileExists(
+          atPath: ctx.system.appendingPathComponent(".IAPhysicalMedia").path)
+      try RecoveryVersionMetadata.hideForInitialRecovery(system: ctx.system)
+      record.phase = "finalized"
+      try save(record, ctx)
+      try transaction.commit(
+        relocated: movesVersion
+          ? [visibleVersion.standardizedFileURL.path: hiddenVersion] : [:])
+      committed = true
+      try FileManager.default.removeItem(at: pending)
+      return record
+    } catch {
+      let original = error
+      if committed { throw original }
+      do {
+        try transaction.restore()
+        try FileManager.default.removeItem(at: pending)
+      } catch {
+        throw AccountSetupFailure(
+          "Account update failed and rollback needs review. Preserve \(backup.path).")
+      }
+      throw original
     }
-    let source = ctx.database.appendingPathComponent("secureaccesstoken.plist")
-    let token = try protectedRead(source, limit: 1 << 20)
-    guard
-      let values = try PropertyListSerialization.propertyList(from: token, format: nil)
-        as? [String: Any],
-      let wrapped = values["SecureAccessToken"] as? Data, !wrapped.isEmpty
-    else {
-      throw AccountSetupFailure("The target’s native Recovery disk token is not available yet.")
-    }
-    let destination = ctx.metadata.appendingPathComponent("secureaccesstoken.plist")
-    try token.write(to: destination, options: .atomic)
-    try FileManager.default.setAttributes(
-      [.posixPermissions: 0o600], ofItemAtPath: destination.path)
-    guard chown(destination.path, 0, 0) == 0,
-      try protectedRead(destination, limit: 1 << 20) == token
-    else { throw AccountSetupFailure("Recovery’s native disk token did not verify.") }
-    guard
-      try users(target).contains(where: {
-        ($0["APFSCryptoUserUUID"] as? String)?.uppercased() == record.generatedUID
-          && $0["VolumeOwner"] as? Bool == true
-      })
-    else { throw AccountSetupFailure("Recovery ownership changed during finalization.") }
-    try RecoveryVersionMetadata.hideForInitialRecovery(system: ctx.system)
-    record.phase = "finalized"
-    try save(record, ctx)
-    return record
   }
 
   static func waitForTokenAuthority(

@@ -34,6 +34,7 @@ keychain=${3:-}
 # shellcheck source=../identity.conf
 source "$(cd "$(dirname "$0")/.." && pwd -P)/identity.conf"
 helper="$app/Contents/Library/LaunchServices/$INSTALLER_HELPER_IDENTIFIER"
+recovery="$app/Contents/Resources/RecoveryTemplate/$INSTALLER_RECOVERY_APP_NAME.app"
 [[ $app == *.app && -d $app && ! -L $app ]] || fail "not an app bundle: $app"
 [[ -f $helper && ! -L $helper ]] || fail "the app carries no helper at ${helper#"$app"/}"
 
@@ -54,6 +55,14 @@ fi
 [[ -z $keychain ]] || sign_arguments+=(--keychain "$keychain")
 
 if (( ! verify_only )); then
+  if [[ -d $recovery ]]; then
+    codesign "${sign_arguments[@]}" "$recovery"
+    recovery_hash=$(codesign --display --verbose=4 "$recovery" 2>&1 | sed -n 's/^CDHash=//p')
+    [[ $recovery_hash =~ ^[0-9a-f]{40,64}$ ]] || fail "cannot identify the signed Recovery template"
+    plutil -replace EnvironmentVariables.OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT \
+      -string "cdhash H\"$recovery_hash\"" \
+      "$app/Contents/Library/LaunchDaemons/$INSTALLER_HELPER_IDENTIFIER.plist"
+  fi
   codesign "${sign_arguments[@]}" --identifier "$INSTALLER_HELPER_IDENTIFIER" "$helper"
   codesign "${sign_arguments[@]}" "$app"
 fi
@@ -61,10 +70,18 @@ fi
 codesign --verify --strict --deep --verbose=2 "$app"
 codesign --verify --strict -R="$helper_requirement" "$helper"
 codesign --verify --strict -R="$app_requirement" "$app"
+if [[ -d $recovery ]]; then
+  recovery_requirement=$(plutil -extract EnvironmentVariables.OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT raw -o - \
+    "$app/Contents/Library/LaunchDaemons/$INSTALLER_HELPER_IDENTIFIER.plist")
+  [[ $recovery_requirement == "cdhash H"* ]] || fail "missing Recovery-template identity"
+  codesign --verify --deep --strict -R="$recovery_requirement" "$recovery"
+fi
 
 # The signature's shape: hardened runtime everywhere; a Developer ID of the
 # configured team with a secure timestamp, or ad hoc for a dry run.
-for code in "$helper" "$app"; do
+codes=("$helper" "$app")
+[[ ! -d $recovery ]] || codes+=("$recovery")
+for code in "${codes[@]}"; do
   details=$(codesign --display --verbose=4 "$code" 2>&1) || fail "cannot read the signature of $code"
   [[ $details =~ flags=0x[0-9a-f]+\([^\)]*runtime ]] || fail "$code is not signed with the hardened runtime"
   if [[ $identity == "-" ]]; then

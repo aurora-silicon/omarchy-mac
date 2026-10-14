@@ -2,16 +2,24 @@
 # SPDX-License-Identifier: MIT
 # Never reset a running device. Repeated modprobe of a loaded module is inert.
 set -eu
+firmware_root=${AURORA_FIRMWARE_ROOT:-/lib/firmware}
+compatible=${AURORA_DT_COMPATIBLE:-/sys/firmware/devicetree/base/compatible}
+modprobe_command=${AURORA_MODPROBE:-modprobe}
 
 has_firmware() {
-  [ -s "/lib/firmware/vendor/$1" ] || [ -s "/lib/firmware/$1" ]
+  [ -s "$firmware_root/vendor/$1" ] || [ -s "$firmware_root/$1" ]
 }
 
 neo=false
-if grep -aq 'apple,j700' /sys/firmware/devicetree/base/compatible; then
+if grep -aq 'apple,j700' "$compatible"; then
   neo=true
+  if has_firmware apple/j700-aop-als-cal.bin; then
+    "$modprobe_command" aop
+  else
+    echo 'Aurora: ALS calibration missing; Neo AOP probe deferred' >&2
+  fi
+  radio_ready=true
   for name in \
-    apple/j700-aop-als-cal.bin apple/tpmtfw-j700.bin \
     mediatek/mt7932/IZUBA_WIFI_MT7932_patch_mcu_1_2_hdr.bin \
     mediatek/mt7932/IZUBA_W7932_2.bin \
     mediatek/mt7932/ppr.bin mediatek/mt7932/oca2.bin \
@@ -23,14 +31,16 @@ if grep -aq 'apple,j700' /sys/firmware/devicetree/base/compatible; then
     mediatek/mt7932/policy/US.bin mediatek/mt7932/policy/world-XZ.bin; do
     if ! has_firmware "$name"; then
       echo "Aurora: required firmware is missing: $name; peripheral probe deferred" >&2
-      exit 1
+      radio_ready=false
     fi
   done
 fi
 
-modprobe aop
 if "$neo"; then
-  modprobe mt7932-fullmac
+  if "$radio_ready"; then "$modprobe_command" mt7932-fullmac; fi
+else
+  # Preserve ordinary non-Neo admission even if vendor extraction failed.
+  "$modprobe_command" aop
 fi
 # Bluetooth is deliberately admitted later by its existing gated PCI service,
 # after root firmware extraction. It is not necessary to unlock the root disk.

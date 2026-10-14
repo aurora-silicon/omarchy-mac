@@ -192,7 +192,7 @@
       async throws -> RecoveryAccountReply
     {
       guard !isRetiring else { throw ClosedEngineHelperError.retiring }
-      guard ["inspect", "handoff", "prepare", "finalize"].contains(action) else {
+      guard ["inspect", "handoff"].contains(action) else {
         throw ClosedEngineHelperError.invalidOperation
       }
       try work.beginJob()
@@ -222,17 +222,10 @@
           "The account target changed or expired. Reopen this installer to inspect it again.")
       }
       let record: RecoveryAccountRecord? = try await Task.detached {
-        if action == "handoff" {
-          try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
-          try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
-          return try RecoveryAccountInstaller.inspect(observed.target)
-        }
-        if action == "prepare" {
-          try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
-          return try RecoveryAccountInstaller.prepare(
-            observed.target, username: username, password: password)
-        }
-        return try RecoveryAccountInstaller.finalize(observed.target, password: password)
+        try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
+        try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
+        return try RecoveryAccountInstaller.inspect(observed.target)
+
       }.value
       recoveryAccountTargets[ticket] = (observed, Date().addingTimeInterval(1800))
       return RecoveryAccountReply(ticket: ticket, target: observed.target, record: record)

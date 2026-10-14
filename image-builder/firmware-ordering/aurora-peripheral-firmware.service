@@ -1,10 +1,9 @@
 [Unit]
 Description=Load Apple peripherals after per-machine firmware is available
 DefaultDependencies=no
-Requires=omarchy-vendorfw-initrd.service
+Wants=omarchy-vendorfw-initrd.service
 After=omarchy-vendorfw-initrd.service
 Before=cryptsetup-pre.target initrd-root-device.target
-ConditionPathExists=/run/omarchy-vendorfw-initrd.staged
 Conflicts=shutdown.target
 
 [Service]

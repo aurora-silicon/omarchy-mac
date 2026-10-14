@@ -26,6 +26,14 @@ requirement="$(/usr/bin/plutil -extract EnvironmentVariables.OMARCHY_CLIENT_CODE
 [[ -n $requirement && $requirement != *REPLACED_DURING_PACKAGING* ]] \
   || fail "app has no completed client requirement"
 /usr/bin/codesign --verify --strict -R="$requirement" "$app"
+# Ad-hoc identifiers do not identify a particular build. Bind the root daemon
+# to the copied, already-signed application's exact code hash.
+client_hash=$(/usr/bin/codesign --display --verbose=4 "$app" 2>&1 | sed -n 's/^CDHash=//p')
+[[ $client_hash =~ ^[0-9a-f]{40,64}$ ]] || fail "cannot read the developer app code hash"
+requirement="$requirement and cdhash H\"$client_hash\""
+/usr/bin/plutil -replace EnvironmentVariables.OMARCHY_CLIENT_CODE_SIGNING_REQUIREMENT \
+  -string "$requirement" "$plist"
+/usr/bin/codesign --verify --strict -R="$requirement" "$app"
 chmod 0644 "$plist"
 /usr/bin/ditto "$directory/pkg/scripts" "$work/scripts"
 install -m 0644 "$directory/identity.conf" "$work/scripts/identity.conf"

@@ -1,6 +1,10 @@
+#define AUTHORIZATION_TIMEOUT_SECONDS 2
 #include "../Native/Authorization.c"
 #include <assert.h>
 #include <stdio.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 static char latest[LOG_LIMIT*10+64];
 static void password_mode(void) {
     struct termios term;
@@ -17,6 +21,19 @@ static void capture(const char *text, void *context) {
 int main(int argc, char **argv)
 {
     if (argc > 1) {
+        if (!strcmp(argv[1], "--grandchild-holds-terminal")) {
+            signal(SIGHUP,SIG_IGN);
+            pid_t helper=fork();
+            if(helper<0)return 30;
+            if(!helper) { sleep(20); _exit(31); }
+            printf("helper-pid:%ld\n",(long)helper);fflush(stdout);
+            return 0;
+        }
+        if (!strcmp(argv[1], "--timeout")) { sleep(20);return 32; }
+        if (!strcmp(argv[1], "--fd-check")) {
+            for(int fd=3;fd<64;fd++)if(fcntl(fd,F_GETFD)>=0)return 33;
+            return 0;
+        }
         char user[128], password[128], confirmation[16];
         if (!strcmp(argv[1], "--getpass")) {
             alarm(3);
@@ -114,6 +131,27 @@ int main(int argc, char **argv)
     child[1] = "--secret-output";
     assert(authorization_run_logged(argv[0],child,"fixture-user","fixture-password",false,capture,NULL) == 0);
     assert(strstr(latest,"[redacted]"));
+#ifdef __linux__
+    assert(prctl(PR_SET_CHILD_SUBREAPER,1)==0);
+#endif
+    char *timeout_args[]={argv[0],"--timeout",NULL};
+    assert(authorization_run_logged(argv[0],timeout_args,"fixture-user","fixture-password",false,capture,NULL)==TIMED_OUT);
+    char *fd_args[]={argv[0],"--fd-check",NULL};
+    assert(authorization_run_logged(argv[0],fd_args,"fixture-user","fixture-password",false,capture,NULL)==0);
+    char *child_args[]={argv[0],"--grandchild-holds-terminal",NULL};
+    assert(authorization_run_logged(argv[0],child_args,"fixture-user","fixture-password",false,capture,NULL)==0);
+    assert(strstr(latest,"helper-pid:")!=NULL);
+    long helper=0;
+    assert(sscanf(strstr(latest,"helper-pid:"),"helper-pid:%ld",&helper)==1 && helper>0);
+#ifdef __linux__
+    int helper_status=0;
+    assert(waitpid((pid_t)helper,&helper_status,0)==(pid_t)helper);
+    assert(WIFSIGNALED(helper_status) && WTERMSIG(helper_status)==SIGKILL);
+#else
+    for(int attempt=0;attempt<100 && kill((pid_t)helper,0)==0;attempt++)usleep(10000);
+    assert(kill((pid_t)helper,0)<0 && errno==ESRCH);
+#endif
+
     puts("PASS exact native kmutil prompt / newline / byte-split / repeated prompt; final output / exact exit status / fragmented credential redaction;  split confirmation/username/password prompts; bputil authorized-user prompt; exact one-shot confirmation; unauthorized/repeated confirmation rejection; repeated password rejection; command allowlist");
     return 0;
 }
