@@ -216,7 +216,7 @@ class RecipeContractTests(unittest.TestCase):
     def test_clean_kernel_staging_emits_new_checksum_bound_recipes(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            for name, body in [('kernel-runtime.tar', b'new clean outputs'), ('reuse-receipt.json', b'actual clean receipt'), ('config', b'actual config')]:
+            for name, body in [('kernel-runtime.tar', b'new clean outputs'), ('reuse-receipt.json', json.dumps({'actual_compile_source': kernel_stage.PIN, 'requested_public_pin': kernel_stage.PIN, 'build_mode': 'clean-source', 'release': '7.1.12-aurora-g5f6c917', 'config_sha256': hashlib.sha256(b'actual config').hexdigest()}).encode()), ('config', b'actual config')]:
                 (output / name).write_bytes(body)
             template = ROOT / 'recipes/kernel/PKGBUILD'
             kernel_stage.ready_recipe(template, output)
@@ -224,9 +224,96 @@ class RecipeContractTests(unittest.TestCase):
             self.assertIn('new pinned public clean-source outputs', generated)
             for name in ['kernel-runtime.tar', 'reuse-receipt.json', 'config']:
                 self.assertIn(hashlib.sha256((output / name).read_bytes()).hexdigest(), generated)
+            self.assertIn('pkgver=7.1.12.aurora.g5f6c917.c', generated)
+            receipt_path = output / 'reuse-receipt.json'
+            receipt = json.loads(receipt_path.read_text())
+            for key in ['requested_public_pin', 'actual_compile_source', 'release', 'build_mode', 'config_sha256']:
+                receipt_path.write_text(json.dumps(dict(receipt, **{key: 'wrong'})))
+                with self.assertRaises(ValueError):
+                    kernel_stage.ready_recipe(template, output)
+            receipt_path.write_text(json.dumps(receipt))
             old_hashes = re.findall("'([^']+)'", re.search(r'sha256sums=\((.*?)\)', template.read_text(), re.S).group(1))
             for digest in old_hashes:
                 self.assertNotIn(digest, generated)
+
+    def test_clean_receipt_verifier_and_release_bound_header_destination(self):
+        def verifier(template, root):
+            text = template.read_text()
+            script = text.split("<<'", 1)[1].split("\n", 1)[1]
+            script = script.split("\nVERIFY", 1)[0] if "\nVERIFY" in script else script.split("\nPY", 1)[0]
+            return subprocess.run([sys.executable, '-c', script, str(root)], capture_output=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = '7.1.12-aurora-g5f6c917'
+            (root / 'config').write_bytes(b'config')
+            image = root / 'usr/lib/modules' / release / 'vmlinuz'
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b'image')
+            receipt = {'build_mode': 'clean-source', 'actual_compile_source': kernel_stage.PIN,
+                       'requested_public_pin': kernel_stage.PIN, 'release': release,
+                       'config_sha256': hashlib.sha256(b'config').hexdigest(),
+                       'files': {str(image.relative_to(root)): hashlib.sha256(b'image').hexdigest()}}
+            target = root / 'reuse-receipt.json'
+            target.write_text(json.dumps(receipt))
+            template = ROOT / 'recipes/kernel/PKGBUILD'
+            self.assertEqual(verifier(template, root).returncode, 0)
+            for key in ['actual_compile_source', 'requested_public_pin', 'release', 'config_sha256']:
+                bad = dict(receipt, **{key: 'wrong'})
+                target.write_text(json.dumps(bad))
+                self.assertNotEqual(verifier(template, root).returncode, 0, key)
+            target.write_text(json.dumps({'actual_incremental_source': kernel_stage.PIN, 'files': receipt['files']}))
+            self.assertEqual(verifier(template, root).returncode, 0)
+            stage = root / 'stage'
+            (stage / 'include/config').mkdir(parents=True)
+            (stage / '.config').write_bytes(b'config')
+            (stage / 'include/config/kernel.release').write_text(release + '\n')
+            self.assertEqual(kernel_stage.verified_release(stage), release)
+            hreceipt = {'status': 'PASS', 'build_mode': 'clean-source', 'source': kernel_stage.PIN,
+                        'requested_public_pin': kernel_stage.PIN, 'release': release,
+                        'config_sha256': receipt['config_sha256'], 'helpers': []}
+            header_receipt = root / 'native-helper-receipt.json'
+            header_receipt.write_text(json.dumps(hreceipt))
+            header_template = ROOT / 'recipes/kernel/headers/PKGBUILD'
+            self.assertEqual(verifier(header_template, root).returncode, 0)
+            header_receipt.write_text(json.dumps(dict(hreceipt, release='7.1.12-wrong')))
+            self.assertNotEqual(verifier(header_template, root).returncode, 0)
+            (stage / 'include/config/kernel.release').write_text('7.1.12-aurora-j700-beta-r69-20261014\n')
+            with self.assertRaisesRegex(ValueError, 'release'):
+                kernel_stage.verified_release(stage)
+            header_receipt.write_text(json.dumps({'status': 'PASS', 'config_sha256': receipt['config_sha256'], 'helpers': []}))
+            self.assertEqual(verifier(header_template, root).returncode, 0)
+            (stage / 'include/config/kernel.release').unlink()
+            self.assertNotEqual(verifier(header_template, root).returncode, 0)
+            with self.assertRaises(FileNotFoundError):
+                kernel_stage.verified_release(stage)
+            package = header_template.read_text().split('package() {', 1)[1]
+            self.assertIn('release=$(cat stage/include/config/kernel.release)', package)
+            self.assertNotIn('local release=7.1.12-aurora-j700', package)
+
+    def test_stale_image_and_module_releases_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / 'Image'
+            modules = root / 'modules'
+            modules.mkdir()
+            module = modules / 'test.ko'
+            release = '7.1.12-aurora-g5f6c917'
+            image.write_bytes(b'header\x00Linux version ' + release.encode() + b' (builder)\x00')
+            module.write_bytes(b'\x7fELF' + b'\x00' * 16 + b'vermagic=' + release.encode() + b' SMP aarch64\x00')
+            kernel_stage.verify_output_releases(image, modules, release)
+            valid_image, valid_module = image.read_bytes(), module.read_bytes()
+            for data in [b'no banner', valid_image.replace(release.encode(), b'7.1.12-aurora-j700-beta-r69-20261014')]:
+                image.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, 'Image'):
+                    kernel_stage.verify_output_releases(image, modules, release)
+            image.write_bytes(valid_image)
+            for data in [b'not ELF', valid_module.replace(release.encode(), b'7.1.12-old'), b'\x7fELF\x00no vermagic']:
+                module.write_bytes(data)
+                with self.assertRaisesRegex(ValueError, 'vermagic'):
+                    kernel_stage.verify_output_releases(image, modules, release)
+            module.unlink()
+            with self.assertRaisesRegex(ValueError, 'no installed'):
+                kernel_stage.verify_output_releases(image, modules, release)
 
     def test_private_controller_paths_and_binaries_are_absent(self):
         for file in ROOT.rglob('*'):

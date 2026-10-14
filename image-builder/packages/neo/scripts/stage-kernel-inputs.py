@@ -29,16 +29,55 @@ def archive(directory, path, name):
         stream.add(directory, arcname=name)
 
 
+def verified_release(build):
+    path = Path(build) / 'include/config/kernel.release'
+    release = path.read_text().strip()
+    if not re.fullmatch(r'[A-Za-z0-9._-]+', release) or not release.endswith('-aurora-g5f6c917'):
+        raise ValueError('missing or wrong clean kernel release')
+    return release
+
+
+def verify_output_releases(image, modules, release):
+    """Reject stale uncompressed build outputs; not compilation/ABI proof."""
+    banners = re.findall(rb'Linux version ([0-9][^\s\x00]+)', Path(image).read_bytes())
+    if not banners or set(banners) != {release.encode('ascii')}:
+        raise ValueError('Image Linux version banner differs from release or is missing')
+    paths = sorted(Path(modules).rglob('*.ko'))
+    if not paths:
+        raise ValueError('no installed uncompressed kernel modules')
+    for path in paths:
+        data = path.read_bytes()
+        values = re.findall(rb'(?:^|\x00)vermagic=([^\x00]+)', data)
+        if data[:4] != b'\x7fELF' or len(values) != 1 or values[0].split(b' ', 1)[0] != release.encode('ascii'):
+            raise ValueError('module vermagic differs from release: ' + str(path))
+
+
 def ready_recipe(template, directory):
     """Generate checksum-bound packaging for these new outputs, never old hashes."""
     text = Path(template).read_text()
     sources = re.findall("'([^']+)'", re.search(r'source=\((.*?)\)', text, re.S).group(1))
+    receipt_name = 'reuse-receipt.json' if 'kernel-runtime.tar' in sources else 'native-helper-receipt.json'
+    receipt = json.loads((Path(directory) / receipt_name).read_text())
+    release = receipt.get('release', '')
+    if receipt.get('build_mode') != 'clean-source' or receipt.get('requested_public_pin') != PIN or not re.fullmatch(r'[A-Za-z0-9._-]+', release) or not release.endswith('-aurora-g5f6c917'):
+        raise ValueError('generated recipe needs exact clean source/release receipt')
+    actual = receipt.get('actual_compile_source', receipt.get('source'))
+    if actual != PIN or not re.fullmatch(r'[0-9a-f]{64}', receipt.get('config_sha256', '')):
+        raise ValueError('generated recipe needs exact compile/config identity')
+    config = Path(directory) / ('config' if 'config' in sources else 'stage/.config')
+    if sha(config) != receipt['config_sha256']:
+        raise ValueError('generated recipe configuration does not match receipt')
+    if 'headers-stage.tar' in sources and verified_release(Path(directory) / 'stage') != release:
+        raise ValueError('generated header release does not match receipt')
+    version = release.replace('-', '.') + '.c' + receipt['config_sha256'][:12]
+    text = re.sub(r'^pkgver=.*$', 'pkgver=' + version, text, count=1, flags=re.M)
     digests = []
     for name in sources:
         if Path(name).name != name:
             raise ValueError('generated recipe has an unsafe source input')
         digests.append(sha(Path(directory) / name))
     text = re.sub(r'sha256sums=\(.*?\)', 'sha256sums=(' + ' '.join(repr(value) for value in digests) + ')', text, count=1, flags=re.S)
+    text = text.replace('# Incremental build of public 5f6c917 from the preserved d32 cache.\n# Rebuilt PMGR and SEP, relinked Image and updated the J700 DTB.\n', '')
     text = '# Generated packaging for new pinned public clean-source outputs; not a reproduction of old reuse hashes.\n' + text
     (Path(directory) / 'PKGBUILD').write_text(text)
 
@@ -51,16 +90,20 @@ def stage(source, build, output):
         raise ValueError('kernel source contains undeclared changes or build inputs; use an external O= build')
     if sha(build / '.config') != sha(Path(__file__).resolve().parents[1] / 'recipes/kernel/config'):
         raise ValueError('effective build configuration differs from the published profile')
+    release = verified_release(build)
     output.mkdir(parents=True, exist_ok=False)
     kernel, headers = output / 'kernel', output / 'headers'
     kernel.mkdir()
     headers.mkdir()
-    release = subprocess.check_output(['make', '-s', '-C', str(source), 'O=' + str(build), 'kernelrelease'], text=True).strip()
+    reported_release = subprocess.check_output(['make', '-s', '-C', str(source), 'O=' + str(build), 'kernelrelease'], text=True).strip()
+    if reported_release != release:
+        raise ValueError('kernelrelease command differs from staged release')
     payload = kernel / 'payload'
     with tempfile.TemporaryDirectory(prefix='kernel-modules-stage-') as directory:
         subprocess.run(['make', '-C', str(source), 'O=' + str(build), 'INSTALL_MOD_PATH=' + directory, 'modules_install'], check=True)
         copy_tree(Path(directory) / 'lib/modules', payload / 'usr/lib/modules')
     modules = payload / 'usr/lib/modules' / release
+    verify_output_releases(build / 'arch/arm64/boot/Image', payload / 'usr/lib/modules', release)
     for name in ('build', 'source'):
         link = modules / name
         if link.is_symlink():
@@ -80,7 +123,7 @@ def stage(source, build, output):
     copy_tree(source / 'LICENSES', license_dir / 'LICENSES')
     shutil.copyfile(build / '.config', kernel / 'config')
     receipt = {'requested_public_pin': PIN, 'actual_compile_source': PIN, 'build_mode': 'clean-source',
-               'source_bit_reproducibility_claim': False, 'release': release,
+               'source_bit_reproducibility_claim': False, 'release': release, 'config_sha256': sha(build / '.config'),
                'files': {str(p.relative_to(payload)): sha(p) for p in payload.rglob('*') if p.is_file() and not p.is_symlink()}}
     (kernel / 'reuse-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     archive(payload, kernel / 'kernel-runtime.tar', '.')
@@ -124,7 +167,8 @@ def stage(source, build, output):
     for file in hstage.rglob('*'):
         if file.is_file() and not file.is_symlink() and file.suffix in ('.o', '.cmd', '.d', '.a'):
             file.unlink()
-    receipt = {'status': 'PASS', 'source': PIN, 'config_sha256': sha(hstage / '.config'), 'helpers': helpers,
+    receipt = {'status': 'PASS', 'source': PIN, 'requested_public_pin': PIN, 'build_mode': 'clean-source',
+               'release': verified_release(hstage), 'config_sha256': sha(hstage / '.config'), 'helpers': helpers,
                'validation_scope': 'native helper ELF/config/source staging only; external module qualification is separate'}
     (headers / 'native-helper-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     shutil.copyfile(source / 'COPYING', headers / 'COPYING')

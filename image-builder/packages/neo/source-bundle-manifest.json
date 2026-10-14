@@ -3,8 +3,8 @@
   "files": [
     {
       "path": "BUILD.md",
-      "sha256": "f16f6a70410f1ae493d2c00498b80c200ca501df72219acc1becbfe5b90d70c4",
-      "bytes": 10145
+      "sha256": "cced30e2d9b46aaac7465cb5475cf2fa0a3e8a312b7324ef9f09aac3dc55e22e",
+      "bytes": 11827
     },
     {
       "path": "LICENSE",
@@ -234,18 +234,18 @@
     },
     {
       "path": "recipes/kernel/PKGBUILD",
-      "sha256": "ed4381c9be03fba2fa21d22634b79f63f37d34313030adeabde04635d0544877",
-      "bytes": 1435
+      "sha256": "3bab3ba9a86317cda685d885f76bc0837caabcb6496f47044c06e8041419543b",
+      "bytes": 1893
     },
     {
       "path": "recipes/kernel/config",
-      "sha256": "fb8a0c1e96bef82638829628ec4809c32856ba08214c7718b8aee2e9cbb9a971",
-      "bytes": 339726
+      "sha256": "972970b562df72af9d9ce96564f89bdc43c7df7ea903d7befabf453e93f17617",
+      "bytes": 339712
     },
     {
       "path": "recipes/kernel/headers/PKGBUILD",
-      "sha256": "eedf08cba58aa96c200631582bfc80171d196a65f0501c559292abee5efbacb8",
-      "bytes": 1894
+      "sha256": "470b683904657dd6621d0ab2de995f35b3bda0b1bf45a2d2371367fcd8ddc851",
+      "bytes": 2387
     },
     {
       "path": "recipes/libfprint/PKGBUILD",
@@ -414,8 +414,8 @@
     },
     {
       "path": "scripts/stage-kernel-inputs.py",
-      "sha256": "7d9b7cf777d87074c863ca1d7c47030e42a69e1e103e1bec5e06a08b6ef86bc4",
-      "bytes": 7639
+      "sha256": "aeba51f5149432306854921c9172b1ac6cd62cd838253e6bcae133d6d538556c",
+      "bytes": 10655
     },
     {
       "path": "tests/test_proton_activation.py",
@@ -424,8 +424,8 @@
     },
     {
       "path": "tests/test_recipes.py",
-      "sha256": "e6ec3818ae6436d8a29f54c1fbb7aa92af4ee873b04de7d0003de4e786e8a961",
-      "bytes": 16386
+      "sha256": "273f79943e2524c7ecb4dc91eb9e239a886a095f2ba49427ce9f11a03a068bb7",
+      "bytes": 22475
     }
   ]
 }

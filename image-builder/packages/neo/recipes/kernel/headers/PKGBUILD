@@ -19,6 +19,14 @@ from pathlib import Path
 import hashlib,json,struct,sys
 root=Path(sys.argv[1]);r=json.loads((root/'native-helper-receipt.json').read_text())
 assert r['status']=='PASS'
+release=(root/'stage/include/config/kernel.release').read_text().strip()
+assert release and all(c.isalnum() or c in '.-_' for c in release)
+if r.get('build_mode') == 'clean-source':
+ assert r.get('source') == r.get('requested_public_pin') == '5f6c917f2c824b3c87497e8bd7dd92a6de0efe60'
+ assert r.get('release') == release and release.endswith('-aurora-g5f6c917')
+else:
+ assert release == '7.1.12-aurora-j700-beta-r69-20261014'
+
 assert hashlib.file_digest((root/'stage/.config').open('rb'),'sha256').hexdigest()==r['config_sha256']
 for item in r['helpers']:
     p=root/'stage'/item['path'];b=p.read_bytes()
@@ -27,7 +35,9 @@ for item in r['helpers']:
 PY
 }
 package() {
-  local release=7.1.12-aurora-j700-beta-r69-20261014
+  local release
+  release=$(cat stage/include/config/kernel.release)
+  [[ $release =~ ^[[:alnum:]._-]+$ ]] || return 1
   local destination="$pkgdir/usr/lib/modules/$release/build"
   install -d "$destination"
   cp -a stage/. "$destination/"

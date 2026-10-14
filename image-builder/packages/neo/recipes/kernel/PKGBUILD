@@ -19,7 +19,17 @@ check() {
 from pathlib import Path
 import hashlib,json,sys
 r=Path(sys.argv[1]);m=json.loads((r/'reuse-receipt.json').read_text())
-assert m['actual_incremental_source']=='5f6c917f2c824b3c87497e8bd7dd92a6de0efe60'
+pin='5f6c917f2c824b3c87497e8bd7dd92a6de0efe60'
+if m.get('build_mode') == 'clean-source':
+ assert m.get('actual_compile_source') == pin and m.get('requested_public_pin') == pin
+ release=m['release']
+ assert release.endswith('-aurora-g5f6c917') and '/' not in release and '\\' not in release
+ assert m['config_sha256']==hashlib.file_digest((r/'config').open('rb'),'sha256').hexdigest()
+ assert (r/'usr/lib/modules'/release/'vmlinuz').is_file()
+else:
+ assert 'actual_compile_source' not in m
+ assert m.get('actual_incremental_source') == pin
+
 for name,digest in m['files'].items():
  assert hashlib.file_digest((r/name).open('rb'),'sha256').hexdigest()==digest,name
 VERIFY
