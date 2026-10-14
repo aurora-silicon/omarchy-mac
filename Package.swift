@@ -44,11 +44,6 @@ let package = Package(
       publicHeadersPath: "include"
     ),
     .executableTarget(
-      name: "RecoveryAccountQualification",
-      dependencies: ["RecoveryAccountCore"],
-      path: "Development/RecoveryAccountQualification"
-    ),
-    .executableTarget(
       name: "InstallerReadinessCheck",
       dependencies: ["OmarchyAppleInstallerTrustCore"],
       path: "Development/ReadinessCheck"
