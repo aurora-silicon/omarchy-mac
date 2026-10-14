@@ -14,10 +14,10 @@ let package = Package(
   products: [.executable(name: "OmarchyRecovery", targets: ["OmarchyRecovery"])],
   dependencies: [.package(name: "InstallerIdentity", path: "..")],
   targets: [
-    .target(name: "RecoveryAuthorization", path: "Native", publicHeadersPath: "."),
+    .target(name: "RecoveryStandaloneAuthorization", path: "Native", publicHeadersPath: "."),
     .executableTarget(
       name: "OmarchyRecovery",
-      dependencies: ["RecoveryAuthorization"],
+      dependencies: ["RecoveryStandaloneAuthorization"],
       path: "Sources",
       swiftSettings: [
         .define(buildMode == "recovery" ? "OMARCHY_STEP2_RECOVERY" : "OMARCHY_STEP2_PREVIEW")

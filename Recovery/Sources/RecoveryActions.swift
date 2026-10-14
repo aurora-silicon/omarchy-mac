@@ -1,7 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
-import RecoveryAuthorization
+import RecoveryStandaloneAuthorization
 
 struct RecoveryFailure: Error, LocalizedError {
   let message: String

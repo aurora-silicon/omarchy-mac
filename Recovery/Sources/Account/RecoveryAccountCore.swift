@@ -1,7 +1,12 @@
 import CryptoKit
 import Darwin
 import Foundation
-import RecoveryAuthorization
+
+#if canImport(RecoveryStandaloneAuthorization)
+  import RecoveryStandaloneAuthorization
+#else
+  import RecoveryAuthorization
+#endif
 
 public struct RecoveryAccountTarget: Codable, Equatable, Sendable {
   public let volumeName: String
