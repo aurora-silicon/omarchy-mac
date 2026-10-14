@@ -1,0 +1,54 @@
+# Maintainer: Ryan Murray <ryan@aurorasilicon.org>
+pkgname=omarchy-apple-firmware-order
+pkgver=20261014
+pkgrel=2
+pkgdesc='Order Apple peripherals and SEP after target vendor firmware; cold Neo Bluetooth admission'
+arch=(any)
+license=(MIT)
+depends=('aurora-sep>=1-5' bash coreutils grep kmod mkinitcpio systemd)
+backup=('etc/mkinitcpio.conf.d/95-aurora-vendor-order.conf')
+source=(
+  "20-aurora-vendor-order.conf::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/20-aurora-vendor-order.conf"
+  "50-aurora-sep-vendor-firmware.conf::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/50-aurora-sep-vendor-firmware.conf"
+  "81-omarchy-aurora.preset::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/81-omarchy-aurora.preset"
+  "95-aurora-vendor-order.conf::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/95-aurora-vendor-order.conf"
+  "LICENSE::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/LICENSE"
+  "README.md::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/README.md"
+  "aurora-firmware-order.conf::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-firmware-order.conf"
+  "aurora-j700-bluetooth-admit::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-j700-bluetooth-admit"
+  "aurora-j700-bluetooth.service::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-j700-bluetooth.service"
+  "aurora-peripheral-firmware.service::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-peripheral-firmware.service"
+  "aurora-peripheral-firmware.sh::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-peripheral-firmware.sh"
+  "aurora-vendor-order-cryptsetup.conf::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-vendor-order-cryptsetup.conf"
+  "aurora-vendor-order.install::https://raw.githubusercontent.com/aurora-silicon/omarchy-mac/3d0dfd8f8c3017dc6244a4c6ec1468ee3f0811f6/image-builder/firmware-ordering/aurora-vendor-order.install"
+)
+sha256sums=(
+  'e200d1cf003d60eca4a825aec9475f36dd8db6a5a8805eaac93e3fecfa0b3cb0'
+  '2ad410388bfb498f272c12c3178a2048e50d7c435be1d053f4909e59892d7bd6'
+  'b0b0d68522a69107a91396cb5849db6ccfe23f70fe1fb8c6d512c9ee3fe2f29a'
+  '8ef54ee9d0f438864f2a99bbb8c0cf53aa8b7e0e217bd74b2fd324ff0b882a32'
+  'e2b1e3778a6ada6d6eee5f48c028f885e9797313f4c5705929bdc5b99db569d3'
+  '402012fef099a1113c9d2e852002d5dd40c69f989acad16ff6af5556d0824861'
+  'e6338787cc03c7704589df20f7551ac17bc2ae25aa2f8df3b6d9532a1c5b79f9'
+  'b918733ec5849c3dbfc13af0ed423d666db1e82fca1b43765164137e897e5155'
+  '141e7af530939c9b3d9998f7abb3ce7d6a60dd587028402cabe77e0de83f842f'
+  '2e96ca9e84d54b36dcf68b12e5a3eb4614a9f2c1bede75ce3bf427b097f88f8b'
+  '950386df02e0d11ec6ec879176117d66b9299755bc48c7d42ddef729763ce7ce'
+  '298c2abc4c0e11ab03470209b4ff93c184eed40d3cf9e1913e41ba0ea0179837'
+  'bbc9236920d8a4ce033eb8469c07cae33bc64633c36c860fd8bd9c0845132d2b'
+)
+package() {
+ install -Dm755 "$srcdir/aurora-peripheral-firmware.sh" "$pkgdir/usr/lib/omarchy/initcpio/aurora-peripheral-firmware.sh"
+ install -Dm755 "$srcdir/aurora-j700-bluetooth-admit" "$pkgdir/usr/lib/aurora-j700/bluetooth-admit"
+ install -Dm644 "$srcdir/aurora-vendor-order-cryptsetup.conf" "$pkgdir/usr/lib/omarchy/initcpio/aurora-vendor-order-cryptsetup.conf"
+ install -Dm644 "$srcdir/aurora-vendor-order.install" "$pkgdir/usr/lib/initcpio/install/aurora-vendor-order"
+ install -Dm644 "$srcdir/95-aurora-vendor-order.conf" "$pkgdir/etc/mkinitcpio.conf.d/95-aurora-vendor-order.conf"
+ install -Dm644 "$srcdir/aurora-firmware-order.conf" "$pkgdir/usr/lib/modprobe.d/aurora-firmware-order.conf"
+ install -Dm644 "$srcdir/aurora-peripheral-firmware.service" "$pkgdir/usr/lib/systemd/system/aurora-peripheral-firmware.service"
+ install -Dm644 "$srcdir/aurora-j700-bluetooth.service" "$pkgdir/usr/lib/systemd/system/aurora-j700-bluetooth.service"
+ install -Dm644 "$srcdir/81-omarchy-aurora.preset" "$pkgdir/usr/lib/systemd/system-preset/81-omarchy-aurora.preset"
+ install -Dm644 "$srcdir/20-aurora-vendor-order.conf" "$pkgdir/usr/lib/systemd/system/omarchy-vendor-firmware.service.d/20-aurora-vendor-order.conf"
+ install -Dm644 "$srcdir/50-aurora-sep-vendor-firmware.conf" "$pkgdir/usr/lib/systemd/system/aurora-sep.service.d/50-aurora-sep-vendor-firmware.conf"
+ install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+ install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

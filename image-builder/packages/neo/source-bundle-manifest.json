@@ -107,6 +107,11 @@
       "bytes": 1611
     },
     {
+      "path": "recipes/firmware-order/PKGBUILD",
+      "sha256": "50a050c79d12eca5ea4cb7f19648e422a7aaaecc436ea293f3d5c8989c3fe009",
+      "bytes": 5302
+    },
+    {
       "path": "recipes/gtk2/0001-Lower-severity-of-XID-collision-warnings.patch",
       "sha256": "cbb55e57f06a1439f115d6c6dc4730f70011cc3926deb0ad1b32f2576ee99a0d",
       "bytes": 759
@@ -187,11 +192,6 @@
       "bytes": 1063
     },
     {
-      "path": "recipes/runtime/omarchy/PKGBUILD",
-      "sha256": "705b68cd787e262f8a1c51512f06a346be86cd88ebb69ef5a2dc702b929392ef",
-      "bytes": 7043
-    },
-    {
       "path": "recipes/runtime/omarchy-settings/PKGBUILD",
       "sha256": "607c7a67d05eb46db36d9cfb75600e4f52a863c551841f46637bc7aff86f3f21",
       "bytes": 26817
@@ -200,6 +200,11 @@
       "path": "recipes/runtime/omarchy-settings/omarchy-settings.install",
       "sha256": "5714b40b50d8a50e8f04f2f8379c138339bbd8a7bf72c3e5afeb194740240fde",
       "bytes": 2950
+    },
+    {
+      "path": "recipes/runtime/omarchy/PKGBUILD",
+      "sha256": "705b68cd787e262f8a1c51512f06a346be86cd88ebb69ef5a2dc702b929392ef",
+      "bytes": 7043
     },
     {
       "path": "recipes/speaker/50-j700-guard.conf",
@@ -245,6 +250,16 @@
       "path": "recipes/userpages/PKGBUILD",
       "sha256": "573869dc8c603bf35335ae1f2193ac6f895d4b75b21a2fa4ff1b339b6d7d2a87",
       "bytes": 1119
+    },
+    {
+      "path": "recipes/vendor-cache/PKGBUILD",
+      "sha256": "0425d3e12fb463b05e60b985165690de9396f78c7749d07ffd2c56a3fd0786cd",
+      "bytes": 20645
+    },
+    {
+      "path": "recipes/vendor-cache/vendor-receipt.json",
+      "sha256": "f2ef84fc61a828c6d06cc6c749ff3636c900d1531bf50899c646c63b69a40d72",
+      "bytes": 14227
     },
     {
       "path": "recipes/xwayland/PKGBUILD",
