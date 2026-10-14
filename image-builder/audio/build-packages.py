@@ -101,7 +101,7 @@ def main():
     drop = root / 'usr/lib/systemd/system/speakersafetyd.service.d/50-j700-guard.conf'
     drop.parent.mkdir(parents=True, exist_ok=True)
     drop.write_text('[Service]\nExecCondition=/usr/lib/speakerguardd/use-feedback-guard\n')
-    package('speakerguardd', '0.1.0.aurora1-' + PINS['speakerguardd'][:12], root, ['glibc'])
+    package('speakerguardd', '0.1.0.aurora2-' + PINS['speakerguardd'][:12], root, ['glibc', 'libgcc'])
 
     root = stage / 'alsa-ucm-conf-asahi'
     shutil.copytree(sources['alsa-ucm-conf-asahi'] / 'ucm2', root / 'usr/share/alsa/ucm2')
