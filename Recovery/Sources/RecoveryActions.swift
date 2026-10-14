@@ -124,25 +124,12 @@ enum RecoveryActions {
   }
   static func resolveOwner() throws -> RecoveryOwner {
     try verifyVolume()
-    let selected = try RecoveryAccountInstaller.selectedOwner(system: volume)
     let userData = try run("/usr/sbin/diskutil", ["apfs", "listUsers", systemUUID, "-plist"])
     guard
       let cryptoUsers = try PropertyListSerialization.propertyList(from: userData, format: nil)
         as? [String: Any]
     else {
       throw RecoveryOwnerError.noOwner
-    }
-    var pendingAccount: RecoveryOwner?
-    if let selected {
-      guard let uuid = UUID(uuidString: selected.generatedUID) else {
-        throw RecoveryOwnerError.noOwner
-      }
-      let account = RecoveryOwner(username: selected.username, uuid: uuid)
-      if RecoveryOwnerResolver.isOwner(account, users: cryptoUsers) { return account }
-      guard ["prepared", "awaiting-ownership"].contains(selected.phase) else {
-        throw RecoveryOwnerError.noOwner
-      }
-      pendingAccount = account
     }
     var preboot = try disk(prebootUUID)
     if (preboot["MountPoint"] as? String)?.isEmpty != false {
@@ -166,7 +153,6 @@ enum RecoveryActions {
     let bootstrap = try configuration.get().bootstrap
     let owner = try RecoveryOwnerResolver.resolve(
       admins: admins, targetUsers: cryptoUsers, bootstrap: bootstrap,
-      pendingAccount: pendingAccount,
       source: {
         guard let bootstrap else { throw RecoveryOwnerError.noOwner }
         let bytes = try run("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
@@ -309,25 +295,6 @@ enum RecoveryActions {
   ) throws {
     // Repeat the check here so bypassing the GUI cannot reach any write.
     try requireEnrollmentEnvironment()
-    InstallerLog.shared.append(
-      "Recovery environment verified. Checking the installation’s recovery account.")
-    if let selected = try RecoveryAccountInstaller.selectedOwner(system: volume) {
-      if owner.uuid.uuidString == selected.generatedUID {
-        InstallerLog.shared.append(
-          "Verifying the recovery account and completing its ownership metadata.")
-        let final = try RecoveryAccountInstaller.finalize(
-          selected.target, password: Data(password.utf8))
-        try RecoveryAccountInstaller.requireOwnership(final)
-        InstallerLog.shared.append("Recovery account ownership verified.")
-      } else {
-        try check(
-          ["prepared", "awaiting-ownership"].contains(selected.phase),
-          "The recovery account is not ready for initial enrollment.")
-        InstallerLog.shared.append(
-          "Initial enrollment uses the recorded macOS owner. Authorize the new recovery account in Startup Disk after setup."
-        )
-      }
-    }
     let config = try configuration.get()
     try check(
       selection.mode == .raw && !selection.nestedVirtualization,
@@ -408,7 +375,6 @@ enum RecoveryActions {
         "schema": 1, "mode": selection.mode.rawValue, "stage2Path": destination,
         "stage1SHA256": hash(stage1), "stage2SHA256": hash(stage2),
         "nestedVirtualization": selection.nestedVirtualization, "status": "installed",
-        "recoveryAccountRequired": true,
         "operation": operation.path,
       ], to: receipt)
     progress(1, "Installation complete")
@@ -458,86 +424,10 @@ enum RecoveryActions {
     return true
   }
 
-  static func prepareStartupDiskHandoff() throws -> URL {
+  static func restart() throws {
     try recoveryOnly()
-    _ = try installed()
-    try RecoveryVersionMetadata.showForStartupDisk(system: volume)
-    let application = URL(fileURLWithPath: "/System/Applications/Utilities/Startup Disk.app")
-    try check(
-      FileManager.default.fileExists(atPath: application.path),
-      "Startup Disk is unavailable. Choose Apple menu → Startup Disk.")
-    return application
-  }
-
-  static func accountTarget() throws -> RecoveryAccountTarget {
-    try recoveryOnly()
-    _ = try installed()
-    let system = try disk(systemUUID)
-    guard let containerID = system["APFSContainerReference"] as? String else {
-      throw RecoveryFailure(message: "Cannot identify this installation’s APFS container.")
-    }
-    let bytes = try run("/usr/sbin/diskutil", ["apfs", "list", "-plist"])
-    guard
-      let tree = try PropertyListSerialization.propertyList(from: bytes, format: nil)
-        as? [String: Any], let containers = tree["Containers"] as? [[String: Any]]
-    else { throw RecoveryFailure(message: "Cannot inspect the installation volumes.") }
-    let matches = containers.filter { $0["ContainerReference"] as? String == containerID }
-    guard matches.count == 1 else {
-      throw RecoveryFailure(message: "The installation’s APFS container is ambiguous.")
-    }
-    let volumes = matches[0]["Volumes"] as? [[String: Any]] ?? []
-    for (id, role) in [(systemUUID, "System"), (prebootUUID, "Preboot")] {
-      try check(
-        volumes.filter {
-          ($0["APFSVolumeUUID"] as? String)?.uppercased() == id
-            && ($0["Roles"] as? [String] ?? []).contains(role)
-        }.count == 1,
-        "The installation’s \(role) volume does not match its configuration.")
-    }
-    var candidates = [String]()
-    for volume in volumes {
-      guard (volume["Roles"] as? [String] ?? []).contains("Data"),
-        let id = volume["APFSVolumeUUID"] as? String
-      else { continue }
-      let info = try disk(id)
-      if (info["APFSVolumeGroupID"] as? String)?.uppercased() == groupUUID,
-        info["APFSContainerReference"] as? String == containerID
-      {
-        candidates.append(id.uppercased())
-      }
-    }
-    guard candidates.count == 1 else {
-      throw RecoveryFailure(message: "Cannot identify this installation’s Data volume.")
-    }
-    let target = RecoveryAccountTarget(
-      volumeName: volumeName, systemUUID: systemUUID, dataUUID: candidates[0],
-      groupUUID: groupUUID, prebootUUID: prebootUUID)
-    try target.validate()
-    return target
-  }
-
-  static func recoveryAccount() throws -> RecoveryAccountRecord? {
-    let record = try RecoveryAccountInstaller.inspect(accountTarget())
-    if let record, record.phase == "finalized" {
-      try RecoveryAccountInstaller.requireOwnership(record)
-    }
-    return record
-  }
-
-  static func accountCreationRequired() throws -> Bool {
-    try installed()["recoveryAccountRequired"] as? Bool == true
-  }
-
-  static func createRecoveryAccount(username: String, password: Data) throws
-    -> RecoveryAccountRecord
-  {
-    let target = try accountTarget()
-    try RecoveryAccountInstaller.refreshMountedGroup(target)
-    _ = try RecoveryAccountInstaller.prepare(target, username: username, password: password)
-    // Startup Disk can leave a matching APFS credential before ownership is
-    // granted. Reconcile that proven credential before sending the user back.
-    // With no credential yet, finalize leaves the prepared account unchanged.
-    return try RecoveryAccountInstaller.finalize(target, password: password)
+    try check(recovering, "Complete installation before restarting.")
+    try run("/sbin/shutdown", ["-r", "now"])
   }
 }
 
