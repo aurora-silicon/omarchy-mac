@@ -13,6 +13,7 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 # The builder's own work directory, for what it records.
 work=$scratch
+candidate_trust=$ROOT/builder/candidate-trust
 
 builder_fail() {
   echo "build-mac-image: $*" >&2

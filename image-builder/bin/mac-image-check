@@ -516,9 +516,13 @@ def check_tree(root: Path, factory: Path | None = None, profile: str = "release"
 
 
 def inspect_tree(lane: str, root: Path, factory: Path | None, candidates: Path, report: Path | None,
-                 lab_digest: str = "", profile: str = "release") -> None:
+                 lab_digest: str = "", profile: str = "release", trust: Path | None = None) -> None:
     inspection = _inspection()
-    result = inspection.inspect(root, candidates, lane, factory, profile=profile)
+    try:
+        result = inspection.inspect(root, candidates, lane, factory,
+                                    trust=trust or inspection.candidate_set.TRUST, profile=profile)
+    except (inspection.InspectionError, ValueError, OSError) as error:
+        raise CheckError(str(error)) from None
     if lab_digest:
         result["profile"] = "lab"
         result["lab_access_sha256"] = lab_digest
@@ -544,7 +548,7 @@ def check_subvolumes(listed: list[str]) -> None:
 
 
 def check_image(lane: str, root_image: Path, boot_image: Path, esp: Path, candidates: Path, report: Path | None,
-                profile: str = "release") -> None:
+                profile: str = "release", trust: Path | None = None) -> None:
     check_profile(lane, profile)
     require(os.geteuid() == 0, "image checks mount the images and need root")
     for image, capacity in ((root_image, ROOT_SIZE), (boot_image, BOOT_SIZE)):
@@ -588,7 +592,7 @@ def check_image(lane: str, root_image: Path, boot_image: Path, esp: Path, candid
             # The lab overlay lives in @ (and @factory); the others carry none.
             for subvolume in ("@", "@home", "@log", "@pkg"):
                 check_lab_access(top / subvolume, f"{subvolume} (unmounted)", profile if subvolume == "@" else "release")
-            inspect_tree(lane, tree, factory, candidates, report, digest, profile)
+            inspect_tree(lane, tree, factory, candidates, report, digest, profile, trust)
         finally:
             for mount in reversed(mounts):
                 subprocess.run(["umount", mount], check=False)
@@ -694,6 +698,12 @@ def check_provenance(lane: str, directory: Path) -> None:
             "INSPECTION is not the one PROVENANCE names")
     report = json.loads(inspection.read_text())
     require(report.get("result") == "passed", "INSPECTION did not pass")
+    trust_fields = ("candidate_trust_policy_sha256", "candidate_trust_public_key_sha256")
+    if any("input." + key in fields for key in trust_fields):
+        for key in trust_fields:
+            value = once(fields, "input." + key, "PROVENANCE")
+            require(re.fullmatch(r"[0-9a-f]{64}", value) is not None and report.get(key) == value,
+                    "PROVENANCE candidate trust does not match INSPECTION")
     sources: dict[str, str] = {}
     for value in fields.get("candidate_source", []):
         name, _, commit = value.partition("|")
@@ -768,6 +778,14 @@ def check_descriptor(lane: str, directory: Path) -> None:
     for key in IMAGE_INPUTS:
         require(input_fields.get(key) == fields[key], f"IMAGE {key} does not match the inputs record")
         require(provenance_fields.get(f"input.{key}") == fields[key], f"IMAGE {key} does not match PROVENANCE")
+    trust_fields = ("candidate_trust_policy_sha256", "candidate_trust_public_key_sha256")
+    if any(key in input_fields or key in fields for key in trust_fields):
+        for key in trust_fields:
+            value = once(fields, key, "IMAGE")
+            require(re.fullmatch(r"[0-9a-f]{64}", value) is not None
+                    and input_fields.get(key) == fields[key]
+                    and provenance_fields.get("input." + key) == fields[key],
+                    "IMAGE candidate trust does not match inputs and PROVENANCE")
     require(fields["omarchy_channel"] == [lane], "IMAGE's lane is not its channel")
     digest = file_sha256(inputs)
     require(fields["input_digest"] == [digest], "IMAGE input_digest does not match the inputs record")
@@ -793,8 +811,8 @@ def check_descriptor(lane: str, directory: Path) -> None:
 
 
 USAGE = """Usage: mac-image-check payload <edge|rc|stable> PAYLOAD.zip INSTALLER_DATA.json [--profile lab]
-       mac-image-check image <edge|rc|stable> ROOT.img BOOT.img ESP_DIR --candidates DIR [--report FILE] [--profile lab]
-       mac-image-check tree <edge|rc|stable> ROOT_TREE [FACTORY_TREE] --candidates DIR [--report FILE] [--profile lab]
+       mac-image-check image <edge|rc|stable> ROOT.img BOOT.img ESP_DIR --candidates DIR [--report FILE] [--profile lab] [--trust-dir DIR]
+       mac-image-check tree <edge|rc|stable> ROOT_TREE [FACTORY_TREE] --candidates DIR [--report FILE] [--profile lab] [--trust-dir DIR]
        mac-image-check provenance <edge|rc|stable> BUILD_DIR
        mac-image-check descriptor <edge|rc|stable> BUILD_DIR"""
 
@@ -805,7 +823,7 @@ def main(argv: list[str]) -> int:
     profile = "release"
     arguments = iter(argv[1:])
     for arg in arguments:
-        if arg in ("--candidates", "--report", "--profile"):
+        if arg in ("--candidates", "--report", "--profile", "--trust-dir"):
             value = next(arguments, None)
             if value is None or (arg == "--profile" and value not in PROFILES):
                 print(USAGE, file=sys.stderr)
@@ -828,6 +846,9 @@ def main(argv: list[str]) -> int:
     elif len(paths) != arity[mode]:
         print(USAGE, file=sys.stderr)
         return 64
+    if "trust-dir" in options and mode not in ("image", "tree"):
+        print(USAGE, file=sys.stderr)
+        return 64
     if (mode in ("image", "tree") and "candidates" not in options) or (mode not in ("image", "tree", "payload") and profile != "release"):
         print(USAGE, file=sys.stderr)
         return 64
@@ -836,12 +857,12 @@ def main(argv: list[str]) -> int:
             check_payload(lane, Path(paths[0]), Path(paths[1]), profile)
         elif mode == "image":
             check_image(lane, Path(paths[0]), Path(paths[1]), Path(paths[2]), options["candidates"], options.get("report"),
-                        profile)
+                        profile, options.get("trust-dir"))
         elif mode == "tree":
             factory = Path(paths[1]) if len(paths) == 2 else None
             check_profile(lane, profile)
             digest = check_tree(Path(paths[0]), factory, profile)
-            inspect_tree(lane, Path(paths[0]), factory, options["candidates"], options.get("report"), digest, profile)
+            inspect_tree(lane, Path(paths[0]), factory, options["candidates"], options.get("report"), digest, profile, options.get("trust-dir"))
         elif mode == "provenance":
             check_provenance(lane, Path(paths[0]))
         else:

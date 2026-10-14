@@ -4,8 +4,8 @@
 A set is the directory the candidate-set tool of omacom/omarchy-mac signs:
 manifest.json, signing.json and signing.json.sig, and each package archive
 with its detached .sig. Trust comes only from candidate-trust/ beside this
-file: the signer's fingerprints, the digest of its public key and the package
-set the plan names. The key file that travels with a set is never read.
+file, or an explicit operator-selected trust directory: the signer's
+fingerprints, the digest of its public key and the package set the plan names. The key file that travels with a set is never read.
 
 Besides the runtime and boot packages the plan names, a set may carry the
 rest of the Apple default set's closure that the Apple repository order takes
@@ -20,6 +20,15 @@ home, or the source repository they moved from). It says so in its signed
 manifest, one entry per such package:
 
   "platform_sources": {"omarchy-mac": "<commit>", "omarchy-mac-boot": "<commit>"}
+
+An operator may additionally pin boot or closure packages in trusted policy.json:
+
+  "package_sources": {"mesa": {"repository": "aurora-silicon/mesa", "commit": "<full commit>"}}
+
+Those packages must name exactly that repository and commit in the signed
+manifest. This mapping is never taken from the candidate artifact, does not
+admit other runtime sources, and does not replace signature or payload checks.
+The operator-selected trust directory must contain policy.json and public.asc.
 
 Each declared package must name that commit as its source and carry it as its
 source revision. Any other runtime package from another commit is refused.
@@ -134,12 +143,48 @@ def vercmp(a, b):
     return result
 
 
+def read_trust_file(trust, name):
+    fd = os.open(trust / name, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), 'non-regular trust input: ' + name)
+        data = stream.read(1048577)
+    require(len(data) <= 1048576, 'trust input is too large: ' + name)
+    return data
+
+
+def public_trust_key(trust):
+    """Read public key packets only; never follow a key symlink or import secrets."""
+    public_key = read_trust_file(trust, 'public.asc')
+    with tempfile.TemporaryDirectory(prefix='candidate-public-key-') as temporary:
+        packets = subprocess.run(['gpg', '--homedir', temporary, '--batch', '--list-packets'],
+                                 input=public_key, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    require(packets.returncode == 0 and b':public key packet:' in packets.stdout
+            and b':secret key packet:' not in packets.stdout
+            and b':secret sub key packet:' not in packets.stdout,
+            'candidate trust key must contain public key packets only')
+    return public_key
+
+
 def load_policy(trust=TRUST):
-    policy = json.loads((trust / 'policy.json').read_text())
+    require(trust.is_dir() and not trust.is_symlink(), 'unsafe trust directory')
+    policy = json.loads(read_trust_file(trust, 'policy.json'))
     require(policy.get('schema') == 1, 'unsupported candidate policy')
-    require(digest(trust / 'public.asc') == policy['public_key_sha256'], 'trust anchor checksum mismatch')
+    require(hashlib.sha256(public_trust_key(trust)).hexdigest() == policy['public_key_sha256'],
+            'trust anchor checksum mismatch')
     for key in ('primary_fingerprint', 'signing_fingerprint'):
         require(HEX40.fullmatch(policy[key].lower()) is not None, 'invalid trust anchor fingerprint')
+    sources = policy.get('package_sources', {})
+    require(isinstance(sources, dict), 'invalid trusted package sources')
+    for name, source in sources.items():
+        require(isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9@._+:-]+', name) is not None
+                and name not in policy['runtime_packages'] and name not in policy['refused_packages'],
+                'invalid trusted source package: ' + str(name))
+        require(isinstance(source, dict) and set(source) == {'repository', 'commit'}
+                and isinstance(source['repository'], str)
+                and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*',
+                                 source['repository']) is not None
+                and isinstance(source['commit'], str) and HEX40.fullmatch(source['commit']) is not None,
+                'invalid trusted package source: ' + name)
     return policy
 
 
@@ -156,6 +201,26 @@ def copy_file(root, name, destination):
         require(stat.S_ISREG(os.fstat(source.fileno()).st_mode), 'non-regular input')
         with (destination / name).open('xb') as target:
             shutil.copyfileobj(source, target)
+
+
+def freeze_trust(root, destination, policy_sha256=None, public_key_sha256=None):
+    """Copy only public trust inputs into an exclusive, verified snapshot."""
+    require(root.is_dir() and not root.is_symlink(), 'unsafe trust directory')
+    destination.mkdir(mode=0o700)
+    (destination / 'policy.json').write_bytes(read_trust_file(root, 'policy.json'))
+    public_key = public_trust_key(root)
+    (destination / 'public.asc').write_bytes(public_key)
+    policy = load_policy(destination)
+    identities = {'candidate_trust_policy_sha256': digest(destination / 'policy.json'),
+                  'candidate_trust_public_key_sha256': policy['public_key_sha256']}
+    require(policy_sha256 is None or identities['candidate_trust_policy_sha256'] == policy_sha256,
+            'candidate trust policy changed since resolution')
+    require(public_key_sha256 is None or identities['candidate_trust_public_key_sha256'] == public_key_sha256,
+            'candidate trust public key changed since resolution')
+    for path in destination.iterdir():
+        path.chmod(0o444)
+    destination.chmod(0o555)
+    return identities
 
 
 def verify_signature(home, path, policy):
@@ -307,6 +372,13 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
                             and HEX40.fullmatch(revision) is not None, 'mixed package sources: ' + name)
                     origins[name] = 'channel ' + revision
                 commits[name] = revision
+            elif name in policy.get('package_sources', {}):
+                pinned_source = policy['package_sources'][name]
+                require(origin.get('repository') == pinned_source['repository']
+                        and origin.get('commit') == pinned_source['commit'],
+                        'unapproved pinned package source: ' + name)
+                origins[name] = 'trusted-source'
+                commits[name] = pinned_source['commit']
             elif name in boot:
                 require((origin.get('repository') == policy['boot_repository']
                          and HEX40.fullmatch(origin.get('commit', '')) is not None) or from_channel(origin, filename),
@@ -334,6 +406,8 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
                 'the Apple package list lacks the add-on or boot package')
     summary = {
         'schema': 1,
+        'candidate_trust_policy_sha256': digest(trust / 'policy.json'),
+        'candidate_trust_public_key_sha256': policy['public_key_sha256'],
         'set': data['set'],
         'candidate_only': data['candidate_only'] is True,
         'source_commit': source_commit,
@@ -344,7 +418,9 @@ def snapshot(root, destination, receipt_sha256, source_commit, manifest_sha256=N
         'packages': [{'name': p['name'], 'version': p['version'], 'filename': p['filename'], 'sha256': p['sha256'],
                       'group': 'runtime' if p['name'] in runtime else 'boot' if p['name'] in boot else 'closure',
                       'origin': origins[p['name']],
-                      **({'source_commit': commits[p['name']]} if p['name'] in runtime else {})} for p in packages],
+                      **({'source_commit': commits[p['name']]} if p['name'] in commits else {}),
+                      **({'source_repository': policy['package_sources'][p['name']]['repository']}
+                         if origins[p['name']] == 'trusted-source' else {})} for p in packages],
     }
     (destination / 'import.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
     for path in destination.iterdir():
@@ -377,16 +453,31 @@ def main(argv=None):
     imported.add_argument('--source-commit', required=True)
     described = commands.add_parser('describe')
     described.add_argument('--input', type=Path, required=True)
+    for command in (imported, described):
+        command.add_argument('--trust-dir', type=Path, default=TRUST,
+                             help='operator-controlled policy.json and public.asc directory')
+    frozen = commands.add_parser('freeze-trust')
+    frozen.add_argument('--input', type=Path, required=True)
+    frozen.add_argument('--output', type=Path, required=True)
+    frozen.add_argument('--policy-sha256')
+    frozen.add_argument('--public-key-sha256')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'freeze-trust':
+            identities = freeze_trust(args.input, args.output, args.policy_sha256, args.public_key_sha256)
+            for key, value in identities.items():
+                print(f'{key}={value}')
+            return 0
         if args.command == 'import':
-            summary = snapshot(args.input, args.output, args.receipt_sha256, args.source_commit, args.manifest_sha256)
+            summary = snapshot(args.input, args.output, args.receipt_sha256, args.source_commit,
+                               args.manifest_sha256, args.trust_dir)
         else:
-            summary = describe(args.input)
+            summary = describe(args.input, args.trust_dir)
     except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f'candidate_set: {error}', file=sys.stderr)
         return 1
-    for key in ('set', 'source_commit', 'signer', 'receipt_sha256', 'manifest_sha256', 'set_sha256'):
+    for key in ('set', 'source_commit', 'signer', 'receipt_sha256', 'manifest_sha256', 'set_sha256',
+                'candidate_trust_policy_sha256', 'candidate_trust_public_key_sha256'):
         print(f'{key}={summary[key]}')
     return 0
 

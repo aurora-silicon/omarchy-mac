@@ -42,7 +42,6 @@ ASAHI_KEYRING_FILE=asahi-alarm-keyring-20241216-1-any.pkg.tar.xz
 ASAHI_KEYRING_SHA256=798f4b283ad2819aee950d042f26566ae1a68f87c12247301ce449bea3b2d81e
 ASAHI_KEY=12CE6799A94A3F1B5DDFFE88F576553597FB8FEB
 OMARCHY_REPOSITORY_KEY=40DFB630FF42BCFFB047046CF0134EE680CAC571
-CANDIDATE_KEY=E11E851AF82E02AEF54C8794599A6024E3D35379
 
 # The first transaction: a bootable base and the settings package, so its
 # pacman platform guard is resident before any platform package arrives.
@@ -60,7 +59,7 @@ TOOLCHAIN=(pacman arch-install-scripts btrfs-progs e2fsprogs dosfstools libarchi
 
 usage() {
   cat <<'USAGE'
-Usage: bin/build-mac-image --inputs FILE --candidates DIR [--cache DIR] [--lab-access DIR] [--dry-run] OUT
+Usage: bin/build-mac-image --inputs FILE --candidates DIR [--cache DIR] [--trust-dir DIR] [--lab-access DIR] [--dry-run] OUT
 
 Builds the Apple Silicon image for the candidate set in DIR from the inputs
 record FILE (bin/mac-image-inputs resolve) into the empty or missing directory
@@ -166,15 +165,16 @@ record_field() {
 }
 
 host_main() {
-  local inputs="" candidates="" cache="" lab_access="" out commit status clean=true started=$SECONDS dry_run=false
-  local cache_mounts=() lab_mounts=()
+  local inputs="" candidates="" cache="" lab_access="" trust_dir="$ROOT/builder/candidate-trust" explicit_trust=false out commit status clean=true started=$SECONDS dry_run=false
+  local cache_mounts=() lab_mounts=() trust_pins=()
   while (($#)); do
     case $1 in
-      --inputs|--candidates|--cache|--lab-access)
+      --inputs|--candidates|--cache|--lab-access|--trust-dir)
         (($# > 1)) && [[ -n $2 ]] || usage_error "$1 requires a value"
         case $1 in
           --inputs) inputs=$2 ;;
           --candidates) candidates=$2 ;;
+          --trust-dir) trust_dir=$2; explicit_trust=true ;;
           --cache) cache=$2 ;;
           --lab-access) lab_access=$2 ;;
         esac
@@ -207,11 +207,19 @@ host_main() {
   trap 'stop_build; exit 130' INT
   trap 'stop_build; exit 143' TERM
   trap 'stop_build; exit 129' HUP
+  if [[ -n $(record_field candidate_trust_policy_sha256 "$inputs") ]]; then
+    trust_pins=(--policy-sha256 "$(record_field candidate_trust_policy_sha256 "$inputs")"
+      --public-key-sha256 "$(record_field candidate_trust_public_key_sha256 "$inputs")")
+  elif [[ $explicit_trust == true ]]; then
+    fail "an explicit trust directory requires trust pins in the inputs record; resolve again"
+  fi
+  python3 "$ROOT/builder/candidate_set.py" freeze-trust --input "$trust_dir" --output "$host_work/trust" \
+    "${trust_pins[@]}" >"$host_work/trust.txt" || fail "the operator trust inputs changed since resolution"
   # The set is verified and frozen before any network access or container.
   python3 "$ROOT/builder/candidate_set.py" import --input "$candidates" --output "$host_work/candidates" \
     --receipt-sha256 "$(record_field candidate_receipt_sha256 "$inputs")" \
     --manifest-sha256 "$(record_field candidate_manifest_sha256 "$inputs")" \
-    --source-commit "$(record_field candidate_source_commit "$inputs")" >"$host_work/import.txt" ||
+    --source-commit "$(record_field candidate_source_commit "$inputs")" --trust-dir "$host_work/trust" >"$host_work/import.txt" ||
     fail "the candidate set does not verify against the inputs record"
   [[ $(sed -n 's/^signer=//p' "$host_work/import.txt") == "$(record_field candidate_signer "$inputs")" ]] ||
     fail "the candidate set is signed by another key than the inputs record names"
@@ -257,7 +265,7 @@ host_main() {
   # interruption reaches the traps above at once.
   docker run --rm --cidfile "$host_work/cid" --privileged --platform linux/arm64 \
     -v "$ROOT:/src:ro" -v "$inputs:/inputs:ro" -v "$host_work/candidates:/candidates:ro" \
-    -v "$host_work/dbs:/dbs:ro" -v "$out:/out" -v /work "${cache_mounts[@]}" "${lab_mounts[@]}" \
+    -v "$host_work/trust:/candidate-trust:ro" -v "$host_work/dbs:/dbs:ro" -v "$out:/out" -v /work "${cache_mounts[@]}" "${lab_mounts[@]}" \
     -e MAC_IMAGE_BUILDER_COMMIT="$commit" \
     -e MAC_IMAGE_BUILDER_CLEAN="$clean" \
     -e MAC_IMAGE_BUILDER_IMAGE="$(docker image inspect --format '{{.Id}}' "$host_image")" \
@@ -277,6 +285,7 @@ target=$work/target
 logs=$work/logs
 repos=$work/repos
 candidates=/candidates
+candidate_trust=/candidate-trust
 body=""
 api_mounts=()
 apple_names=()
@@ -390,7 +399,7 @@ prepare_toolchain() {
   # candidate archive's signature again as it installs it. The image never
   # carries this key.
   trust_key "$ROOT/builder/keys/omarchy-repository.gpg" "$OMARCHY_REPOSITORY_KEY" "the Omarchy repository key"
-  trust_key "$ROOT/builder/candidate-trust/public.asc" "$CANDIDATE_KEY" "the candidate test key"
+  trust_key "$candidate_trust/public.asc" "$(jq -r '.primary_fingerprint | ascii_upcase' "$candidate_trust/policy.json")" "the candidate test key"
 }
 
 trust_key() {
@@ -716,7 +725,7 @@ precheck_transaction() {
   while read -r name; do
     grep -Eq "^omarchy-candidates $name " <<<"$resolved" || fail "$name does not resolve from the candidate set"
   done < <(jq -r '.packages[].name' "$candidates/import.json")
-  for refused in $(jq -r '.refused_packages[]' "$ROOT/builder/candidate-trust/policy.json"); do
+  for refused in $(jq -r '.refused_packages[]' "$candidate_trust/policy.json"); do
     ! grep -Eq "^[^ ]+ $refused " <<<"$resolved" || fail "the package set pulls in the refused $refused"
   done
 }
@@ -1434,6 +1443,9 @@ write_image() {
       candidate_manifest_sha256 omarchy_channel; do
       printf '%s=%s\n' "$key" "$(field "$key")"
     done
+    for key in candidate_trust_policy_sha256 candidate_trust_public_key_sha256; do
+      [[ -z $(field "$key") ]] || printf '%s=%s\n' "$key" "$(field "$key")"
+    done
     printf 'hardware_setup=%s\n' "$hardware_setup"
     printf 'test_image_pin=%s\n' "$test_image_pin"
     [[ $profile == release ]] || printf 'profile=%s\nlab_access_sha256=%s\n' "$profile" "$lab_access_sha256"
@@ -1518,7 +1530,7 @@ build_payload() {
   seal_images
   step "inspecting the images"
   python3 "$ROOT/bin/mac-image-check" image "$lane" "$work/final/root.img" "$work/final/boot.img" "$work/final/esp" \
-    --candidates "$candidates" --report /out/INSPECTION --profile "$profile" ||
+    --candidates "$candidates" --trust-dir "$candidate_trust" --report /out/INSPECTION --profile "$profile" ||
     fail "the images do not pass inspection (INSPECTION)"
   step "packaging"
   zip=/out/$(payload_name)

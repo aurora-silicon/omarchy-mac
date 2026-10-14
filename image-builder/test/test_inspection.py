@@ -59,6 +59,21 @@ class InspectionTest(unittest.TestCase):
         return inspection.inspect(self.root, candidates or self.candidates, "edge", self.factory,
                                   trust=self.signer.trust)
 
+    def test_inspection_rejects_changed_operator_policy(self):
+        trust = self.root.parent / "changed-trust"
+        shutil.copytree(self.signer.trust, trust)
+        (trust / "policy.json").write_text((trust / "policy.json").read_text() + "\n")
+        with self.assertRaisesRegex(inspection.InspectionError, "inspection candidate trust differs"):
+            inspection.inspect(self.root, self.candidates, "edge", self.factory, trust=trust)
+
+    def test_direct_inspection_refuses_symlinked_trust_key(self):
+        trust = self.root.parent / "symlinked-trust"
+        shutil.copytree(self.signer.trust, trust)
+        (trust / "public.asc").unlink()
+        (trust / "public.asc").symlink_to(self.signer.trust / "public.asc")
+        with self.assertRaises(OSError):
+            inspection.inspect(self.root, self.candidates, "edge", self.factory, trust=trust)
+
     def assertFails(self, check, pattern, candidates=None):
         report = self.inspect(candidates)
         self.assertEqual(report["result"], "failed")

@@ -19,7 +19,7 @@ DEFAULT_ALARM_SERVER='https://ca.us.mirror.archlinuxarm.org/$arch/$repo'
 
 usage() {
   cat <<'USAGE'
-Usage: bin/mac-image-inputs resolve FILE --candidates DIR [--channel edge|rc|stable]
+Usage: bin/mac-image-inputs resolve FILE --candidates DIR [--channel edge|rc|stable] [--trust-dir DIR]
          [--omarchy-server URL] [--asahi-alarm-server URL] [--alarm-server URL] [--cache DIR]
        bin/mac-image-inputs check FILE
        bin/mac-image-inputs rootfs FILE DEST [--cache DIR]
@@ -71,6 +71,10 @@ record_body() {
   printf 'candidate_set=%s\ncandidate_source_commit=%s\ncandidate_signer=%s\n' \
     "$candidate_set" "$candidate_source_commit" "$candidate_signer"
   printf 'candidate_receipt_sha256=%s\ncandidate_manifest_sha256=%s\n' "$candidate_receipt" "$candidate_manifest"
+  if [[ -n ${candidate_trust_policy:-} ]]; then
+    printf 'candidate_trust_policy_sha256=%s\ncandidate_trust_public_key_sha256=%s\n' \
+      "$candidate_trust_policy" "$candidate_trust_public_key"
+  fi
   printf 'omarchy_channel=%s\nomarchy_server=%s\nomarchy_db_sha256=%s\n' "$omarchy_channel" "$omarchy_server" "$omarchy_db"
   printf 'asahi_alarm_server=%s\nasahi_alarm_db_sha256=%s\n' "$asahi_alarm_server" "$asahi_alarm_db"
   printf 'alarm_server=%s\n' "$alarm_server"
@@ -89,6 +93,7 @@ valid_server() {
 # Parses FILE, which must be byte for byte the canonical rendering of its fields.
 load_record() {
   local file=$1 line key value hex='^[0-9a-f]{64}$'
+  candidate_trust_policy="" candidate_trust_public_key=""
   declare -A seen=()
   [[ -f $file && ! -L $file ]] || fail "$file is not a regular file"
   (($(wc -c <"$file") <= 8192)) || fail "$file is not an inputs record"
@@ -105,6 +110,8 @@ load_record() {
       candidate_signer) candidate_signer=$value ;;
       candidate_receipt_sha256) candidate_receipt=$value ;;
       candidate_manifest_sha256) candidate_manifest=$value ;;
+      candidate_trust_policy_sha256) candidate_trust_policy=$value ;;
+      candidate_trust_public_key_sha256) candidate_trust_public_key=$value ;;
       omarchy_channel) omarchy_channel=$value ;;
       omarchy_server) omarchy_server=$value ;;
       omarchy_db_sha256) omarchy_db=$value ;;
@@ -131,6 +138,9 @@ load_record() {
     "${alarm_rootfs:-}"; do
     [[ $value =~ $hex ]] || fail "$file is not an inputs record"
   done
+  if [[ -n $candidate_trust_policy || -n $candidate_trust_public_key ]]; then
+    [[ $candidate_trust_policy =~ $hex && $candidate_trust_public_key =~ $hex ]] || fail "$file has incomplete candidate trust pins"
+  fi
   for key in "${ALARM_REPOSITORIES[@]}"; do
     [[ ${alarm_db[$key]:-} =~ $hex ]] || fail "$file is not an inputs record"
   done
@@ -179,12 +189,18 @@ fetch_rootfs() {
 resolve() {
   local file=$1 described repository sha
   resolved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  described=$(python3 "$ROOT/builder/candidate_set.py" describe --input "$candidates") ||
+  python3 "$ROOT/builder/candidate_set.py" freeze-trust --input "$trust_dir" --output "$work/trust" >/dev/null ||
+    fail "the operator trust directory does not verify"
+  described=$(python3 "$ROOT/builder/candidate_set.py" describe --input "$candidates" --trust-dir "$work/trust") ||
     fail "the candidate set in $candidates does not verify"
   candidate_set=$(sed -n 's/^set=//p' <<<"$described")
   candidate_source_commit=$(sed -n 's/^source_commit=//p' <<<"$described")
   candidate_signer=$(sed -n 's/^signer=//p' <<<"$described")
   candidate_receipt=$(sed -n 's/^receipt_sha256=//p' <<<"$described")
+  if [[ $explicit_trust == true ]]; then
+    candidate_trust_policy=$(sed -n 's/^candidate_trust_policy_sha256=//p' <<<"$described")
+    candidate_trust_public_key=$(sed -n 's/^candidate_trust_public_key_sha256=//p' <<<"$described")
+  fi
   candidate_manifest=$(sed -n 's/^manifest_sha256=//p' <<<"$described")
 
   mkdir "$work/db"
@@ -228,13 +244,16 @@ esac
 positionals=()
 cache="" candidates="" channel=edge omarchy_server="" asahi_alarm_server=$DEFAULT_ASAHI_ALARM_SERVER
 alarm_server=$DEFAULT_ALARM_SERVER
+trust_dir=$ROOT/builder/candidate-trust explicit_trust=false
+candidate_trust_policy="" candidate_trust_public_key=""
 while (($#)); do
   case $1 in
-    --cache|--candidates|--channel|--omarchy-server|--asahi-alarm-server|--alarm-server)
+    --cache|--candidates|--channel|--omarchy-server|--asahi-alarm-server|--alarm-server|--trust-dir)
       (($# > 1)) && [[ -n $2 ]] || usage_error "$1 requires a value"
       [[ $mode == resolve || ( $1 == --cache && ( $mode == rootfs || $mode == dbs ) ) ]] ||
         usage_error "$1 does not apply to $mode"
       case $1 in
+        --trust-dir) trust_dir=$2; explicit_trust=true ;;
         --cache) cache=$2 ;;
         --candidates) candidates=$2 ;;
         --channel)
@@ -257,7 +276,7 @@ case $mode in
 esac
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'chmod -R u+w "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 case $mode in
   resolve)

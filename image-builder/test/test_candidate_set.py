@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """The candidate importer accepts exactly a set its pinned key signed, and nothing else."""
+import contextlib
+import io
 import json
+import os
+import subprocess
 from pathlib import Path
 import shutil
 import sys
@@ -53,6 +57,98 @@ class CandidateSetTest(unittest.TestCase):
         imported = json.loads((self.work / "output/import.json").read_text())
         self.assertEqual({p["group"] for p in imported["packages"]}, {"runtime", "boot"})
         self.assertFalse((self.work / "output/candidate-signing-key.asc").exists())
+
+    def test_frozen_trust_copies_only_public_inputs_and_pins_bytes(self):
+        trust = self.work / "trust"
+        shutil.copytree(self.signer.trust, trust)
+        (trust / "private-key.key").write_text("must never be copied")
+        frozen = self.work / "frozen"
+        identities = c.freeze_trust(trust, frozen)
+        self.assertEqual({path.name for path in frozen.iterdir()}, {"policy.json", "public.asc"})
+        self.assertEqual(frozen.stat().st_mode & 0o777, 0o555)
+        self.assertEqual(identities["candidate_trust_policy_sha256"], c.digest(trust / "policy.json"))
+        (trust / "policy.json").write_text((trust / "policy.json").read_text() + "\n")
+        with self.assertRaisesRegex(ValueError, "trust policy changed"):
+            c.freeze_trust(trust, self.work / "changed", identities["candidate_trust_policy_sha256"],
+                           identities["candidate_trust_public_key_sha256"])
+        with self.assertRaisesRegex(ValueError, "trust public key changed"):
+            c.freeze_trust(self.signer.trust, self.work / "wrong-key", public_key_sha256="0" * 64)
+        (trust / "public.asc").unlink()
+        (trust / "public.asc").symlink_to(self.signer.trust / "public.asc")
+        with self.assertRaises(OSError):
+            c.freeze_trust(trust, self.work / "symlink")
+
+    def test_freeze_refuses_secret_packets_even_named_public_asc(self):
+        trust = self.trusted_sources({})
+        secret = self.signer.gpg(["--armor", "--export-secret-keys", self.signer.fingerprint])
+        (trust / "public.asc").write_bytes(secret)
+        destination = self.work / "secret-snapshot"
+        with self.assertRaisesRegex(ValueError, "public key packets only"):
+            c.freeze_trust(trust, destination)
+        self.assertFalse((destination / "public.asc").exists())
+
+    def test_direct_policy_import_and_describe_refuse_secret_public_key(self):
+        trust = self.trusted_sources({})
+        (trust / "public.asc").write_bytes(self.signer.gpg(["--armor", "--export-secret-keys",
+                                                          self.signer.fingerprint]))
+        policy = json.loads((trust / "policy.json").read_text())
+        policy["public_key_sha256"] = c.digest(trust / "public.asc")
+        (trust / "policy.json").write_text(json.dumps(policy))
+        for operation in (lambda: c.load_policy(trust), lambda: self.verify(trust=trust),
+                          lambda: c.describe(self.input, trust)):
+            with self.assertRaisesRegex(ValueError, "public key packets only"):
+                operation()
+        self.assertFalse((self.work / "output").exists())
+
+    def test_direct_trust_entrypoints_refuse_symlinked_inputs(self):
+        for name in ("policy.json", "public.asc"):
+            with self.subTest(name=name):
+                trust = self.work / (name + "-trust")
+                shutil.copytree(self.signer.trust, trust)
+                (trust / name).unlink()
+                (trust / name).symlink_to(self.signer.trust / name)
+                for operation in (lambda: c.load_policy(trust), lambda: self.verify(trust=trust),
+                                  lambda: c.describe(self.input, trust)):
+                    with self.assertRaises(OSError):
+                        operation()
+        symlink = self.work / "linked-trust"
+        symlink.symlink_to(self.signer.trust, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "unsafe trust directory"):
+            c.load_policy(symlink)
+        self.assertFalse((self.work / "output").exists())
+
+    def test_image_dry_run_uses_pinned_public_operator_trust(self):
+        trust = self.trusted_sources({})
+        inputs = self.work / "inputs"
+        fields = ["format=2", "resolved_at=2026-10-14T10:00:00Z", "candidate_set=apple-test-fixture",
+                  "candidate_source_commit=" + fixtures.SOURCE, "candidate_signer=" + self.signer.fingerprint,
+                  "candidate_receipt_sha256=" + self.receipt,
+                  "candidate_manifest_sha256=" + c.digest(self.input / "manifest.json"),
+                  "candidate_trust_policy_sha256=" + c.digest(trust / "policy.json"),
+                  "candidate_trust_public_key_sha256=" + c.digest(trust / "public.asc"),
+                  "omarchy_channel=edge", "omarchy_server=https://pkgs.omarchy.org/edge/$arch",
+                  "omarchy_db_sha256=" + "0" * 64,
+                  "asahi_alarm_server=https://example.invalid/aarch64", "asahi_alarm_db_sha256=" + "0" * 64,
+                  "alarm_server=https://example.invalid/$arch/$repo",
+                  *["alarm_" + name + "_db_sha256=" + "0" * 64 for name in ("core", "extra", "alarm", "aur")],
+                  "alarm_rootfs_sha256=" + "0" * 64]
+        inputs.write_text("\n".join(fields) + "\n")
+        tools = self.work / "bin"
+        tools.mkdir()
+        for name in ("docker", "curl"):
+            path = tools / name
+            path.write_text("#!/bin/bash\necho unexpected network/container call >&2\nexit 99\n")
+            path.chmod(0o755)
+        command = ["bash", str(fixtures.ROOT / "bin/build-mac-image"), "--inputs", str(inputs),
+                   "--candidates", str(self.input), "--trust-dir", str(trust), "--dry-run", str(self.work / "image")]
+        environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
+        result = subprocess.run(command, capture_output=True, text=True, env=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Would build", result.stdout)
+        (trust / "policy.json").write_text((trust / "policy.json").read_text() + "\n")
+        result = subprocess.run(command, capture_output=True, text=True, env=environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("operator trust inputs changed", result.stderr)
 
     def test_output_is_created_exclusively(self):
         (self.work / "output").mkdir()
@@ -149,6 +245,93 @@ class CandidateSetTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, pattern):
                     self.verify(directory, receipt)
                 shutil.rmtree(self.work / "output", ignore_errors=True)
+
+    def trusted_sources(self, sources):
+        trust = self.work / "trust"
+        shutil.copytree(self.signer.trust, trust)
+        policy = json.loads((trust / "policy.json").read_text())
+        policy["package_sources"] = sources
+        (trust / "policy.json").write_text(json.dumps(policy))
+        return trust
+
+    def source_built_set(self, sources, key_signer=None, **changes):
+        def edit(manifest):
+            for package in manifest["packages"]:
+                if package["name"] in sources:
+                    package["source"] = sources[package["name"]]
+        return self.variant(versions={"mesa": "26.3.0-1"},
+                            names=[*fixtures.VERSIONS, "mesa"], manifest_edit=edit,
+                            key_signer=key_signer, **changes)
+
+    def test_operator_pinned_boot_and_closure_sources(self):
+        sources = {"linux-aurora": {"repository": "aurora-silicon/linux", "commit": "c" * 40},
+                   "mesa": {"repository": "aurora-silicon/mesa", "commit": "d" * 40}}
+        trust = self.trusted_sources(sources)
+        directory, receipt = self.source_built_set(sources)
+        summary = self.verify(directory, receipt, trust=trust)
+        packages = {p["name"]: p for p in summary["packages"]}
+        for name, source in sources.items():
+            self.assertEqual(packages[name]["origin"], "trusted-source")
+            self.assertEqual(packages[name]["source_commit"], source["commit"])
+            self.assertEqual(packages[name]["source_repository"], source["repository"])
+        self.assertEqual(packages["linux-aurora"]["group"], "boot")
+        self.assertEqual(packages["mesa"]["group"], "closure")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = c.main(["describe", "--input", str(directory), "--trust-dir", str(trust)])
+        self.assertEqual(result, 0)
+        self.assertIn("signer=" + self.signer.fingerprint, output.getvalue())
+
+    def test_pinned_source_requires_exact_repository_and_full_commit(self):
+        pin = {"repository": "aurora-silicon/mesa", "commit": "d" * 40}
+        trust = self.trusted_sources({"mesa": pin})
+        for label, source in (("wrong repository", dict(pin, repository="stranger/mesa")),
+                              ("wrong commit", dict(pin, commit="e" * 40)),
+                              ("missing commit", {"repository": pin["repository"]}),
+                              ("short commit", dict(pin, commit="d" * 12)),
+                              ("channel fallback", fixtures.channel_source("mesa-26.3.0-1-aarch64.pkg.tar.xz"))):
+            with self.subTest(label=label):
+                directory = self.work / label.replace(" ", "-")
+                def edit(manifest):
+                    next(p for p in manifest["packages"] if p["name"] == "mesa")["source"] = source
+                receipt = fixtures.make_set(directory, self.signer, versions={"mesa": "26.3.0-1"},
+                                            names=[*fixtures.VERSIONS, "mesa"], manifest_edit=edit)
+                with self.assertRaisesRegex(ValueError, "unapproved pinned package source: mesa"):
+                    self.verify(directory, receipt, trust=trust)
+                shutil.rmtree(self.work / "output", ignore_errors=True)
+
+    def test_operator_pin_does_not_admit_another_signer(self):
+        sources = {"mesa": {"repository": "aurora-silicon/mesa", "commit": "d" * 40}}
+        trust = self.trusted_sources(sources)
+        directory, receipt = self.source_built_set(sources, key_signer=self.stranger)
+        with self.assertRaisesRegex(ValueError, "invalid signature: signing.json"):
+            self.verify(directory, receipt, trust=trust)
+
+    def test_default_policy_does_not_read_artifact_source_allowlist(self):
+        sources = {"mesa": {"repository": "aurora-silicon/mesa", "commit": "d" * 40}}
+        directory, receipt = self.source_built_set(sources)
+        (directory / "policy.json").write_text(json.dumps({"package_sources": sources}))
+        with self.assertRaisesRegex(ValueError, "unknown closure package source: mesa"):
+            self.verify(directory, receipt)
+
+    def test_source_pin_keeps_architecture_checks(self):
+        sources = {"linux-aurora": {"repository": "aurora-silicon/linux", "commit": "c" * 40}}
+        trust = self.trusted_sources(sources)
+        directory, receipt = self.source_built_set(sources, arches={"linux-aurora": "any"})
+        with self.assertRaisesRegex(ValueError, "package metadata mismatch: linux-aurora"):
+            self.verify(directory, receipt, trust=trust)
+
+    def test_trusted_policy_rejects_runtime_refused_and_unpinned_sources(self):
+        for label, sources in (("runtime", {"omarchy": {"repository": "aurora-silicon/linux", "commit": "c" * 40}}),
+                               ("refused", {"m1n1": {"repository": "aurora-silicon/m1n1", "commit": "c" * 40}}),
+                               ("missing", {"mesa": {"repository": "aurora-silicon/mesa"}}),
+                               ("short", {"mesa": {"repository": "aurora-silicon/mesa", "commit": "c" * 12}}),
+                               ("url", {"mesa": {"repository": "https://example.invalid/mesa", "commit": "c" * 40}})):
+            with self.subTest(label=label):
+                trust = self.trusted_sources(sources)
+                with self.assertRaisesRegex(ValueError, "invalid trusted"):
+                    c.load_policy(trust)
+                shutil.rmtree(trust)
 
     def test_refused_package(self):
         versions = dict(fixtures.VERSIONS, m1n1="1.5.0-1")

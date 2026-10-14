@@ -59,6 +59,22 @@ record >"$work/inputs"
 "$BASH" "$inputs" check "$work/inputs" | cmp -s - "$work/inputs" || fail "check prints a canonical record"
 pass "a canonical record checks"
 
+awk -v policy="$(hex 4)" -v public="$(hex 5)" '{print; if ($0 ~ /^candidate_manifest_sha256=/) {
+  print "candidate_trust_policy_sha256=" policy; print "candidate_trust_public_key_sha256=" public
+}}' "$work/inputs" >"$work/pinned-trust-inputs"
+"$BASH" "$inputs" check "$work/pinned-trust-inputs" | cmp -s - "$work/pinned-trust-inputs" ||
+  fail "operator trust hash pair is canonical"
+for field in candidate_trust_policy_sha256 candidate_trust_public_key_sha256; do
+  sed "/^$field=/d" "$work/pinned-trust-inputs" >"$work/incomplete-trust"
+  if "$BASH" "$inputs" check "$work/incomplete-trust" >/dev/null 2>&1; then
+    fail "incomplete operator trust pins accepted"
+  fi
+done
+if "$BASH" "$inputs" check "$work/inputs" --trust-dir "$work" >/dev/null 2>&1; then
+  fail "a trust directory is an operator resolve input, not a check override"
+fi
+pass "operator trust pins must be a complete canonical pair"
+
 refuse() {
   local description=$1
   shift

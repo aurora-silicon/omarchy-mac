@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -322,6 +323,15 @@ class BuildDirectoryTest(unittest.TestCase):
                 build(self.out, **options)
                 with self.assertRaisesRegex(check.CheckError, message):
                     check.check_descriptor("edge", self.out)
+
+    def test_tree_cli_forwards_operator_trust_only_to_inspection(self):
+        trust = self.out / "operator-trust"
+        with patch.object(check, "check_tree", return_value=""), patch.object(check, "inspect_tree") as inspect:
+            self.assertEqual(check.main(["mac-image-check", "tree", "edge", str(self.out),
+                                         "--candidates", str(self.out), "--trust-dir", str(trust)]), 0)
+            self.assertEqual(inspect.call_args.args[-1], trust)
+        self.assertEqual(check.main(["mac-image-check", "payload", "edge", "a", "b",
+                                     "--trust-dir", str(trust)]), 64)
 
     def test_a_lab_image_is_refused_on_release_lanes(self):
         for lane in ("rc", "stable"):

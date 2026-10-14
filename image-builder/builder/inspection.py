@@ -574,12 +574,18 @@ def inspect(root: Path, candidates_dir: Path, channel: str, factory: Path | None
             trust: Path = candidate_set.TRUST, profile: str = "release") -> dict:
     policy = candidate_set.load_policy(trust)
     candidates = Candidates(candidates_dir)
+    trust_fields = {'candidate_trust_policy_sha256': candidate_set.digest(trust / 'policy.json'),
+                    'candidate_trust_public_key_sha256': policy['public_key_sha256']}
+    if any(key in candidates.summary for key in trust_fields):
+        require(all(candidates.summary.get(key) == value for key, value in trust_fields.items()),
+                'inspection candidate trust differs from the imported policy or public key')
     report: dict = {
         "schema": 1,
         "kind": "apple-image-inspection",
         "set": candidates.summary["set"],
         "source_commit": candidates.summary["source_commit"],
         "signer": candidates.summary["signer"],
+        **trust_fields,
         "channel": channel,
         "checks": {},
     }
