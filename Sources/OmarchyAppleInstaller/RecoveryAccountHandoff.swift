@@ -47,12 +47,14 @@
     }
 
     static func updateRecoveryApp(for target: RecoveryAccountTarget) throws {
-      let source = URL(
-        fileURLWithPath:
-          "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/Omarchy Installer.app"
-      )
+      // The helper's own copy first: an app run from its disk image installs
+      // one with the helper, while the package leaves the app in /Applications.
       let fm = FileManager.default
-      guard fm.fileExists(atPath: source.path) else {
+      let found = [
+        InstallerProductIdentity.installedRecoveryTemplateDirectory + "/Omarchy Installer.app",
+        "/Applications/\(InstallerProductIdentity.appName).app/Contents/Resources/RecoveryTemplate/Omarchy Installer.app",
+      ].map { URL(fileURLWithPath: $0) }.first { fm.fileExists(atPath: $0.path) }
+      guard let source = found else {
         throw AccountSetupFailure(
           "This installer is missing its native Recovery app. Reinstall the updated installer package."
         )
