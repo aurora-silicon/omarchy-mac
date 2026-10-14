@@ -639,3 +639,22 @@ select_target_profile generic
 [[ $PLATFORM_COMPATIBLE == "apple,arm-platform" && ${SUPPORTED_FW[*]} == "13.5 14.8.3" \
   && -z $image_board && ${#BOARD_CONTEXT[@]} == 0 ]] || fail "generic defaults remain unchanged"
 pass "Neo profile selects J700/26.6.2, stages exact bare payload, rejects booted context, and preserves generic defaults"
+
+# The official rootfs need not contain Python/jq before its normal pinned
+# toolchain transaction. Exercise the actual payload entry with unavailable
+# tools, and stop before any filesystem or transaction work.
+[[ $(declare -f container_main) != *'bind_target_profile '* ]] || fail "container entry must not bind the profile before installing its tools"
+(
+  tools_ready=false
+  bound=false
+  prepare_toolchain() { tools_ready=true; }
+  bind_target_profile() { [[ $tools_ready == true ]] || exit 91; bound=true; }
+  prepare_repositories() { [[ $bound == true ]] || exit 92; }
+  read_apple_list() { :; }
+  render_config() { :; }
+  create_images() { [[ $bound == true ]] || exit 93; exit 0; }
+  field() { printf '%s\n' neo-j700; }
+  repos=$scratch/bootstrap-repos
+  build_payload
+) || fail "profile binding must follow tool bootstrap and precede repositories/image creation"
+pass "rootfs without profile tools bootstraps before binding, and binds before image creation"

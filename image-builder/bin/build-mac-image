@@ -1550,7 +1550,6 @@ interrupted() {
 container_main() {
   (($# == 0)) || usage_error "--in-container takes no arguments"
   bash "$ROOT/bin/mac-image-inputs" check /inputs >/dev/null
-  bind_target_profile "$(field image_target_profile)" "$candidates/import.json" "$candidate_trust"
   lane=$(field omarchy_channel)
   if [[ -d $lab_access_dir ]]; then
     [[ $lane == edge ]] || fail "a lab image is built for the edge lane only"
@@ -1570,6 +1569,9 @@ build_payload() {
   step() { printf '[%4ds] %s\n' "$((SECONDS - started))" "$1"; }
   step "preparing the toolchain from Arch Linux ARM"
   prepare_toolchain
+  # The verified rootfs supplies Python/jq through the pinned tool transaction.
+  # Bind again before any image filesystem is created.
+  bind_target_profile "$(field image_target_profile)" "$candidates/import.json" "$candidate_trust"
   step "publishing $(field candidate_set) as [omarchy-candidates]"
   prepare_repositories
   read_apple_list
