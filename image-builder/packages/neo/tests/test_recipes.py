@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -216,7 +217,7 @@ class RecipeContractTests(unittest.TestCase):
     def test_clean_kernel_staging_emits_new_checksum_bound_recipes(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            for name, body in [('kernel-runtime.tar', b'new clean outputs'), ('reuse-receipt.json', json.dumps({'actual_compile_source': kernel_stage.PIN, 'requested_public_pin': kernel_stage.PIN, 'build_mode': 'clean-source', 'release': '7.1.12-aurora-g5f6c917', 'config_sha256': hashlib.sha256(b'actual config').hexdigest()}).encode()), ('config', b'actual config')]:
+            for name, body in [('kernel-runtime.tar', b'new clean outputs'), ('reuse-receipt.json', json.dumps({'actual_compile_source': kernel_stage.PIN, 'requested_public_pin': kernel_stage.PIN, 'build_mode': 'clean-source', 'release': '7.1.12-aurora-g5f6c917', 'config_sha256': hashlib.sha256(b'actual config').hexdigest(), 'module_install': {'profile': kernel_stage.MODULE_INSTALL_PROFILE}}).encode()), ('config', b'actual config')]:
                 (output / name).write_bytes(body)
             template = ROOT / 'recipes/kernel/PKGBUILD'
             kernel_stage.ready_recipe(template, output)
@@ -225,6 +226,7 @@ class RecipeContractTests(unittest.TestCase):
             for name in ['kernel-runtime.tar', 'reuse-receipt.json', 'config']:
                 self.assertIn(hashlib.sha256((output / name).read_bytes()).hexdigest(), generated)
             self.assertIn('pkgver=7.1.12.aurora.g5f6c917.c', generated)
+            self.assertIn('pkgrel=2', generated)
             receipt_path = output / 'reuse-receipt.json'
             receipt = json.loads(receipt_path.read_text())
             for key in ['requested_public_pin', 'actual_compile_source', 'release', 'build_mode', 'config_sha256']:
@@ -289,6 +291,43 @@ class RecipeContractTests(unittest.TestCase):
             package = header_template.read_text().split('package() {', 1)[1]
             self.assertIn('release=$(cat stage/include/config/kernel.release)', package)
             self.assertNotIn('local release=7.1.12-aurora-j700', package)
+
+    def test_runtime_staging_uses_only_kbuild_debug_strip_on_installed_copies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tool = Path(directory) / 'llvm-strip'
+            tool.write_bytes(b'fixture tool')
+            build = Path(directory) / 'build'
+            build.mkdir()
+            (build / 'include/config').mkdir(parents=True)
+            (build / 'include/config/kernel.release').write_text('7.1.12-aurora-g5f6c917\n')
+            (build / 'modules.order').write_text('module.o\n')
+            (build / 'module.ko').write_bytes(b'original debug module')
+            (build / '.config').write_bytes(b'config')
+            staging = Path(directory) / 'staging'
+            installed = staging / 'lib/modules/7.1.12-aurora-g5f6c917/kernel'
+            installed.mkdir(parents=True)
+            (installed / 'module.ko').write_bytes(b'stripped runtime module')
+            with patch.object(kernel_stage.shutil, 'which', return_value=str(tool)), \
+                    patch.object(kernel_stage.subprocess, 'check_output', return_value='LLVM version 22.1.6'), \
+                    patch.object(kernel_stage.subprocess, 'run') as run:
+                receipt = kernel_stage.install_runtime_modules(Path('/source'), build, staging)
+            command = run.call_args.args[0]
+            for argument in ['ARCH=arm64', 'LLVM=1', 'STRIP=' + str(tool.resolve()),
+                             'INSTALL_MOD_STRIP=1', 'INSTALL_MOD_PATH=' + str(staging), 'modules_install']:
+                self.assertIn(argument, command)
+            self.assertNotIn('--strip-all', command)
+            self.assertEqual(receipt['tool_sha256'], hashlib.sha256(tool.read_bytes()).hexdigest())
+            self.assertFalse(receipt['build_output_debug_artifacts_modified'])
+            self.assertNotEqual(receipt['modules'][0]['source_sha256'], receipt['modules'][0]['staged_sha256'])
+            with patch.object(kernel_stage.shutil, 'which', return_value=str(tool)), \
+                    patch.object(kernel_stage.subprocess, 'check_output', return_value='GNU strip 2.45'), \
+                    patch.object(kernel_stage.subprocess, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'LLVM 22'):
+                    kernel_stage.install_runtime_modules(Path('/source'), Path('/output'), '/staging')
+                run.assert_not_called()
+            with patch.object(kernel_stage.shutil, 'which', return_value=None):
+                with self.assertRaisesRegex(ValueError, 'llvm-strip'):
+                    kernel_stage.install_runtime_modules(Path('/source'), Path('/output'), '/staging')
 
     def test_stale_image_and_module_releases_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

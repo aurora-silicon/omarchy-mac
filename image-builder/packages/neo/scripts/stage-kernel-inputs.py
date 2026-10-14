@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 
 PIN = '5f6c917f2c824b3c87497e8bd7dd92a6de0efe60'
+MODULE_INSTALL_PROFILE = 'kbuild-llvm22-strip-debug-v1'
 
 
 def sha(path):
@@ -71,6 +72,8 @@ def ready_recipe(template, directory):
         raise ValueError('generated header release does not match receipt')
     version = release.replace('-', '.') + '.c' + receipt['config_sha256'][:12]
     text = re.sub(r'^pkgver=.*$', 'pkgver=' + version, text, count=1, flags=re.M)
+    if 'kernel-runtime.tar' in sources and receipt.get('module_install', {}).get('profile') == MODULE_INSTALL_PROFILE:
+        text = re.sub(r'^pkgrel=.*$', 'pkgrel=2', text, count=1, flags=re.M)
     digests = []
     for name in sources:
         if Path(name).name != name:
@@ -80,6 +83,39 @@ def ready_recipe(template, directory):
     text = text.replace('# Incremental build of public 5f6c917 from the preserved d32 cache.\n# Rebuilt PMGR and SEP, relinked Image and updated the J700 DTB.\n', '')
     text = '# Generated packaging for new pinned public clean-source outputs; not a reproduction of old reuse hashes.\n' + text
     (Path(directory) / 'PKGBUILD').write_text(text)
+
+
+def install_runtime_modules(source, build, directory):
+    # Kbuild copies each module before stripping its installed debug sections.
+    # An explicit LLVM tool avoids accidentally selecting a host-only GNU strip.
+    tool = shutil.which('llvm-strip')
+    if tool is None:
+        raise ValueError('LLVM 22 llvm-strip is required for runtime module staging')
+    tool = Path(tool).resolve(strict=True)
+    version = subprocess.check_output([str(tool), '--version'], text=True).strip()
+    if not re.search(r'LLVM version 22\.', version):
+        raise ValueError('runtime module staging requires LLVM 22 llvm-strip')
+    release = verified_release(build)
+    modules = [str(Path(name).with_suffix('.ko')) for name in (build / 'modules.order').read_text().splitlines()]
+    if not modules or any(Path(name).is_absolute() or '..' in Path(name).parts for name in modules) or len(modules) != len(set(modules)):
+        raise ValueError('invalid built module inventory')
+    original = {name: sha(build / name) for name in modules}
+    config_before = sha(build / '.config')
+    tool_sha256 = sha(tool)
+    subprocess.run(['make', '-C', str(source), 'O=' + str(build), 'ARCH=arm64', 'LLVM=1',
+                    'STRIP=' + str(tool), 'INSTALL_MOD_STRIP=1',
+                    'INSTALL_MOD_PATH=' + str(directory), 'modules_install'], check=True)
+    if sha(build / '.config') != config_before or any(sha(build / name) != digest for name, digest in original.items()):
+        raise ValueError('modules_install changed original build configuration or modules')
+    installed = Path(directory) / 'lib/modules' / release / 'kernel'
+    return {'profile': MODULE_INSTALL_PROFILE, 'operation': 'Kbuild modules_install debug stripping of installed copies',
+            'INSTALL_MOD_STRIP': '1', 'strip_option': '--strip-debug', 'ARCH': 'arm64', 'LLVM': '1',
+            'ordering': 'Kbuild copy, debug-strip, signing, compression',
+            'tool': str(tool), 'tool_sha256': tool_sha256, 'tool_version': version,
+            'modules': [{'source_path': name, 'source_sha256': digest,
+                         'staged_path': str((installed / name).relative_to(directory)),
+                         'staged_sha256': sha(installed / name)} for name, digest in original.items()],
+            'build_output_debug_artifacts_modified': False}
 
 
 def stage(source, build, output):
@@ -100,7 +136,7 @@ def stage(source, build, output):
         raise ValueError('kernelrelease command differs from staged release')
     payload = kernel / 'payload'
     with tempfile.TemporaryDirectory(prefix='kernel-modules-stage-') as directory:
-        subprocess.run(['make', '-C', str(source), 'O=' + str(build), 'INSTALL_MOD_PATH=' + directory, 'modules_install'], check=True)
+        module_install = install_runtime_modules(source, build, directory)
         copy_tree(Path(directory) / 'lib/modules', payload / 'usr/lib/modules')
     modules = payload / 'usr/lib/modules' / release
     verify_output_releases(build / 'arch/arm64/boot/Image', payload / 'usr/lib/modules', release)
@@ -124,6 +160,7 @@ def stage(source, build, output):
     shutil.copyfile(build / '.config', kernel / 'config')
     receipt = {'requested_public_pin': PIN, 'actual_compile_source': PIN, 'build_mode': 'clean-source',
                'source_bit_reproducibility_claim': False, 'release': release, 'config_sha256': sha(build / '.config'),
+               'module_install': module_install,
                'files': {str(p.relative_to(payload)): sha(p) for p in payload.rglob('*') if p.is_file() and not p.is_symlink()}}
     (kernel / 'reuse-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
     archive(payload, kernel / 'kernel-runtime.tar', '.')
