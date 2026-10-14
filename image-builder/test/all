@@ -26,6 +26,7 @@ done
 echo "ok - shell syntax and Python compilation"
 
 python3 test/test_candidate_set.py
+python3 test/test_native_btrfs.py
 python3 test/test_package_record.py
 python3 test/test_firmware_ordering.py
 python3 test/test_j700_bluetooth.py

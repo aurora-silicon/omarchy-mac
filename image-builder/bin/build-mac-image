@@ -104,7 +104,7 @@ TOOLCHAIN=(pacman arch-install-scripts btrfs-progs e2fsprogs dosfstools libarchi
 
 usage() {
   cat <<'USAGE'
-Usage: bin/build-mac-image --inputs FILE --candidates DIR [--cache DIR] [--trust-dir DIR] [--lab-access DIR] [--dry-run] OUT
+Usage: bin/build-mac-image --inputs FILE --candidates DIR [--cache DIR] [--trust-dir DIR] [--lab-access DIR] [--native-btrfs DIR --native-btrfs-sha256 SHA256] [--dry-run] OUT
 
 Builds the Apple Silicon image for the candidate set in DIR from the inputs
 record FILE (bin/mac-image-inputs resolve) into the empty or missing directory
@@ -120,6 +120,15 @@ grants that user key-only SSH, passwordless sudo and polkit
 (builder/lab_access.py). It never carries a secret: enrollment credentials go
 over SSH after the first boot. IMAGE and PROVENANCE record profile=lab, and the
 inspection holds the image to exactly that overlay; any other image refuses it.
+
+--native-btrfs DIR --native-btrfs-sha256 SHA256 selects a pinned Linux x86_64
+build-host Btrfs tool closure for QEMU-user builders lacking Btrfs ioctl support.
+DIR holds receipt.json (schema=1, version, files mapping names to SHA256), btrfs,
+ld-linux-x86-64.so.2 and its explicitly listed ELF libraries. The builder freezes
+and validates only those files, mounts them read-only and uses the native tool
+for its Btrfs commands and final Python inspection. PROVENANCE records the
+actual version and receipt SHA256; the receipt accompanies the output. Target
+runtime packages and all filesystem inspection requirements are unchanged.
 
 Needs docker, curl, gpg, python3, bsdtar and sha256sum on the host. As root or
 with passwordless sudo, it hides its loop devices from desktop automounters
@@ -140,6 +149,16 @@ usage_error() {
 
 sha256_of() {
   sha256sum "$1" | cut -d' ' -f1
+}
+
+# Only the explicitly verified read-only build-tool mount selects this route.
+# The installed target keeps its normal ARM btrfs-progs package.
+btrfs() {
+  if [[ -n ${MAC_IMAGE_NATIVE_BTRFS_SHA256:-} ]]; then
+    /native-btrfs/ld-linux-x86-64.so.2 --library-path /native-btrfs /native-btrfs/btrfs "$@"
+  else
+    command btrfs "$@"
+  fi
 }
 
 # ── host ───────────────────────────────────────────────────────────────────
@@ -210,13 +229,15 @@ record_field() {
 }
 
 host_main() {
-  local inputs="" candidates="" cache="" lab_access="" trust_dir="$ROOT/builder/candidate-trust" explicit_trust=false out commit status clean=true started=$SECONDS dry_run=false
-  local cache_mounts=() lab_mounts=() trust_pins=()
+  local native_btrfs="" native_btrfs_sha="" inputs="" candidates="" cache="" lab_access="" trust_dir="$ROOT/builder/candidate-trust" explicit_trust=false out commit status clean=true started=$SECONDS dry_run=false
+  local cache_mounts=() lab_mounts=() native_mounts=() trust_pins=()
   while (($#)); do
     case $1 in
-      --inputs|--candidates|--cache|--lab-access|--trust-dir)
+      --inputs|--candidates|--cache|--lab-access|--trust-dir|--native-btrfs|--native-btrfs-sha256)
         (($# > 1)) && [[ -n $2 ]] || usage_error "$1 requires a value"
         case $1 in
+          --native-btrfs) native_btrfs=$2 ;;
+          --native-btrfs-sha256) native_btrfs_sha=$2 ;;
           --inputs) inputs=$2 ;;
           --candidates) candidates=$2 ;;
           --trust-dir) trust_dir=$2; explicit_trust=true ;;
@@ -252,6 +273,11 @@ host_main() {
   trap 'stop_build; exit 130' INT
   trap 'stop_build; exit 143' TERM
   trap 'stop_build; exit 129' HUP
+  if [[ -n $native_btrfs || -n $native_btrfs_sha ]]; then
+    [[ -n $native_btrfs && -n $native_btrfs_sha ]] || fail "native Btrfs requires a directory and receipt SHA256"
+    python3 "$ROOT/builder/native_btrfs.py" "$native_btrfs" --sha256 "$native_btrfs_sha" --output "$host_work/native-btrfs" || fail "native Btrfs tool closure does not verify"
+    native_mounts=(-v "$host_work/native-btrfs:/native-btrfs:ro" -e "MAC_IMAGE_NATIVE_BTRFS_SHA256=$native_btrfs_sha")
+  fi
   if [[ -n $(record_field candidate_trust_policy_sha256 "$inputs") ]]; then
     trust_pins=(--policy-sha256 "$(record_field candidate_trust_policy_sha256 "$inputs")"
       --public-key-sha256 "$(record_field candidate_trust_public_key_sha256 "$inputs")")
@@ -312,7 +338,7 @@ host_main() {
   # interruption reaches the traps above at once.
   docker run --rm --cidfile "$host_work/cid" --privileged --platform linux/arm64 \
     -v "$ROOT:/src:ro" -v "$inputs:/inputs:ro" -v "$host_work/candidates:/candidates:ro" \
-    -v "$host_work/trust:/candidate-trust:ro" -v "$host_work/dbs:/dbs:ro" -v "$out:/out" -v /work "${cache_mounts[@]}" "${lab_mounts[@]}" \
+    -v "$host_work/trust:/candidate-trust:ro" -v "$host_work/dbs:/dbs:ro" -v "$out:/out" -v /work "${cache_mounts[@]}" "${lab_mounts[@]}" "${native_mounts[@]}" \
     -e MAC_IMAGE_BUILDER_COMMIT="$commit" \
     -e MAC_IMAGE_BUILDER_CLEAN="$clean" \
     -e MAC_IMAGE_BUILDER_IMAGE="$(docker image inspect --format '{{.Id}}' "$host_image")" \
@@ -1462,6 +1488,11 @@ write_provenance() {
     printf 'builder_commit=%s\nbuilder_tree_clean=%s\nworkflow_run=%s\n' \
       "$MAC_IMAGE_BUILDER_COMMIT" "$MAC_IMAGE_BUILDER_CLEAN" "$MAC_IMAGE_WORKFLOW_RUN"
     printf 'builder_image=%s\n' "$MAC_IMAGE_BUILDER_IMAGE"
+    if [[ -n ${MAC_IMAGE_NATIVE_BTRFS_SHA256:-} ]]; then
+      printf 'native_btrfs_receipt_sha256=%s\n' "$MAC_IMAGE_NATIVE_BTRFS_SHA256"
+      printf 'native_btrfs_version=%s\n' "$(btrfs version | head -1)"
+      cp /native-btrfs/receipt.json /out/native-btrfs-receipt.json
+    fi
     printf 'inputs_sha256=%s\n' "$(sha256_of /inputs)"
     sed 's/^/input./' /inputs
     for name in "${TOOLCHAIN[@]}"; do
@@ -1569,6 +1600,12 @@ build_payload() {
   step() { printf '[%4ds] %s\n' "$((SECONDS - started))" "$1"; }
   step "preparing the toolchain from Arch Linux ARM"
   prepare_toolchain
+  if [[ -n ${MAC_IMAGE_NATIVE_BTRFS_SHA256:-} ]]; then
+    python3 "$ROOT/builder/native_btrfs.py" /native-btrfs --sha256 "$MAC_IMAGE_NATIVE_BTRFS_SHA256" || fail "native Btrfs tool changed"
+    # Python inspection subprocesses must use the same verified native tool.
+    export PATH="/native-btrfs/bin:$PATH"
+    btrfs version >"$logs/native-btrfs-version.log"
+  fi
   # The verified rootfs supplies Python/jq through the pinned tool transaction.
   # Bind again before any image filesystem is created.
   bind_target_profile "$(field image_target_profile)" "$candidates/import.json" "$candidate_trust"

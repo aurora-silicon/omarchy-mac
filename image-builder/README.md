@@ -125,3 +125,9 @@ The zip's own sha256 cannot be here, since root.img holds this file. To map a re
 ## Sources
 
 `bin/` is mx-mac's image builder from maralcbr/omarchy-pkgs `asahi-quattro` at `7e2f6cfe` (`bin/build-mac-image`, `bin/mac-image-inputs`, `bin/mac-image-check`, and `mac-image-finalize` as `builder/finalize-root`), adapted to the candidate set. `builder/candidate_set.py`, `builder/apple_limine.py` and `builder/verify_installed_system.py` come from the candidate importer, Limine contract and installed-system verifier of this repository's #2.
+
+### Cross-architecture Btrfs build tool
+
+On an x86_64 host, QEMU-user may return `ENOTTY` for ARM Btrfs subvolume ioctls even when `findmnt` confirms a Btrfs mount. `build-mac-image --native-btrfs DIR --native-btrfs-sha256 SHA256` supports an explicit native build-tool closure. `DIR/receipt.json` contains exactly `schema: 1`, the `btrfs-progs v…` version, and `files`, a mapping of flat file names to their SHA256 digests. Include native `btrfs`, `ld-linux-x86-64.so.2`, and each required Linux x86_64 ELF library; copy regular files rather than symlinks. Pin the receipt digest independently before starting the build.
+
+The builder copies and rechecks only the listed files, freezes the closure and mounts it read-only. Both image assembly and final Python inspection use it. `PROVENANCE` records its actual version and receipt digest, and `native-btrfs-receipt.json` records every tool file digest. This optional build-host tool is never installed in the target; the target retains its ordinary ARM Btrfs package. The default native ARM builder and all final filesystem checks remain unchanged.
