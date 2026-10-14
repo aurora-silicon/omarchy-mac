@@ -779,10 +779,10 @@ qualified() {
       m1n1-aurora) replacement=aura ;;
       uboot-asahi) replacement=uboot-aurora ;;
       mesa) replacement=mesa-aurora ;;
-      vulkan-asahi) replacement=vulkan-asahi-aurora ;;
+      vulkan-asahi) replacement=vulkan-aurora ;;
       asahi-bless) replacement=aurora-bless ;;
-      asahi-audio) replacement=asahi-audio-aurora ;;
-      alsa-ucm-conf-asahi) replacement=alsa-ucm-conf-asahi-aurora ;;
+      asahi-audio) replacement=aurora-audio ;;
+      alsa-ucm-conf-asahi) replacement=alsa-ucm-conf-aurora ;;
     esac
     package=$(jq -r --arg name "$name" --arg replacement "$replacement" 'first(.packages[] | select(.name == $replacement or .name == $name or .role == $name) | .name) // empty' \
       "$candidates/import.json")

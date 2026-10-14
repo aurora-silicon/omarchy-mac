@@ -222,6 +222,10 @@
         RecoveryAccountHandoff.isFinishedRecoveryReceipt(
           Data(#"{"status":"prepared"}"#.utf8)))
       XCTAssertFalse(RecoveryAccountHandoff.isFinishedRecoveryReceipt(Data("not json".utf8)))
+      XCTAssertFalse(
+        RecoveryAccountHandoff.isFinishedRecoveryReceipt(
+          Data(#"{"schema":1,"status":"installed","mode":"raw"}"#.utf8),
+          hasPendingOperation: true))
     }
   }
 #endif

@@ -347,9 +347,10 @@
     /// System volume only after it has authorized and enrolled the boot.
     static let recoveryReceiptPath = "Aurora/Recovery/State/installation.json"
 
-    static func isFinishedRecoveryReceipt(_ data: Data) -> Bool {
-      (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["status"] as? String
-        == "installed"
+    static func isFinishedRecoveryReceipt(_ data: Data, hasPendingOperation: Bool = false) -> Bool {
+      !hasPendingOperation
+        && (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["status"] as? String
+          == "installed"
     }
 
     /// Whether Recovery completed the installation on `target`. The System
@@ -366,7 +367,12 @@
         let receipt = try? RecoveryAccountInstaller.protectedRead(
           URL(fileURLWithPath: mount).appendingPathComponent(recoveryReceiptPath), limit: 65536)
       else { return false }
-      return isFinishedRecoveryReceipt(receipt)
+      let pending = URL(fileURLWithPath: mount).appendingPathComponent(
+        "Aurora/Recovery/State/installation.pending.json")
+      return isFinishedRecoveryReceipt(
+        receipt,
+        hasPendingOperation: FileManager.default.fileExists(atPath: pending.path)
+          || (try? FileManager.default.destinationOfSymbolicLink(atPath: pending.path)) != nil)
     }
 
     static func requireLivePartitions(evidence: [String: Data], listing: [String: Any]) throws {

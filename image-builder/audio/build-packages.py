@@ -57,7 +57,7 @@ def main():
     stage.mkdir()
     records = []
 
-    def package(name, version, root, dependencies, legacy=None):
+    def package(name, version, root, dependencies, legacy=None, previous=None):
         source_name = legacy or name
         stamp = run('git', '-C', str(sources[source_name]), 'show', '-s', '--format=%ct', 'HEAD')
         inventory = {str(p.relative_to(root)): sha(p) for p in sorted(root.rglob('*')) if p.is_file()}
@@ -72,7 +72,8 @@ def main():
                 'license = BSD' if source_name == 'alsa-ucm-conf-asahi' else 'license = MIT',
                 f'size = {sum(p.stat().st_size for p in root.rglob("*") if p.is_file())}',
                 *['depend = ' + dep for dep in dependencies],
-                *([f'provides = {legacy}={version}', f'conflict = {legacy}', f'replaces = {legacy}'] if legacy else [])]
+                *[entry for alias in (legacy, previous) if alias for entry in
+                  (f'provides = {alias}={version}', f'conflict = {alias}', f'replaces = {alias}')]]
         (root / '.PKGINFO').write_text('\n'.join(info) + '\n')
         archive = output / f'{name}-{version}-aarch64.pkg.tar.zst'
         subprocess.run(['tar', '--sort=name', '--owner=0', '--group=0', '--numeric-owner',
@@ -119,16 +120,16 @@ def main():
     shutil.copytree(sources['alsa-ucm-conf-asahi'] / 'ucm2', root / 'usr/share/alsa/ucm2')
     install(sources['alsa-ucm-conf-asahi'] / 'LICENSE.asahi', root,
             'usr/share/licenses/alsa-ucm-conf-asahi/LICENSE.asahi')
-    package('alsa-ucm-conf-asahi-aurora', '10.aurora2-' + PINS['alsa-ucm-conf-asahi'][:12], root,
-            ['alsa-ucm-conf'], legacy='alsa-ucm-conf-asahi')
+    package('alsa-ucm-conf-aurora', '10.aurora2-' + PINS['alsa-ucm-conf-asahi'][:12], root,
+            ['alsa-ucm-conf'], legacy='alsa-ucm-conf-asahi', previous='alsa-ucm-conf-asahi-aurora')
 
     root = stage / 'asahi-audio'
     subprocess.run(['make', '-C', str(sources['asahi-audio']), 'install',
                     'DESTDIR=' + str(root), 'PREFIX=/usr'], check=True)
     install(sources['asahi-audio'] / 'LICENSE', root, 'usr/share/licenses/asahi-audio/LICENSE')
-    package('asahi-audio-aurora', '4.1.aurora2-' + PINS['asahi-audio'][:12], root,
-            ['alsa-ucm-conf-asahi-aurora', 'pipewire-audio', 'wireplumber', 'bankstown',
-             'lsp-plugins-lv2', 'speakersafetyd', 'speakerguardd'], legacy='asahi-audio')
+    package('aurora-audio', '4.1.aurora2-' + PINS['asahi-audio'][:12], root,
+            ['alsa-ucm-conf-aurora', 'pipewire-audio', 'wireplumber', 'bankstown',
+             'lsp-plugins-lv2', 'speakersafetyd', 'speakerguardd'], legacy='asahi-audio', previous='asahi-audio-aurora')
     (output / 'manifest.json').write_text(json.dumps(records, indent=2) + '\n')
     print(json.dumps(records, indent=2))
 

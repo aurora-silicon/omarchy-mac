@@ -268,10 +268,10 @@ def check_packages(verification: Verification, root: Path, runtime_packages: fro
     # still happen independently before this installed-system check.
     replacements = {
         "aura": {"m1n1-aurora"}, "uboot-aurora": {"uboot-asahi"},
-        "mesa-aurora": {"mesa"}, "vulkan-asahi-aurora": {"vulkan-asahi"},
+        "mesa-aurora": {"mesa"}, "vulkan-aurora": {"vulkan-asahi"},
         "aurora-bless": {"asahi-bless"},
-        "asahi-audio-aurora": {"asahi-audio"},
-        "alsa-ucm-conf-asahi-aurora": {"alsa-ucm-conf-asahi"},
+        "aurora-audio": {"asahi-audio"},
+        "alsa-ucm-conf-aurora": {"alsa-ucm-conf-asahi"},
     }
     for name, roles in replacements.items():
         if name in installed:

@@ -25,8 +25,8 @@ class AuroraPackageRolesTests(unittest.TestCase):
 
     def test_exact_audio_and_bless_replacements_fill_legacy_roles(self):
         result = self.inspect({
-            "asahi-audio": ("asahi-audio-aurora", ["asahi-audio=4.1.aurora2"]),
-            "alsa-ucm-conf-asahi": ("alsa-ucm-conf-asahi-aurora", ["alsa-ucm-conf-asahi=10.aurora2"]),
+            "asahi-audio": ("aurora-audio", ["asahi-audio=4.1.aurora2"]),
+            "alsa-ucm-conf-asahi": ("alsa-ucm-conf-aurora", ["alsa-ucm-conf-asahi=10.aurora2"]),
             "asahi-bless": ("aurora-bless", ["asahi-bless=0.4.4.aurora2"]),
         })
         self.assertEqual(result.failed, [], result.checks)
