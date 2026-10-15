@@ -66,4 +66,4 @@ The original [MIT license](LICENSE), copyright notice and Git attribution are re
 
 ## Linux image producer
 
-The Apple Silicon image producer is `image-builder/`: mx-mac's `build-mac-image`, building from a signed candidate set with the authenticated candidate importer, and inspecting each image before it is packaged. See [checks and entrypoints](docs/image-builder.md), [how to build](image-builder/README.md) and [one image producer](docs/image-producer.md).
+The Apple Silicon image producer is `image-builder/`: mx-mac's `build-mac-image`, building from a signed candidate set with the authenticated candidate importer, and inspecting each image before it is packaged. See [checks and entrypoints](docs/image-builder.md), [how to build](image-builder/README.md) and [one image producer](docs/image-producer.md). The MacBook Neo beta takes its boot packages from [Neo beta boot packages](docs/neo-beta-boot-packages.md).
