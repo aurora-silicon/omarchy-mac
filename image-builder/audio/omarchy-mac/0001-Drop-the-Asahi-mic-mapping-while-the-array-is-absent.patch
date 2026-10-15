@@ -1,4 +1,4 @@
-From 0354ff31f606005492a0bee4babab9297344440d Mon Sep 17 00:00:00 2001
+From c1f9cf224796ddfb865632d04742ca473c2f8f3f Mon Sep 17 00:00:00 2001
 From: Ryan Murray <ryan@aurorasilicon.org>
 Date: Thu, 15 Oct 2026 22:26:18 +1100
 Subject: [PATCH] Drop the Asahi mic mapping while the array is absent
@@ -17,20 +17,25 @@ the configured monitor again. restore_input() no longer undoes that
 selection: it only undoes a monitor that a policy manager picked on its
 own, and the configured default tells the two apart. The same check also
 keeps a configured monitor across a PipeWire restart where the fallback
-was another microphone.
+was another microphone. A monitor this run configured itself is not a
+user choice: if the run then fails, it still rolls that back.
+
+Saving the gain is best effort when the array is gone: a failure is
+reported and the silent mapping is removed anyway, and a failed save
+keeps the previous state file and leaves no temporary file behind.
 
 Assisted-by: LLM
 Signed-off-by: Ryan Murray <ryan@aurorasilicon.org>
 ---
- bin/omarchy-audio-asahi-mic-map    | 37 ++++++++++++++++++++++++++++++
- test/shell.d/asahi-mic-map-test.sh | 36 +++++++++++++++++++++++++++--
- 2 files changed, 71 insertions(+), 2 deletions(-)
+ bin/omarchy-audio-asahi-mic-map    | 55 +++++++++++++++++++++++++-
+ test/shell.d/asahi-mic-map-test.sh | 62 +++++++++++++++++++++++++++++-
+ 2 files changed, 113 insertions(+), 4 deletions(-)
 
 diff --git a/bin/omarchy-audio-asahi-mic-map b/bin/omarchy-audio-asahi-mic-map
-index 7422b26..5f4b8d9 100755
+index 7422b26..3638aea 100755
 --- a/bin/omarchy-audio-asahi-mic-map
 +++ b/bin/omarchy-audio-asahi-mic-map
-@@ -80,6 +80,39 @@ def links(graph, output, input_):
+@@ -80,6 +80,43 @@ def links(graph, output, input_):
              and obj['info'].get('state') in ('active', 'paused')]
  
  
@@ -62,7 +67,11 @@ index 7422b26..5f4b8d9 100755
 +    owned = owned_modules(audio)
 +    if not owned:
 +        return
-+    save_state(audio, state)
++    try:
++        save_state(audio, state)
++    except Exception as error:
++        # Losing a gain change is better than keeping a silent default.
++        print('Asahi microphone gain not saved: ' + str(error), file=sys.stderr, flush=True)
 +    for obj in owned:
 +        audio.run('pactl', 'unload-module', str(obj['index']))
 +
@@ -70,7 +79,27 @@ index 7422b26..5f4b8d9 100755
  def gain(obj):
      values = [channel['value'] for channel in obj['volume'].values()]
      if len(values) != 2 or any(type(value) is not int or not 0 <= value < 2**32 - 1 for value in values) or type(obj['mute']) is not bool:
-@@ -130,6 +163,7 @@ def reconcile(audio, state, save_only=False):
+@@ -97,8 +134,17 @@ def save_state(audio, path):
+     if path.exists() and path.read_text() == data:
+         return
+     with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as temporary:
+-        temporary.write(data)
+-    os.replace(temporary.name, path)
++        try:
++            temporary.write(data)
++        except BaseException:
++            os.unlink(temporary.name)
++            raise
++    try:
++        os.replace(temporary.name, path)
++    except BaseException:
++        # Keep the previous state file; leave no partial copy behind.
++        os.unlink(temporary.name)
++        raise
+ 
+ 
+ def restore_gain(audio, path):
+@@ -130,6 +176,7 @@ def reconcile(audio, state, save_only=False):
      original_output = audio.run('pactl', 'get-default-sink')
      dsp = next((obj['name'] for obj in sources if re.fullmatch(r'effect_output\.j[0-9]+-mic', obj['name'])), None)
      if not dsp:
@@ -78,18 +107,19 @@ index 7422b26..5f4b8d9 100755
          raise Deferred('No Asahi DSP microphone is present; user service will retry if an array appears')
      sinks = audio.objects('sinks')
      owner = uuid.uuid4().hex
-@@ -137,6 +171,9 @@ def reconcile(audio, state, save_only=False):
+@@ -137,6 +184,10 @@ def reconcile(audio, state, save_only=False):
      changed_input = False
      def restore_input():
          if original_input and audio.run('pactl', 'get-default-source') == MONITOR:
 +            # Selected because the user chose it before it went away: keep it.
-+            if configured_source(audio.graph()) == MONITOR:
++            # A monitor this run configured itself is not such a choice.
++            if not changed_input and configured_source(audio.graph()) == MONITOR:
 +                return
              if original_input in {obj['name'] for obj in audio.objects('sources')}:
                  if audio.run('pactl', 'get-default-source') == MONITOR:
                      audio.run('pactl', 'set-default-source', original_input)
 diff --git a/test/shell.d/asahi-mic-map-test.sh b/test/shell.d/asahi-mic-map-test.sh
-index 49a7792..69de2a9 100755
+index 49a7792..45812b2 100755
 --- a/test/shell.d/asahi-mic-map-test.sh
 +++ b/test/shell.d/asahi-mic-map-test.sh
 @@ -28,6 +28,7 @@ class Audio:
@@ -122,7 +152,7 @@ index 49a7792..69de2a9 100755
          if command == 'set-default-sink': self.output = args[2]; return ''
          target = self.sink if args[2] == m.SINK else self.monitor
          assert args[2] in (m.SINK, m.MONITOR), 'DSP/user device must never be modified'
-@@ -173,6 +177,34 @@ with tempfile.TemporaryDirectory() as temporary:
+@@ -173,6 +177,60 @@ with tempfile.TemporaryDirectory() as temporary:
      m.reconcile(audio, saved)
      assert m.gain(audio.monitor) == {'volume': [27525, 27525], 'mute': True}, 'restart must recover owned mapped gain'
      assert m.gain(audio.sink) == {'volume': [27525, 27525], 'mute': True}
@@ -150,6 +180,32 @@ index 49a7792..69de2a9 100755
 +    assert audio.default == m.MONITOR and audio.configured == m.MONITOR, 'the configured monitor must come back'
 +    assert not any(call[1] == 'set-default-source' for call in audio.calls), 'returning must not write a default'
 +    assert m.gain(audio.monitor)['volume'] == [30000, 30000], 'the saved monitor gain must come back'
++    # A run that configured the monitor itself and then fails rolls its own
++    # choice back, even though the monitor now reads as configured.
++    audio = Audio(); saved = state()
++    real_save = m.save_state
++    def failing_save(audio_, path):
++        if audio_.default == m.MONITOR: raise OSError('No space left on device')
++        return real_save(audio_, path)
++    with mock.patch.object(m, 'save_state', failing_save):
++        try: m.reconcile(audio, saved)
++        except OSError: pass
++        else: raise AssertionError('state save failure suppressed')
++    assert audio.default == DSP and audio.configured == DSP and not audio.existing
++    # Without the array, a gain that cannot be saved must not keep the silent
++    # mapping: it is removed anyway and the previous state file is kept.
++    audio = Audio(); saved = state()
++    m.reconcile(audio, saved)
++    before = saved.read_text()
++    audio.run('pactl', 'set-source-volume', m.MONITOR, '20000', '20000'); audio.calls.clear()
++    audio.no_dsp = True; audio.linked = {}
++    with mock.patch.object(m.os, 'replace', side_effect=OSError('read-only file system')):
++        try: m.reconcile(audio, saved)
++        except m.Deferred: pass
++        else: raise AssertionError('mapping without an array must defer')
++    assert not audio.existing and audio.default == 'usb-mic', 'the silent mapping must go even if saving fails'
++    assert saved.read_text() == before, 'the previous saved gain must survive'
++    assert [p.name for p in saved.parent.iterdir() if p.name.startswith('tmp')] == [], 'no partial state file'
 +    # A monitor picked by a policy manager, not the user, is still undone.
 +    audio = Audio(default='usb-mic'); audio.auto_input = True
 +    m.reconcile(audio, state())

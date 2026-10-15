@@ -14,4 +14,6 @@ Existing images need a PipeWire/WirePlumber restart after replacing the profiles
 
 With the clamshell kernel (`t8140-aop-audio` "Internal Mic Jack") and the matching UCM, closing the lid removes the J700 microphone array from PipeWire. Without this patch the mapper keeps its null sink, and its monitor stays the default source and records silence. With it, the mapper removes its sink while the array is absent, so applications fall back to another microphone, and recreates it with the saved gain when the lid opens, when WirePlumber selects the configured monitor again.
 
+It also keeps two error paths safe: a run that configured the monitor itself and then fails rolls that default back, and a gain that cannot be saved while the array is gone does not keep the silent mapping.
+
 Tested only with the mapper's own test (`bash test/shell.d/asahi-mic-map-test.sh`, which fails without the patch). Not tested on Omarchy hardware.
