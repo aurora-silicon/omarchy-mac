@@ -393,6 +393,21 @@ class EngineRuntimeTests(unittest.TestCase):
                                part_align=1_048_576)
         self.assertEqual(collect.call_args.args[2], [tight, roomy, upstream_data])
 
+    def test_an_m4_or_j614s_inspected_as_unsupported_gets_no_layout(self):
+        for device_class in ("apple,j614s", "apple,j604"):
+            with self.subTest(device_class=device_class):
+                runtime = EngineRuntime.from_environment({
+                    "OMARCHY_ENGINE_MODE": "inspect",
+                    "OMARCHY_ENGINE_JOURNAL": str(self.journal_path.with_name(device_class)),
+                })
+                runtime.journal.inspection(device_class, "unsupported")
+                with patch("omarchy_runtime.omarchy_planner.collect_inventory") as collect, \
+                        self.assertRaisesRegex(EngineRuntimeError, "unsupported device has no layout"):
+                    runtime.run_layout(installer=self._layout_installer([]), free_parts=[],
+                                       resizable_parts=[], stub_size=2_500_000_000,
+                                       part_align=1_048_576)
+                collect.assert_not_called()
+
     def test_non_gpt_disk_does_not_offer_resize_candidates(self):
         runtime = EngineRuntime.from_environment({
             "OMARCHY_ENGINE_MODE": "inspect",

@@ -1,6 +1,7 @@
 #if os(macOS)
   import Foundation
   import OmarchyAppleInstallerTrustCore
+  import RecoveryAccountCore
 
   /// Everything a screen renders, derived once by the environment from the
   /// retained trust objects. Display models are render-only: no approval,
@@ -12,6 +13,7 @@
     /// take, so the page can name the size the owner chose instead.
     public let chipAndFreeSpace: String
     public let supported: Bool
+    public let powerButtonGuide: MacPowerButtonGuide
     /// Why this Mac cannot install right now, when `supported` is false.
     public let blockingReason: String?
     /// Omarchy installs the inspection found on the disk. Known before any
@@ -34,11 +36,13 @@
       blockingReason: String? = nil,
       existingInstalls: [ExistingInstallDisplay] = [],
       spaceShortfall: InstallerAllocationRecommendationError? = nil,
-      unsupportedModel: UnsupportedModelDisplay? = nil
+      unsupportedModel: UnsupportedModelDisplay? = nil,
+      powerButtonGuide: MacPowerButtonGuide = .generic
     ) {
       self.chipAndSpace = chipAndSpace
       self.chipAndFreeSpace = chipAndFreeSpace ?? chipAndSpace
       self.supported = supported
+      self.powerButtonGuide = powerButtonGuide
       self.blockingReason = blockingReason
       self.existingInstalls = existingInstalls
       self.spaceShortfall = spaceShortfall
@@ -530,6 +534,13 @@
   /// replays a recorded journal. Neither ever hands a credential back.
   public protocol InstallerEnvironment: Sendable {
     var isSimulation: Bool { get }
+    func inspectRecoveryAccount() async throws -> RecoveryAccountReply?
+    func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply
+    func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
+      -> RecoveryAccountReply
+    func finalizeRecoveryAccount(ticket: String, password: Data) async throws
+      -> RecoveryAccountReply
+    func openStartupDisk() -> Bool
     func inspect() async throws -> HostDisplay
     /// `omarchyBytes` asks the planner for that much space for Omarchy; nil
     /// keeps the balanced default. The engine still clamps the request to the
@@ -589,6 +600,21 @@
   }
 
   extension InstallerEnvironment {
+    public func inspectRecoveryAccount() async throws -> RecoveryAccountReply? { nil }
+    public func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply {
+      throw AccountSetupFailure("Recovery handoff is unavailable in this environment.")
+    }
+    public func prepareRecoveryAccount(ticket: String, username: String, password: Data)
+      async throws -> RecoveryAccountReply
+    {
+      throw AccountSetupFailure("Recovery account setup is unavailable in this environment.")
+    }
+    public func finalizeRecoveryAccount(ticket: String, password: Data) async throws
+      -> RecoveryAccountReply
+    {
+      throw AccountSetupFailure("Recovery account setup is unavailable in this environment.")
+    }
+    public func openStartupDisk() -> Bool { false }
     public var isSimulation: Bool { false }
     public func requestShutdown() -> Bool { false }
     public var payloadPrefetchRequired: Bool { false }

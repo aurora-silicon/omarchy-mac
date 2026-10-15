@@ -100,7 +100,7 @@ def patched_paths(patch: str) -> set[str]:
     return set(re.findall(r"^diff --git a/(\S+) b/\S+$", patch, re.MULTILINE))
 
 
-def require_upstream_delta(delta: dict, patch: str) -> None:
+def require_upstream_delta(delta: dict, patch: str, base_patch: str) -> None:
     required = {
         "path",
         "downstream_patched",
@@ -116,6 +116,7 @@ def require_upstream_delta(delta: dict, patch: str) -> None:
     if not isinstance(delta["files"], list) or not delta["files"]:
         raise ValueError("invalid upstream delta lock record")
     patched = patched_paths(patch)
+    base_patched = patched_paths(base_patch)
     seen = set()
     for record in delta["files"]:
         if (
@@ -144,6 +145,8 @@ def require_upstream_delta(delta: dict, patch: str) -> None:
             raise ValueError(
                 "downstream patch coverage differs from source lock: " + path
             )
+        if record["downstream_patched"] and path not in base_patched:
+            raise ValueError("base patch coverage differs from source lock: " + path)
         if not record["downstream_patched"] and (
             record["base_sha256"] != record["upstream_base_sha256"]
             or record["sha256"] != record["upstream_sha256"]
@@ -226,9 +229,12 @@ def verify(engine_root: Path, checkout: Path) -> None:
             raise ValueError("overlay destination is invalid")
     for item in lock["build_recipe"]:
         require_digest(engine_root, item, "build recipe")
+    base_patch = lock["incremental_build"]["base_patch"]
+    require_digest(engine_root, base_patch, "base patch")
     require_upstream_delta(
         lock["incremental_build"]["upstream_delta"],
         (engine_root / overlay["patch"]["path"]).read_text(encoding="utf-8"),
+        (engine_root / base_patch["path"]).read_text(encoding="utf-8"),
     )
 
 

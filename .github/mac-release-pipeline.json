@@ -1,11 +1,11 @@
 {
   "engine": {
-    "version": "v0.9.2-omarchy.28",
-    "url": "https://github.com/omacom/omarchy-mac-installer/releases/download/engine-v0.9.2-omarchy.28/installer-v0.9.2-omarchy.28.tar.gz",
-    "fileName": "installer-v0.9.2-omarchy.28.tar.gz",
-    "sizeBytes": 17843348,
-    "sha256": "0cf1aa87760f90a545298b7cef737c9b497f2cad421d79ac59f557a81f2eb146",
-    "downstreamRevision": "dff6311446439e1f29f0f2e6c0cf82a9a190e5bc"
+    "version": "v0.9.2-omarchy.41",
+    "url": "https://github.com/omacom/omarchy-mac-installer/releases/download/engine-v0.9.2-omarchy.41/installer-v0.9.2-omarchy.41.tar.gz",
+    "fileName": "installer-v0.9.2-omarchy.41.tar.gz",
+    "sizeBytes": 23859719,
+    "sha256": "d1b816157ea74033fc189e76c1105c79efa1b01ce4a64be4e3a67b3c86c83098",
+    "downstreamRevision": "7c1dbb415af42496c9bc2b2d64bd3769233dd042"
   },
   "installer": {
     "minimumVersion": "2.2.0",

@@ -1,0 +1,73 @@
+# The one Omarchy image's m1n1 board selector, installed as
+# /usr/lib/omarchy-mac-image/update-m1n1-board (unowned until a package takes
+# it over). /etc/default/update-m1n1 sources it, and update-m1n1 (asahi-scripts)
+# sources that file under `set -e` before it writes anything, so the explicit
+# `exit 1` below ends update-m1n1 and leaves m1n1/boot.bin untouched.
+#
+# It lives apart from /etc/default/update-m1n1 because that file is
+# omarchy-mac-boot's (a backup file) and Aurora's install-aurora-sep.sh edits
+# it line by line: it deletes ^DTBS= lines, on some Neos indented M1N1= lines,
+# and appends its own DTBS=.
+#
+# POSIX sh, not the repository's usual Bash: update-m1n1 is `#!/bin/sh`, and
+# install-aurora-sep.sh and omarchy-apple-silicon-boot-check also source the
+# configuration with `sh`, which need not be Bash. So no [[ ]] or (( )).
+#
+# The board comes from the live device tree. The MacBook Neo (apple,j700)
+# builds Stage 2 from Aurora's m1n1-neo and the J700 U-Boot. A supported M1-M3
+# SoC keeps update-m1n1's defaults (m1n1-aurora and uboot-asahi). Anything
+# else is refused, including apple,j614s and every M4 or later SoC.
+#
+# OMARCHY_M1N1_BOARD (j700 or m123) skips detection. Only the image build's
+# chroot sets it, where /proc/device-tree belongs to the build host.
+# OMARCHY_DT_COMPATIBLE points detection at another file, for tests.
+
+omarchy_m1n1_board=${OMARCHY_M1N1_BOARD:-}
+omarchy_m1n1_found=
+if [ -z "$omarchy_m1n1_board" ]; then
+  omarchy_m1n1_dt=${OMARCHY_DT_COMPATIBLE:-/proc/device-tree/compatible}
+  if [ -r "$omarchy_m1n1_dt" ]; then
+    # NUL-separated strings; none contains a space.
+    omarchy_m1n1_found=$(tr '\000\n' '  ' <"$omarchy_m1n1_dt")
+  fi
+  # The board is checked before the SoC: apple,j614s carries a supported
+  # M3 SoC compatible but is not supported.
+  case " $omarchy_m1n1_found " in
+    *" apple,j614s "*) omarchy_m1n1_board=unsupported ;;
+    *" apple,j700 "*) omarchy_m1n1_board=j700 ;;
+    *" apple,t8103 "* | *" apple,t6000 "* | *" apple,t6001 "* | *" apple,t6002 "* | \
+      *" apple,t8112 "* | *" apple,t6020 "* | *" apple,t6021 "* | *" apple,t6022 "* | \
+      *" apple,t8122 "* | *" apple,t6030 "* | *" apple,t6031 "* | *" apple,t6034 "*)
+      omarchy_m1n1_board=m123
+      ;;
+    *) omarchy_m1n1_board=unsupported ;;
+  esac
+fi
+
+case $omarchy_m1n1_board in
+  j700)
+    M1N1=/usr/lib/m1n1-neo/m1n1.bin
+    U_BOOT=/usr/lib/asahi-boot-j700/u-boot-nodtb.bin
+    ;;
+  m123) ;;
+  *)
+    if [ -n "${OMARCHY_M1N1_BOARD:-}" ]; then
+      echo "update-m1n1: OMARCHY_M1N1_BOARD=$OMARCHY_M1N1_BOARD is not j700 or m123; m1n1/boot.bin is unchanged" >&2
+    elif [ -z "$omarchy_m1n1_found" ]; then
+      echo "update-m1n1: cannot read the device tree's compatible strings from $omarchy_m1n1_dt; m1n1/boot.bin is unchanged" >&2
+    else
+      echo "update-m1n1: this image does not support a Mac whose device tree is compatible with ${omarchy_m1n1_found% }; m1n1/boot.bin is unchanged" >&2
+    fi
+    exit 1
+    ;;
+esac
+unset omarchy_m1n1_board omarchy_m1n1_found omarchy_m1n1_dt
+
+# As Aurora's installer sets it, the device trees are the ones the installed
+# linux-aurora package owns (pacman sorts them; a stale module directory can't
+# add an older one). A DTBS already set, by the caller or by omarchy-mac-boot's
+# device tree overlays, is kept. The `|| true` keeps `set -e` from ending
+# update-m1n1 when grep matches nothing; update-m1n1 then uses its own default.
+if [ -z "${DTBS:-}" ]; then
+  DTBS=$(pacman -Qlq linux-aurora 2>/dev/null | grep '/dtbs/[^/]*\.dtb$' || true)
+fi

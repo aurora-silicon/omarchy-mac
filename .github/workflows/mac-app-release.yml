@@ -49,9 +49,6 @@ defaults:
     shell: bash
 
 env:
-  # The draft release that holds the engine Packaging/build-app.sh pins, until
-  # the engine is hosted on mac.omarchy.org (tickets 07 and 13).
-  ENGINE_RELEASE: engine-v0.9.2-omarchy.28
   # Packaging/release/publish-app target; ticket 13 switches it to r2.
   APP_PUBLISH_TARGET: github-release
   # Catalogs the app reads: stopgap (this repository's catalog-<channel>
@@ -114,11 +111,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          name=$(sed -n 's/^engine_file_name="\(.*\)"$/\1/p' Packaging/build-app.sh)
-          digest=$(sed -n 's/^engine_digest="\([0-9a-f]\{64\}\)"$/\1/p' Packaging/build-app.sh)
-          [[ -n $name && -n $digest ]]
+          read -r name digest size < <(python3 Packaging/read-validation-engine.py)
+          [[ -n $name && -n $digest && -n $size ]]
+          release="engine-${name#installer-}"
+          release="${release%.tar.gz}"
           mkdir -p "$RUNNER_TEMP/engine"
-          gh release download "$ENGINE_RELEASE" -R "$GITHUB_REPOSITORY" -p "$name" -D "$RUNNER_TEMP/engine"
+          gh release download "$release" -R "$GITHUB_REPOSITORY" -p "$name" -D "$RUNNER_TEMP/engine"
           (cd "$RUNNER_TEMP/engine" && echo "$digest  $name" | sha256sum -c -)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

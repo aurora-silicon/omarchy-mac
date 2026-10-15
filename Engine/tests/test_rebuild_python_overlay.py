@@ -86,6 +86,8 @@ class UpstreamDeltaTests(unittest.TestCase):
         self.checkout.mkdir()
         self.patch = root / "0001-omarchy-engine-runtime.patch"
         self.patch.write_text(PATCH)
+        self.base_patch = root / "base-0001-omarchy-engine-runtime.patch"
+        self.base_patch.write_text(PATCH)
         self.git("init", "-q")
         self.write("asahi_firmware/bluetooth.py", b"old\n")
         self.write("src/main.py", MAIN_BASE)
@@ -114,7 +116,9 @@ class UpstreamDeltaTests(unittest.TestCase):
         return {"base_commit": self.base_commit, "files": list(records or [BLUETOOTH])}
 
     def rebuild(self, delta, archive_files):
-        return REBUILD.upstream_delta(self.checkout, delta, archive_with(archive_files), self.patch)
+        return REBUILD.upstream_delta(
+            self.checkout, delta, archive_with(archive_files), self.patch, self.base_patch
+        )
 
     def test_exact_python_delta_is_overlaid(self):
         self.commit()
@@ -160,6 +164,30 @@ class UpstreamDeltaTests(unittest.TestCase):
             self.rebuild(
                 self.delta(BLUETOOTH, MAIN),
                 {"asahi_firmware/bluetooth.py": b"old\n", "main.py": MAIN_BASE},
+            )
+
+    def test_base_keeps_the_patch_it_was_built_with(self):
+        # The current patch has moved on; the base is still rebuilt with its own patch and must
+        # match what the base engine shipped.
+        self.patch.write_text(PATCH.replace("+import omarchy_runtime", "+import omarchy_neo"))
+        self.write("src/main.py", MAIN_NEW)
+        self.commit()
+        current = MAIN_NEW.replace(b"import os\n", b"import os\nimport omarchy_neo\n")
+        overlay = self.rebuild(
+            self.delta(BLUETOOTH, {**MAIN, "sha256": digest(current)}),
+            {"asahi_firmware/bluetooth.py": b"old\n", "main.py": MAIN_BASE_PATCHED},
+        )
+        self.assertEqual(overlay["main.py"], current)
+
+    def test_base_rebuilt_with_the_current_patch_is_rejected(self):
+        self.patch.write_text(PATCH.replace("+import omarchy_runtime", "+import omarchy_neo"))
+        self.base_patch.write_text(PATCH.replace("+import omarchy_runtime", "+import omarchy_neo"))
+        self.write("src/main.py", MAIN_NEW)
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "patched upstream delta digest mismatch"):
+            self.rebuild(
+                self.delta(BLUETOOTH, MAIN),
+                {"asahi_firmware/bluetooth.py": b"old\n", "main.py": MAIN_BASE_PATCHED},
             )
 
     def test_patched_content_must_match_lock(self):

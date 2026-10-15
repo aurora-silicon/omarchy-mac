@@ -87,6 +87,7 @@
       "apple,j613": mac("MacBook Air 13-inch (M3, 2024)", "MacBook Air", "M3"),
       "apple,j615": mac("MacBook Air 15-inch (M3, 2024)", "MacBook Air", "M3"),
       "apple,j614s": mac("MacBook Pro 14-inch (M4 Pro, 2024)", "MacBook Pro", "M4"),
+      "apple,j700": mac("MacBook Neo (A18 Pro, 2026)", "MacBook Neo", "A18 Pro"),
     ]
   }
 #endif

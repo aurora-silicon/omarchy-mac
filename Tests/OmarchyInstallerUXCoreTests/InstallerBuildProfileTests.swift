@@ -40,6 +40,25 @@
       XCTAssertFalse(profile.startupSequence.contains("GRUB"))
     }
 
+    func testDeveloperBuildKeepsItsOwnStateAndHidesChannels() {
+      let profile = InstallerBuildProfile.resolve(infoDictionary: ["OmarchyDeveloperBuild": true])
+      XCTAssertEqual(profile, .developer)
+      XCTAssertTrue(profile.allowsEncryption)
+      XCTAssertFalse(profile.showsReleaseChannels)
+      XCTAssertEqual(profile.workspaceName, InstallerProductIdentity.appIdentifier + ".developer")
+      for other in [InstallerBuildProfile.standard, .privatePlain, .privateLimine] {
+        XCTAssertNotEqual(profile.workspaceName, other.workspaceName)
+      }
+      XCTAssertEqual(profile.startupSequence, "m1n1 → U-Boot → Limine → Omarchy")
+    }
+
+    func testPrivateFlagsOutrankTheDeveloperFlag() {
+      let profile = InstallerBuildProfile.resolve(infoDictionary: [
+        "OmarchyDeveloperBuild": true, "OmarchyPrivatePlainTest": true,
+      ])
+      XCTAssertEqual(profile, .privatePlain)
+    }
+
     func testConflictingFlagsRetainPlainRestriction() {
       let profile = InstallerBuildProfile.resolve(infoDictionary: [
         "OmarchyPrivatePlainTest": true, "OmarchyPrivateLimineTest": true,

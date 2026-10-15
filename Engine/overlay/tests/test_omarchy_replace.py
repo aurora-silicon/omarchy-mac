@@ -572,13 +572,50 @@ class RemoveExistingInstallTests(unittest.TestCase):
         )
         erased = [action[3] for action in actions[1:]]
         self.assertEqual(
-            erased, ["UUID-STUB", "UUID-ESP", "UUID-BOOT", "UUID-ROOT"]
+            erased, ["UUID-ROOT", "UUID-BOOT", "UUID-ESP"]
         )
         self.assertEqual(evidence["plan_digest"], plan.plan_digest)
         self.assertEqual(len(evidence["removed"]), 4)
         self.assertEqual(
             evidence["free_offset_bytes"], members[0].offset
         )
+
+    def test_container_conversion_uses_the_new_hfs_identity(self):
+        adapter, plan, actions, members = self._adapter_and_plan()
+        get_free = adapter.installer.dutil.get_partitions
+        calls = []
+
+        def partitions(disk):
+            calls.append(disk)
+            if len(calls) == 1:
+                return [part("disk0s3", members[0].offset, members[0].size,
+                             type="Apple_HFS", uuid="NEW-HFS-UUID")]
+            return get_free(disk)
+
+        adapter.installer.dutil.get_partitions = partitions
+        adapter.remove_existing_install(plan)
+        self.assertIn(("eraseVolume", "free", "none", "NEW-HFS-UUID"), actions)
+        self.assertNotIn(("eraseVolume", "free", "none", "UUID-STUB"), actions)
+
+    def test_container_conversion_refuses_an_unexpected_remaining_partition(self):
+        adapter, plan, actions, members = self._adapter_and_plan()
+        adapter.installer.dutil.get_partitions = lambda disk: [
+            part("disk0s3", members[0].offset, members[0].size,
+                 type="Apple_APFS", uuid="UNEXPECTED")]
+        with self.assertRaisesRegex(omarchy_asahi.AsahiAdapterError,
+                                    "unexpected partition"):
+            adapter.remove_existing_install(plan)
+        self.assertNotIn(("eraseVolume", "free", "none", "UNEXPECTED"), actions)
+
+    def test_rejected_container_deletion_preserves_linux_and_esp(self):
+        adapter, plan, actions, members = self._adapter_and_plan()
+        def rejected(*args, **kwargs):
+            actions.append(args)
+            raise RuntimeError("container deletion refused")
+        adapter.installer.dutil.action = rejected
+        with self.assertRaisesRegex(RuntimeError, "deletion refused"):
+            adapter.remove_existing_install(plan)
+        self.assertEqual(actions, [("apfs", "deleteContainer", "disk4")])
 
     def test_removal_refuses_a_drifted_identity(self):
         adapter, plan, actions, members = self._adapter_and_plan()

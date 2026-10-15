@@ -1,6 +1,7 @@
 #if os(macOS)
   import Foundation
   import Darwin
+  import RecoveryAccountCore
 
   public enum EngineHandoffOperation: String, Equatable, Sendable {
     case install
@@ -145,6 +146,7 @@
     public nonisolated var isRetiring: Bool { retirement.isSet }
     private var completedInstallPlan: CompletedEngineInstallPlan?
     private var installConfConsumed = false
+    private var recoveryAccountTargets: [String: (CompletedRecoveryInstallation, Date)] = [:]
     private var removalPlan:
       (ticket: OmarchyRemovalTicket, plan: OmarchyRemovalPlan, expires: Date)?
 
@@ -184,6 +186,49 @@
       self.removalAdminValidator = removalAdminValidator
       self.espDisks = espDisks
       self.selfUninstaller = selfUninstaller
+    }
+
+    public func recoveryAccount(action: String, ticket: String, username: String, password: Data)
+      async throws -> RecoveryAccountReply
+    {
+      guard !isRetiring else { throw ClosedEngineHelperError.retiring }
+      guard ["inspect", "handoff"].contains(action) else {
+        throw ClosedEngineHelperError.invalidOperation
+      }
+      try work.beginJob()
+      defer { work.endJob() }
+      let directory = workingDirectory
+      if action == "inspect" {
+        guard
+          let completed = try await Task.detached(operation: {
+            try RecoveryAccountHandoff.discover(in: directory)
+          }).value
+        else { return RecoveryAccountReply() }
+        let id = UUID().uuidString
+        recoveryAccountTargets = recoveryAccountTargets.filter { $0.value.1 > Date() }
+        recoveryAccountTargets[id] = (completed, Date().addingTimeInterval(1800))
+        let record = try await Task.detached {
+          try RecoveryAccountInstaller.inspect(completed.target)
+        }.value
+        return RecoveryAccountReply(ticket: id, target: completed.target, record: record)
+      }
+      guard let (approved, expiry) = recoveryAccountTargets[ticket], expiry > Date(),
+        let observed = try await Task.detached(operation: {
+          try RecoveryAccountHandoff.discover(in: directory, binding: approved.binding)
+        }).value,
+        observed == approved
+      else {
+        throw AccountSetupFailure(
+          "The account target changed or expired. Reopen this installer to inspect it again.")
+      }
+      let record: RecoveryAccountRecord? = try await Task.detached {
+        try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
+        try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
+        return try RecoveryAccountInstaller.inspect(observed.target)
+
+      }.value
+      recoveryAccountTargets[ticket] = (observed, Date().addingTimeInterval(1800))
+      return RecoveryAccountReply(ticket: ticket, target: observed.target, record: record)
     }
 
     public func removal(
@@ -536,6 +581,25 @@
 
     public func helperVersion(reply: @escaping @Sendable (String) -> Void) {
       reply(server.isRetiring ? "" : version)
+    }
+
+    public func recoveryAccount(
+      action: String, ticket: String, username: String, password: Data,
+      reply: @escaping @Sendable (Data?, NSError?) -> Void
+    ) {
+      let server = server
+      Task {
+        do {
+          let result = try await server.recoveryAccount(
+            action: action, ticket: ticket, username: username, password: password)
+          reply(try JSONEncoder().encode(result), nil)
+        } catch {
+          let message =
+            (error as? AccountSetupFailure)?.message
+            ?? "The helper could not finish the recovery account setup. Your installation has been preserved."
+          reply(try? JSONEncoder().encode(RecoveryAccountReply(message: message)), nil)
+        }
+      }
     }
 
     /// Answers at once: yes if no job runs and no other app holds the

@@ -35,18 +35,62 @@ index 21031fd..76c0935 100755
  
  echo "Packaging installer..."
 diff --git a/src/main.py b/src/main.py
-index e6407ba..0ecebb5 100644
+index 88dd2ab..47aad7c 100644
 --- a/src/main.py
 +++ b/src/main.py
-@@ -4,6 +4,7 @@ import os, os.path, shlex, subprocess, sys, time, termios, json, getpass, report
+@@ -4,11 +4,16 @@ import os, os.path, shlex, subprocess, sys, time, termios, json, getpass, report
  from dataclasses import dataclass
  
  import system, osenum, stub, diskutil, osinstall, asahi_firmware, m1n1, bugs
++import omarchy_firmware
 +import omarchy_runtime
  from util import *
  
  PART_ALIGN = psize("1MiB")
-@@ -128,7 +129,10 @@ IPSW_VERSIONS = [
+ 
+ STUB_SIZE = align_down(psize("2.5GB"), PART_ALIGN)
++# A stub on macOS 26 firmware holds its decrypted recoveryOS and two sets of
++# personalized boot objects, which do not fit in 2.5GB.
++STUB_SIZE_MACOS26 = align_down(psize("6GB"), PART_ALIGN)
+ 
+ # Minimum free space to leave when resizing, to allow for OS upgrades
+ MIN_FREE_OS = psize("38GB")
+@@ -49,9 +54,11 @@ CHIP_MIN_VER = {
+     0x6030: "14.8.3",   # T6030, M3 Pro
+     0x6031: "14.8.3",   # T6031, M3 Max (16-core)
+     0x6034: "14.8.3",   # T6034, M3 Max (14-core)
++    0x8140: "26.6",     # T8140, A18 Pro
+ }
+ 
+ DEVICES = {
++    "j700ap":   Device("26.6", False),  # MacBook Neo (A18 Pro, 2026)
+     "j274ap":   Device("11.0", False),  # Mac mini (M1, 2020)
+     "j293ap":   Device("11.0", False),  # MacBook Pro (13-inch, M1, 2020)
+     "j313ap":   Device("11.0", False),  # MacBook Air (M1, 2020)
+@@ -95,6 +102,22 @@ if os.environ.get("ALLOW_VM", None):
+     DEVICES["vma2macosap"] = Device("12.0", False)
+ 
+ IPSW_VERSIONS = [
++    IPSW("26.6",
++         "26.0",
++         "mBoot-18000.161.9",
++         "25.7.72.0.0,0",
++         False,
++         ["j700ap"],
++         "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-65618/10445B26-DE2C-43EC-9149-0A831602E74B/UniversalMac_26.6_25G72_Restore.ipsw"),
++    # Optional for the M3 Airs and Neo: it is chosen only when
++    # the payload's supported_fw names no other version they can use.
++    IPSW("26.6.2",
++         "26.0",
++         "mBoot-18000.161.10",
++         "25.7.83.0.0,0",
++         False,
++         ["j613ap", "j615ap", "j700ap"],
++         "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw"),
+     IPSW("12.3.1",
+          "12.1",
+          "iBoot-7459.101.3",
+@@ -128,7 +151,10 @@ IPSW_VERSIONS = [
  class InstallerMain:
      def __init__(self, version):
          self.version = version
@@ -57,7 +101,31 @@ index e6407ba..0ecebb5 100644
          self.credentials_validated = False
          self.expert = False
          self.ipsw = None
-@@ -812,18 +816,15 @@ class InstallerMain:
+@@ -585,20 +611,9 @@ class InstallerMain:
+         self.step2(report=True)
+ 
+     def choose_ipsw(self, supported_fw=None):
+-        sys_iboot = split_ver(self.sysinfo.sys_firmware)
+-        sys_macos = split_ver(self.sysinfo.macos_ver)
+-        sys_sfr = split_ver(self.sysinfo.sfr_full_ver)
+-        chip_min = split_ver(CHIP_MIN_VER.get(self.sysinfo.chip_id, "0"))
+-        device_min = split_ver(self.device.min_ver)
+-        minver = [ipsw for ipsw in IPSW_VERSIONS
+-                 if split_ver(ipsw.version) >= max(chip_min, device_min)
+-                 and (supported_fw is None or ipsw.version in supported_fw)
+-                 and (ipsw.devices is None or self.sysinfo.device_class in ipsw.devices)]
+-        avail = [ipsw for ipsw in minver
+-                 if split_ver(ipsw.min_iboot) <= sys_iboot
+-                 and split_ver(ipsw.min_macos) <= sys_macos
+-                 and split_ver(ipsw.min_sfr) <= sys_sfr
+-                 and (not ipsw.expert_only or self.expert)]
++        minver, avail = omarchy_firmware.available_ipsws(
++            IPSW_VERSIONS, CHIP_MIN_VER, self.sysinfo, self.device,
++            supported_fw, self.expert, split_ver)
+ 
+         minver.sort(key=lambda ipsw: split_ver(ipsw.version))
+ 
+@@ -812,18 +827,15 @@ class InstallerMain:
          else:
              target = resizable[0]
  
@@ -85,7 +153,7 @@ index e6407ba..0ecebb5 100644
  
          min_perc = 100 * min_size / total
  
-@@ -922,6 +923,25 @@ class InstallerMain:
+@@ -922,6 +934,25 @@ class InstallerMain:
  
          return True
  
@@ -111,7 +179,7 @@ index e6407ba..0ecebb5 100644
      def action_select_disk(self):
          choices = {"1": "Internal storage"}
  
-@@ -939,21 +959,22 @@ class InstallerMain:
+@@ -939,21 +970,22 @@ class InstallerMain:
          return True
  
      def main(self):
@@ -147,7 +215,7 @@ index e6407ba..0ecebb5 100644
              p_message("By default, this installer will hide certain advanced options that")
              p_message("are only useful for Asahi Linux developers. You can enable expert mode")
              p_message("to show them. Do not enable this unless you know what you are doing.")
-@@ -970,7 +991,19 @@ class InstallerMain:
+@@ -970,7 +1002,19 @@ class InstallerMain:
  
          self.chip_min_ver = CHIP_MIN_VER.get(self.sysinfo.chip_id, None)
          self.device = DEVICES.get(self.sysinfo.device_class, None)
@@ -168,7 +236,7 @@ index e6407ba..0ecebb5 100644
              p_error("This device is not supported yet!")
              p_error("Please check out the Asahi Linux Blog for updates on device support:")
              print()
-@@ -1126,6 +1159,15 @@ class InstallerMain:
+@@ -1126,6 +1170,19 @@ class InstallerMain:
  
          if self.cur_os is None and self.sysinfo.boot_mode != "macOS":
              self.cur_os = default_os
@@ -177,14 +245,18 @@ index e6407ba..0ecebb5 100644
 +                installer=self,
 +                free_parts=parts_free if is_gpt else [],
 +                resizable_parts=parts_resizable if is_gpt else [],
-+                stub_size=STUB_SIZE,
++                stub_size=omarchy_firmware.stub_size(
++                    IPSW_VERSIONS, CHIP_MIN_VER, self.sysinfo, self.device,
++                    self.data, split_ver,
++                    default_size=STUB_SIZE,
++                    macos26_size=STUB_SIZE_MACOS26),
 +                part_align=PART_ALIGN,
 +            )
 +            return False
          self.check_cur_os()
  
          actions = {}
-@@ -1226,7 +1268,11 @@ if __name__ == "__main__":
+@@ -1226,7 +1283,11 @@ if __name__ == "__main__":
          logging.exception("Process execution failed")
          p_warning("If you need to file a bug report, please attach the log file:")
          p_warning(f"  {os.getcwd()}/installer.log")

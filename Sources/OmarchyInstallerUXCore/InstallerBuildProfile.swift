@@ -7,6 +7,9 @@
     case standard
     case privatePlain
     case privateLimine
+    /// For bring-up teams: its sealed catalog may admit Macs the public
+    /// catalogs don't, so its state never mixes with theirs.
+    case developer
 
     public static var current: Self {
       resolve(infoDictionary: Bundle.main.infoDictionary ?? [:])
@@ -20,6 +23,9 @@
       if infoDictionary["OmarchyPrivateLimineTest"] as? Bool == true {
         return .privateLimine
       }
+      if infoDictionary["OmarchyDeveloperBuild"] as? Bool == true {
+        return .developer
+      }
       return .standard
     }
 
@@ -31,12 +37,13 @@
       case .standard: InstallerProductIdentity.appIdentifier
       case .privatePlain: InstallerProductIdentity.appIdentifier + ".private-m3-20260922"
       case .privateLimine: InstallerProductIdentity.appIdentifier + ".private-limine-20260922"
+      case .developer: InstallerProductIdentity.appIdentifier + ".developer"
       }
     }
 
     public var startupSequence: String {
       switch self {
-      case .standard, .privateLimine: "m1n1 → U-Boot → Limine → Omarchy"
+      case .standard, .privateLimine, .developer: "m1n1 → U-Boot → Limine → Omarchy"
       case .privatePlain: "m1n1 → U-Boot → GRUB → Omarchy"
       }
     }

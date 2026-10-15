@@ -19,7 +19,6 @@ struct OnePageInstallerView: View {
   /// The size the owner chose for Omarchy, kept through installation so the
   /// header names it instead of the most Omarchy could take.
   @State private var chosenOmarchyBytes: UInt64?
-  @State private var contentHeight: CGFloat = 400
   /// Which channel this Mac reads. Owned by the scene so the banner always
   /// names the channel the next preparation will actually fetch; `nil` when
   /// the bundle has no release descriptor to fetch from.
@@ -44,30 +43,14 @@ struct OnePageInstallerView: View {
   }
 
   var body: some View {
-    ScrollView {
-      VStack(spacing: 0) {
-        OmarchyWordmark()
-          .frame(maxWidth: 400)
-          .padding(.top, 24)
-          .padding(.bottom, 16)
-        header.padding(.bottom, 20)
-        VStack(alignment: .leading, spacing: 14) { stage }
-          .frame(maxWidth: 560)
-        HStack(spacing: 16) { actions }
-          .padding(.top, 24)
-          .padding(.bottom, 24)
+    Group {
+      if let account = session.recoveryAccount, let target = account.target {
+        RecoveryHandoffView(volumeName: target.volumeName, session: session)
+      } else if case .awaitingRecovery = session.phase {
+        RecoveryHandoffView(volumeName: "Omarchy", session: session.isSimulation ? nil : session)
+      } else {
+        installerPage
       }
-      .frame(maxWidth: .infinity)
-      .padding(.horizontal, 40)
-      .background {
-        GeometryReader { geometry in
-          Color.clear.preference(key: InstallerContentHeight.self, value: geometry.size.height)
-        }
-      }
-    }
-    .frame(height: min(contentHeight, 680))
-    .onPreferenceChange(InstallerContentHeight.self) { height in
-      if height > 0 { contentHeight = height }
     }
     .foregroundStyle(OmarchyTheme.text)
     .background(OmarchyTheme.window)
@@ -132,6 +115,16 @@ struct OnePageInstallerView: View {
         },
         onCancel: { showsRecoveryRetryConfirmation = false }
       )
+    }
+  }
+
+  private var installerPage: some View {
+    InstallerPageLayout {
+      header
+    } content: {
+      VStack(alignment: .leading, spacing: 18) { stage }
+    } actions: {
+      HStack(spacing: 16) { actions }
     }
   }
 
@@ -329,9 +322,11 @@ struct OnePageInstallerView: View {
         .foregroundStyle(OmarchyTheme.accent)
 
     case .awaitingRecovery:
-      Button(PlainLanguage.recoveryShutDown) { showsShutdownConfirmation = true }
-        .omarchyPrimaryButton()
-        .keyboardShortcut(.defaultAction)
+      if !session.isSimulation {
+        Button(PlainLanguage.recoveryShutDown) { showsShutdownConfirmation = true }
+          .omarchyPrimaryButton()
+          .keyboardShortcut(.defaultAction)
+      }
 
     case .done:
       Button("Close") { NSApplication.shared.terminate(nil) }
@@ -647,7 +642,7 @@ private struct PrefetchStrip: View {
   private var accessory: String? {
     switch state {
     case .downloading(let completed, let total), .paused(let completed, let total):
-      total > 0
+      total > 0 && completed < total
         ? "\(PlainLanguage.bytes(completed)) of \(PlainLanguage.bytes(total))" : nil
     default:
       nil
@@ -693,7 +688,7 @@ private struct DownloadPanel: View {
   @State private var lastTotal: UInt64 = 0
 
   private var package: AssetProgressRow? {
-    update.rows.first { $0.role == "payload" } ?? update.rows.first
+    update.rows.first { $0.role == "payload" }
   }
 
   var body: some View {
@@ -738,12 +733,13 @@ private struct DownloadPanel: View {
   }
 
   private var accessory: String? {
-    let total = (package?.totalBytes ?? 0) > 0 ? package!.totalBytes : lastTotal
-    guard total > 0 else {
+    guard update.stage == .downloading, let package,
+      package.totalBytes > 0, package.bytesCompleted < package.totalBytes
+    else {
       return nil
     }
-    let completed = (package?.totalBytes ?? 0) > 0 ? package!.bytesCompleted : lastCompleted
-    return "\(PlainLanguage.bytes(completed)) of \(PlainLanguage.bytes(total))"
+    return
+      "\(PlainLanguage.bytes(package.bytesCompleted)) of \(PlainLanguage.bytes(package.totalBytes))"
   }
 }
 
@@ -849,19 +845,20 @@ private struct DiskSplitPanel: View {
           }
           Text("Omarchy will use the space selected above.")
             .omarchyHelpText()
-          if isBusy {
-            // A released divider re-plans through the engine, which takes a
-            // moment; say so instead of leaving the bar and the tick inert.
-            HStack(spacing: 8) {
-              ProgressView()
-                .controlSize(.small)
-              Text(PlainLanguage.replanning)
-                .font(OmarchyTheme.detail)
-                .foregroundStyle(OmarchyTheme.secondaryText)
-            }
-          }
+            .padding(.trailing, 28)
         }
         .padding(.vertical, 4)
+      }
+      .overlay(alignment: .bottomTrailing) {
+        if isBusy {
+          ProgressView()
+            .controlSize(.small)
+            .frame(width: 16, height: 16)
+            .padding(.trailing, 14)
+            .padding(.bottom, 16)
+            .accessibilityLabel(PlainLanguage.replanning)
+            .help(PlainLanguage.replanning)
+        }
       }
       ForEach(plan.spaceCautions(for: displayedOmarchyBytes), id: \.self) { caution in
         Text(caution).font(OmarchyTheme.body).foregroundStyle(OmarchyTheme.caution)
@@ -1028,12 +1025,5 @@ private struct SizeEditButtonStyle: ButtonStyle {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
     }
-  }
-}
-
-private struct InstallerContentHeight: PreferenceKey {
-  static let defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = max(value, nextValue())
   }
 }

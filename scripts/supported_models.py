@@ -5,6 +5,10 @@
 pinned engine can inspect. A catalog that offers any Mac offers all of them,
 so a release or preview can never ship a subset by accident. A channel with no
 Mac release yet (an empty catalog) is the only exception. `refused` names each
+board that stays out and why. `developer` names each board only a developer
+build's sealed catalog may add, with its own image; channel catalogs never
+carry one, so check-catalog rejects it like any unknown board.
+
 board that stays out and why. `untested` marks the supported Macs that no
 image has been installed on yet (the M3 generation), with the note a catalog
 shows for each.
@@ -30,8 +34,15 @@ def load(path: Path = MANIFEST) -> tuple[list[str], dict[str, str]]:
         raise SystemExit(f"{path}: supported lists a Mac twice")
     if set(supported) & set(refused):
         raise SystemExit(f"{path}: a Mac is both supported and refused")
+    if set(document.get("developer", {})) & (set(supported) | set(refused)):
+        raise SystemExit(f"{path}: a developer board is also supported or refused")
     return supported, refused
 
+
+def developer_boards(path: Path = MANIFEST) -> dict[str, str]:
+    """The boards only a developer build's sealed catalog may add, with why."""
+    load(path)
+    return dict(json.loads(path.read_text()).get("developer", {}))
 
 def untested(path: Path = MANIFEST) -> dict[str, str]:
     """Supported Macs no Omarchy image has been installed on yet, each with

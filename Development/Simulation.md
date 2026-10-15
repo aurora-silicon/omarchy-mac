@@ -14,6 +14,8 @@ Requires Xcode and XcodeBuildMCP. The launcher builds the debug app and supplies
 
 ## Controls
 
+All simulation controls live in the **Simulation** menu bar item. They are absent from the release app and when simulation is not enabled. The installer content fills the resizable window; there is no simulation dashboard above it.
+
 - **Scenario** selects one of 27 outcomes and resets the simulated session. `--simulate-scenario=NAME` (the scenario's raw name, for example `noMacRelease`) opens on that scenario, and `--simulate-continue` presses Continue once, so a screen can be captured without driving the window.
 - **Reset simulation** abandons only the in-memory run, including a stopped or uncertain outcome.
 - **Slow events** makes each event take two seconds; changing speed resets the session.
@@ -71,7 +73,7 @@ Simulation proves presentation and session behavior. It does not prove hardware 
 ## Removal
 
 Choose **Installation → Remove Omarchy…** to dry-test removal independently of
-installation. The popup's **Removal test** selector covers nine outcomes. Type
+installation. The **Simulation → Removal Scenario** menu selects the removal outcome. Type
 `delete omarchy installation and data` exactly to enable removal. No real password
 is requested in simulation. See [Removal.md](Removal.md) for the supported disk
 layout, recovery behavior and test coverage.
@@ -80,3 +82,9 @@ The **Disk alignment · whole GB unchanged** scenario reproduces normal 1 MiB
 partition alignment. Selecting 180 GB must keep 180 GB displayed without a
 capacity-limit warning. The acknowledgement still resets. Actual whole-GB changes
 use “Space for Omarchy changed from … to …” without assuming why it changed.
+
+## Recovery account preview
+
+**Simulation → Preview Recovery Account…** opens the proposed final account step directly. The successful simulated installation also ends at this form. It asks for a new short username, password and confirmation; validation follows the documented native account creator's username format and requires a nonempty, matching password. The GUI imposes no additional minimum length; live creation must report native password-policy errors. Continuing clears both password fields and shows the Startup Disk authorization instructions. **Open Startup Disk** displays a simulation notice; it does not open Settings or reboot. **Reset Simulation** returns to the ordinary installer start.
+
+This is a presentation prototype. It does not create an account or grant ownership, and the live installer keeps its existing Recovery handoff. Production integration requires the resumable target-account creation and Preboot finalization described in Aurora's `work/sep-stub-account-20261011/README.md`; the original script is not a complete resume/finalization backend.

@@ -42,7 +42,7 @@ enum OmarchyTheme {
 
   static let cardRadius: CGFloat = 8
   static let buttonRadius: CGFloat = 6
-  static let buttonHeight: CGFloat = 32
+  static let buttonHeight: CGFloat = 34
   static let buttonTracking: CGFloat = 0.35
   /// Extra leading for small help text, which often wraps: about 1.4 times
   /// its size instead of SF Mono's default 1.2.
@@ -53,15 +53,15 @@ enum OmarchyTheme {
   // Try Omarchy's scale, all in the system monospaced face. Views pick a role
   // and never set their own point size.
   static let title = mono(22, .bold)
-  static let heading = mono(13, .bold)
+  static let heading = mono(15, .bold)
   /// Try Omarchy's subtitle line ("OMARCHY  ·  APPLE SILICON"): short facts
   /// drawn uppercase in the accent colour.
-  static let eyebrow = mono(10, .semibold)
-  static let body = mono(11)
-  static let detail = mono(10)
-  static let control = mono(11, .medium)
-  static let button = mono(11, .bold)
-  static let badge = mono(10, .bold)
+  static let eyebrow = mono(11, .semibold)
+  static let body = mono(13)
+  static let detail = mono(11)
+  static let control = mono(12, .medium)
+  static let button = mono(12, .bold)
+  static let badge = mono(11, .bold)
   static let technical = mono(10)
   static let numeral = mono(13, .bold)
 

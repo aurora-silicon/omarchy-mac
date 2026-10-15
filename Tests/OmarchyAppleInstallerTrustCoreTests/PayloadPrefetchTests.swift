@@ -5,6 +5,22 @@
   @testable import OmarchyAppleInstallerTrustCore
 
   final class PayloadPrefetchTests: XCTestCase {
+    func testBundledPayloadIgnoresUnavailableAndMeteredNetwork() async throws {
+      let network = MockNetworkPath(
+        InstallerNetworkPathSnapshot(isSatisfied: false, isExpensive: true, isConstrained: true))
+      let downloader = MockPrefetchDownloader(delayNanoseconds: 100_000_000)
+      let controller = PayloadPrefetchController(
+        network: network, freeSpace: MockFreeSpace(bytes: 8_000_000_000),
+        keepAwake: MockKeepAwake(), requiresNetwork: false)
+      await controller.start(requiredBytes: 100, downloader: downloader)
+      network.publish(
+        InstallerNetworkPathSnapshot(isSatisfied: true, isExpensive: true, isConstrained: true))
+      try await controller.waitUntilVerified()
+      let state = await controller.currentState()
+      XCTAssertEqual(state, .verified)
+      XCTAssertEqual(downloader.starts, 1)
+    }
+
     func testFinishedNetworkMonitorDoesNotVerifyUnfinishedWork() async throws {
       let controller = PayloadPrefetchController(
         network: FinishedNetworkPath(),

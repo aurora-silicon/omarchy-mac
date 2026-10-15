@@ -157,14 +157,25 @@ class UpstreamDeltaLockTests(unittest.TestCase):
                 delta_record("src/main.py", True),
             ),
             PATCH,
+            PATCH,
         )
 
     def test_repository_lock_matches_the_downstream_patch(self):
         lock = json.loads((ENGINE_ROOT / "source-lock.json").read_text())
         patch = ENGINE_ROOT / lock["downstream_overlay"]["patch"]["path"]
+        base_patch = ENGINE_ROOT / lock["incremental_build"]["base_patch"]["path"]
         VERIFY_SOURCE_LOCK.require_upstream_delta(
-            lock["incremental_build"]["upstream_delta"], patch.read_text()
+            lock["incremental_build"]["upstream_delta"],
+            patch.read_text(),
+            base_patch.read_text(),
         )
+
+    def test_patched_file_missing_from_the_base_patch_is_rejected(self):
+        base_patch = PATCH.split("diff --git a/src/main.py")[0]
+        with self.assertRaisesRegex(ValueError, "base patch coverage"):
+            VERIFY_SOURCE_LOCK.require_upstream_delta(
+                delta(delta_record("src/main.py", True)), PATCH, base_patch
+            )
 
     def test_patch_paths_are_read_from_git_headers(self):
         self.assertEqual(
@@ -174,13 +185,13 @@ class UpstreamDeltaLockTests(unittest.TestCase):
     def test_patched_file_declared_unpatched_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "patch coverage"):
             VERIFY_SOURCE_LOCK.require_upstream_delta(
-                delta(delta_record("src/main.py", False)), PATCH
+                delta(delta_record("src/main.py", False)), PATCH, PATCH
             )
 
     def test_unpatched_file_declared_patched_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "patch coverage"):
             VERIFY_SOURCE_LOCK.require_upstream_delta(
-                delta(delta_record("asahi_firmware/bluetooth.py", True)), PATCH
+                delta(delta_record("asahi_firmware/bluetooth.py", True)), PATCH, PATCH
             )
 
     def test_unpatched_file_with_distinct_shipped_digest_is_rejected(self):
@@ -192,19 +203,20 @@ class UpstreamDeltaLockTests(unittest.TestCase):
                     )
                 ),
                 PATCH,
+                PATCH,
             )
 
     def test_non_python_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Python only"):
             VERIFY_SOURCE_LOCK.require_upstream_delta(
-                delta(delta_record("build.sh", True)), PATCH
+                delta(delta_record("build.sh", True)), PATCH, PATCH
             )
 
     def test_record_without_upstream_digests_is_rejected(self):
         record = delta_record("asahi_firmware/bluetooth.py", False)
         del record["upstream_sha256"]
         with self.assertRaisesRegex(ValueError, "file record"):
-            VERIFY_SOURCE_LOCK.require_upstream_delta(delta(record), PATCH)
+            VERIFY_SOURCE_LOCK.require_upstream_delta(delta(record), PATCH, PATCH)
 
     def test_duplicate_or_escaping_paths_are_rejected(self):
         record = delta_record("asahi_firmware/bluetooth.py", False)
@@ -213,11 +225,11 @@ class UpstreamDeltaLockTests(unittest.TestCase):
             [delta_record("../main.py", False)],
         ):
             with self.assertRaisesRegex(ValueError, "upstream delta path"):
-                VERIFY_SOURCE_LOCK.require_upstream_delta(delta(*records), PATCH)
+                VERIFY_SOURCE_LOCK.require_upstream_delta(delta(*records), PATCH, PATCH)
 
     def test_empty_delta_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "upstream delta lock record"):
-            VERIFY_SOURCE_LOCK.require_upstream_delta(delta(), PATCH)
+            VERIFY_SOURCE_LOCK.require_upstream_delta(delta(), PATCH, PATCH)
 
 
 if __name__ == "__main__":

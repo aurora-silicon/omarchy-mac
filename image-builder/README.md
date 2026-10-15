@@ -91,6 +91,27 @@ Inspection is not boot qualification. After the owner's first login on the Mac, 
 - `/var/lib/omarchy/image/deferred-steps` is gone: the deferred hardware setup finished (if not, `/var/log/omarchy-install.log` names the step it stopped at)
 - `pacman -Q alsa-ucm-conf-asahi asahi-audio` lists both, and in the owner's session `wpctl status` shows the model's `audio_effect.<model>-convolver` (on the M2 Max, `j416-convolver`) as the default sink, not a `stereo-fallback` one
 
+## Neo external-display defaults
+
+The Aurora J700 stack uses the ordinary `t8140-j700.dtb` for external displays.
+The kernel supplies the native bandwidth offsets from its T8140 hardware
+profile, and m1n1 enables the external controller only after validating the
+inherited firmware and its dependency group. Installer images must carry both
+sides of this handoff; no `appledrm.experimental_h17p_external*` command-line
+arguments or replacement test DTB are required.
+
+The first qualified defaults are Linux `d08fd52e1619` and m1n1 `f3ac615eb137`.
+Neo booted the packaged stack with no display arguments and automatically
+activated a Samsung Odyssey G81SF at 3840×2160, 60 Hz while retaining its
+internal display. Higher refresh rates, other monitors, reversed cable
+orientation and suspend need separate qualification. Keep the firmware's mode
+and bandwidth validation intact.
+
+Neo's external-display bandwidth ceiling is equivalent to 3840×2160 at 60 Hz.
+2560×1440 at 120 Hz and 1920×1080 at 240 Hz fit that budget; modes exceeding
+the 4K60 budget must remain filtered. These lower-resolution refresh rates
+have not yet been qualified by this installer's hardware tests.
+
 ## Build identity
 
 A booted Mac names the build it came from in `/var/lib/omarchy/image/target` (`target.booted` after its first boot; `@factory` carries the same bytes, so a factory reset keeps it). After the provenance lines above, the builder appends, once the package set is recorded and before `@factory` is sealed:

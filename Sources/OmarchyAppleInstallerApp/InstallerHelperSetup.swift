@@ -5,14 +5,20 @@ import OmarchyInstallerUXCore
 /// The app's one way to check and install its privileged helper, shared by
 /// the install flow and the removal sheet. It keeps no credential.
 enum InstallerHelperSetup {
-  /// Whether this build declares its helper for `SMJobBless`. Builds signed
-  /// ad hoc leave it out and rely on the installer package instead.
-  static let canInstall = SMJobBlessInstallerHelperBlesser.isDeclared()
+  /// Builds that declare their helper for `SMJobBless` install it with that;
+  /// builds signed ad hoc, which `SMJobBless` refuses, install it themselves.
+  static let declared = SMJobBlessInstallerHelperBlesser.isDeclared()
+  static let canInstall = declared || AdHocInstallerHelperBlesser.isAvailable()
+
+  private static var blesser: any InstallerHelperBlessing {
+    if declared { return SMJobBlessInstallerHelperBlesser() }
+    if canInstall { return AdHocInstallerHelperBlesser() }
+    return UnavailableInstallerHelperBlesser()
+  }
 
   private static let provisioner = InstallerHelperProvisioner(
     probe: SystemInstallerHelperProbe(submitter: submitter),
-    blesser: canInstall
-      ? SMJobBlessInstallerHelperBlesser() : UnavailableInstallerHelperBlesser(),
+    blesser: blesser,
     credentialValidator: OpenDirectoryMachineOwnerCredentialValidator(),
     administrators: OpenDirectoryAdministratorMembership(),
     bundledHelperVersion: InstallerHelperProvisioner.bundledHelperVersion(),

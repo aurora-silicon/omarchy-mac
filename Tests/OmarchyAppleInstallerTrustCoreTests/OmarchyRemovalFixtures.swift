@@ -127,6 +127,18 @@
         ], installs: [convergedInstall])
     }
 
+    /// The MacBook Neo layout: macOS 26 firmware needs a 6 GB stub.
+    static func neoMacos26() -> RemovalSnapshot {
+      snapshot(
+        macOSSize: 194_332_676_096,
+        [
+          .part(convergedInstall.stub, "Apple_APFS", 5_999_951_872),
+          .part(convergedInstall.esp, "EFI", 524_288_000, name: "EFI - OMARC"),
+          .part(convergedInstall.linux[0], "Linux Filesystem", 2_147_483_648),
+          .part(convergedInstall.linux[1], "Linux Filesystem", 256_798_965_760),
+        ], installs: [convergedInstall])
+    }
+
     static let alarmInstall = Install(
       name: "Asahi Alarm Minimal", stub: id(3), esp: id(4), linux: [id(5)], group: id(600))
 

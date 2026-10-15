@@ -73,7 +73,9 @@ struct OmarchyAppleInstallerApp: App {
   @State private var showsRemoval = false
   @State private var removalInProgress = false
   @State private var removalNeedsReview = false
-  @State private var simulationDark = true
+  #if DEBUG
+    @State private var simulation = SimulationControls()
+  #endif
   @State private var generation = UUID()
 
   private var isSimulation: Bool {
@@ -88,8 +90,7 @@ struct OmarchyAppleInstallerApp: App {
   private var installerContent: some View {
     #if DEBUG
       if isSimulation {
-        SimulationDashboard(
-          onSessionAvailable: rememberSession, onColorSchemeChange: { simulationDark = $0 })
+        SimulationDashboard(controls: simulation, onSessionAvailable: rememberSession)
       } else {
         liveContent
       }
@@ -125,15 +126,7 @@ struct OmarchyAppleInstallerApp: App {
               "Removal needs review", systemImage: "externaldrive.badge.exclamationmark",
               description: Text(
                 "Check the removal record and disk layout before changing any disks."))
-            #if DEBUG
-              if isSimulation {
-                Button("Reset simulation") {
-                  removalNeedsReview = false
-                  generation = UUID()
-                }
-                .omarchySecondaryButton().padding(.bottom, 24)
-              }
-            #endif
+
           }
         } else {
           installerContent
@@ -155,23 +148,62 @@ struct OmarchyAppleInstallerApp: App {
           onBusyChanged: { busy in
             removalInProgress = busy
             InstallerApplicationDelegate.removalInProgress = busy
-          }, onClose: { showsRemoval = false }, onRequiresReview: { removalNeedsReview = true })
+            for window in NSApp.windows where window.sheetParent == nil {
+              window.standardWindowButton(.closeButton)?.isEnabled = !busy
+            }
+          }, onClose: { showsRemoval = false }, onRequiresReview: { removalNeedsReview = true },
+          simulationScenario: previewRemovalScenario)
       }
-      .preferredColorScheme(isSimulation ? (simulationDark ? .dark : .light) : nil)
-      .frame(minWidth: 640)
+      .preferredColorScheme(previewColorScheme)
+      .frame(minWidth: 640, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
+      .ignoresSafeArea(.container, edges: .top)
       .omarchyTypography()
       .tint(OmarchyTheme.accent)
       // The window itself takes the theme colour, title bar included, so the
       // translucent system title bar never tints from the wallpaper behind.
       .containerBackground(OmarchyTheme.window, for: .window)
     }
-    .defaultSize(width: 780, height: 600)
-    .windowResizability(.contentSize)
+    .defaultSize(width: 780, height: 660)
+    .windowResizability(.contentMinSize)
     .windowStyle(.hiddenTitleBar)
     .commands {
+      #if DEBUG
+        if isSimulation {
+          CommandMenu("Simulation") {
+            Picker("Scenario", selection: $simulation.scenario) {
+              ForEach(InstallerSimulationScenario.allCases) { item in
+                Text(item.title).tag(item)
+              }
+            }
+            Picker("Test Channel", selection: $simulation.channel) {
+              ForEach(ReleaseChannel.allCases, id: \.self) { item in
+                Text(PlainLanguage.badge(for: item)).tag(item)
+              }
+            }.disabled(!simulation.canChangeChannel)
+            Toggle("Slow Playback", isOn: $simulation.slow)
+            Toggle("Dark Appearance", isOn: $simulation.dark)
+            Divider()
+            Button("Preview Recovery Handoff…") { simulation.previewsRecoveryHandoff = true }
+            Picker("Removal Scenario", selection: $simulation.removalScenario) {
+              ForEach(RemovalPreviewScenario.allCases, id: \.self) { item in
+                Text(item.rawValue).tag(item)
+              }
+            }.disabled(removalInProgress)
+            Divider()
+            Button("Reset Simulation") {
+              guard !removalInProgress else { return }
+              showsRemoval = false
+              removalNeedsReview = false
+              simulation.reset()
+              generation = UUID()
+            }.disabled(removalInProgress)
+            Button("Scenario Guidance…") { simulation.showGuidance() }
+          }
+        }
+      #endif
       CommandMenu("Installation") {
         Button("Remove Omarchy…") { showsRemoval = true }
-          .disabled(removalNeedsReview || showsRemoval || liveSession?.canChangeChannel != true)
+          .disabled(removalNeedsReview || showsRemoval || liveSession?.canOpenRemoval != true)
       }
       if InstallerBuildProfile.current.showsReleaseChannels {
         CommandMenu(PlainLanguage.channelMenuTitle) {
@@ -200,6 +232,20 @@ struct OmarchyAppleInstallerApp: App {
         }
       }
     }
+  }
+
+  private var previewColorScheme: ColorScheme? {
+    #if DEBUG
+      if isSimulation { return simulation.dark ? .dark : .light }
+    #endif
+    return nil
+  }
+
+  private var previewRemovalScenario: String? {
+    #if DEBUG
+      if isSimulation { return simulation.removalScenario.rawValue }
+    #endif
+    return nil
   }
 
   private func channelBinding(_ option: ReleaseChannel) -> Binding<Bool> {

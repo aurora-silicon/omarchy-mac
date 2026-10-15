@@ -276,6 +276,12 @@
       }
     }
 
+    func testTheMacBookNeoHasAName() {
+      XCTAssertEqual(MacModelNames.name(for: "apple,j700"), "MacBook Neo (A18 Pro, 2026)")
+      XCTAssertEqual(
+        MacModelNames.supportedFamiliesSummary(["apple,j700"]), "A18 Pro: MacBook Neo")
+    }
+
     func testEveryPhaseHasADistinctTitle() {
       let phases = [
         "preflight", "existing_removal", "apfs_preparation", "stub_and_esp",

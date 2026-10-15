@@ -2,6 +2,7 @@
   import Foundation
   import Observation
   import OmarchyAppleInstallerTrustCore
+  import RecoveryAccountCore
 
   public enum InstallerSessionPhase: Equatable, Sendable {
     case inspecting
@@ -37,6 +38,7 @@
   @Observable
   public final class InstallerSession {
     public private(set) var phase: InstallerSessionPhase = .inspecting
+    public private(set) var recoveryAccount: RecoveryAccountReply?
 
     /// Live per-artifact download progress keyed by role, published from the
     /// stager's handler after a main-actor hop.
@@ -81,6 +83,11 @@
     public private(set) var isExecutionInProgress = false
     public var canInspect: Bool { !isBusy && !isExecuting && !hasExecutionStarted }
     public var canChangeChannel: Bool {
+      recoveryAccount == nil && canOpenRemoval
+    }
+    /// An installation waiting for its Recovery step can still be removed:
+    /// that is the one the person may want gone.
+    public var canOpenRemoval: Bool {
       canInspect && !isEditingSize && credentialSheet.context == nil
     }
     public var canEditPlan: Bool {
@@ -202,10 +209,19 @@
 
       do {
         let host = try await environment.inspect()
+        recoveryAccount = nil
         if !host.existingInstalls.isEmpty {
           // Refuse before anything is fetched: no catalog, no download.
           lastHost = host
           phase = .existingInstallRefused(host: host)
+          if host.supported, !environment.installationBlocked {
+            // Optional handoff records must not hide a still-removable install.
+            do {
+              recoveryAccount = try await environment.inspectRecoveryAccount()
+            } catch {
+              recoveryAccount = nil
+            }
+          }
         } else if host.supported, !environment.installationBlocked,
           let shortfall = host.spaceShortfall
         {
@@ -603,7 +619,7 @@
         operationID = UUID()
         recoveryRetryAvailable = false
         beginInstallingIfNeeded()
-        route(completion)
+        await route(completion)
       } catch {
         drainJournal(receivedJournal)
         operationID = UUID()
@@ -731,11 +747,75 @@
       return accepted
     }
 
-    private func route(_ completion: CompletionDisplay) {
+    public func prepareRecoveryAccount(username: String, password: Data) async throws {
+      guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
+      isBusy = true
+      defer { isBusy = false }
+      recoveryAccount = try await environment.prepareRecoveryAccount(
+        ticket: ticket, username: username, password: password)
+    }
+
+    public func finalizeRecoveryAccount(password: Data) async throws {
+      guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
+      isBusy = true
+      defer { isBusy = false }
+      recoveryAccount = try await environment.finalizeRecoveryAccount(
+        ticket: ticket, password: password)
+    }
+
+    public func openStartupDisk() -> Bool { environment.openStartupDisk() }
+
+    public var powerButtonGuide: MacPowerButtonGuide { lastHost?.powerButtonGuide ?? .generic }
+
+    public func prepareRecoveryHandoffAndShutdown() async throws -> Bool {
+      guard !isBusy else { return false }
+      isBusy = true
+      defer { isBusy = false }
+      let originalTarget = recoveryAccount?.target
+      guard let refreshed = try await environment.inspectRecoveryAccount(),
+        let target = refreshed.target, let ticket = refreshed.ticket
+      else {
+        throw AccountSetupFailure(
+          "No completed installation is present on disk. Run the installation again before shutting down."
+        )
+      }
+      if let originalTarget, originalTarget != target {
+        throw AccountSetupFailure("The Recovery target changed. Inspect the installation again.")
+      }
+      let reply = try await environment.prepareRecoveryHandoff(ticket: ticket)
+      guard reply.target == target, reply.ticket == ticket else {
+        throw AccountSetupFailure("The Recovery target changed. Inspect the installation again.")
+      }
+      recoveryAccount = reply
+      return environment.requestShutdown()
+    }
+
+    private func route(_ completion: CompletionDisplay) async {
       switch completion.nextAction {
       case .enterRecovery, .attachInstallationMedia:
         if let handoff = completion.handoff {
-          phase = .awaitingRecovery(handoff)
+          if isSimulation {
+            phase = .awaitingRecovery(handoff)
+            return
+          }
+          do {
+            guard let found = try await environment.inspectRecoveryAccount(),
+              found.target != nil, found.ticket != nil
+            else {
+              throw AccountSetupFailure(
+                "The completion record does not match an installation on disk. It may belong to a removed installation. Run the installation again."
+              )
+            }
+            recoveryAccount = found
+            phase = .awaitingRecovery(handoff)
+          } catch {
+            recoveryAccount = nil
+            phase = .failed(
+              FailureDisplay(
+                headline: "Installation could not be verified",
+                plainDetail: error.localizedDescription,
+                remedy: "Check the disk again before continuing."))
+          }
         } else {
           phase = .done(completion)
         }

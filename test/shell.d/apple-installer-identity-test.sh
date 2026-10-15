@@ -141,9 +141,41 @@ for file in "${tracked[@]}"; do
   scanned+=("$file")
 done
 (( ${#scanned[@]} > 100 )) || fail "the repeated-value scan covers the repository" "${#scanned[@]} files"
-status=0
-hits=$(cd "$ROOT" && grep -n -I -F "${patterns[@]}" -- "${scanned[@]}") || status=$?
-(( status == 1 )) || fail "identity and hosting values live only in Packaging/identity.conf" "$hits"
+python3 - "$ROOT/Engine/overlay/src/omarchy_recovery.py" "$ROOT/Recovery/Resources/en.lproj/InfoPlist.strings" "$INSTALLER_RECOVERY_APP_NAME" <<'PYCODE'
+import ast
+from pathlib import Path
+import sys
+source, strings, name = sys.argv[1:]
+assignments = {node.targets[0].id: ast.literal_eval(node.value)
+               for node in ast.parse(Path(source).read_text()).body
+               if isinstance(node, ast.Assign) and len(node.targets) == 1
+               and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "APP_NAME"}
+assert assignments["APP_NAME"] == name + ".app", "Recovery identity differs from locked engine protocol"
+assert '"CFBundleDisplayName" = "' + name + '";' in Path(strings).read_text()
+PYCODE
+
+# The native Recovery app's bundle/display name is also the paired-Recovery
+# engine protocol: the locked engine and its fixtures require those bytes.
+# Exempt that one Recovery-name value only in the protocol implementation;
+# every other identity/hosting value remains checked in those same files.
+hits=""
+for value in "${guarded[@]}"; do
+  checked=()
+  for file in "${scanned[@]}"; do
+    if [[ $value == "$INSTALLER_RECOVERY_APP_NAME" ]]; then
+      case "$file" in
+        Recovery/*|Engine/overlay/src/omarchy_recovery.py|Engine/overlay/tests/test_omarchy_asahi.py|Engine/overlay/tests/test_omarchy_recovery.py|Packaging/build-app.sh)
+          continue ;;
+      esac
+    fi
+    checked+=("$file")
+  done
+  status=0
+  found=$(cd "$ROOT" && grep -n -I -F -e "$value" -- "${checked[@]}") || status=$?
+  (( status <= 1 )) || fail "identity scan reads every selected file"
+  [[ -z $found ]] || hits+="$found"$'\n'
+done
+[[ -z $hits ]] || fail "identity and hosting values live only in Packaging/identity.conf outside the fixed Recovery protocol" "$hits"
 pass "no code, script or test repeats an identity or hosting value, the image producer included"
 
 # A different configuration changes what the packaging scripts produce.

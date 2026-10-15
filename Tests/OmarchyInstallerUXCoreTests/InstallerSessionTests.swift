@@ -1,12 +1,94 @@
 #if os(macOS)
   import Foundation
   import OmarchyAppleInstallerTrustCore
+  import RecoveryAccountCore
   import XCTest
 
   @testable import OmarchyInstallerUXCore
 
   @MainActor
   final class InstallerSessionTests: XCTestCase {
+    func testRecoveryHandoffCanShutDownBeforeCreatingAccount() async throws {
+      let environment = MockInstallerEnvironment()
+      environment.shutdownAccepted = true
+      environment.host = HostDisplay(
+        chipAndSpace: "Apple A18 Pro", supported: true,
+        existingInstalls: [
+          ExistingInstallDisplay(sourceIdentifier: "disk0s3", sizeDescription: "89 GB")
+        ])
+      let target = RecoveryAccountTarget(
+        volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444")
+      for phase in [nil, "allocating", "creating", "prepared", "awaiting-ownership", "finalized"]
+        as [String?]
+      {
+        environment.accountReply = RecoveryAccountReply(
+          ticket: "bound-ticket", target: target,
+          record: phase.map {
+            RecoveryAccountRecord(
+              target: target, username: "owner", generatedUID: UUID().uuidString, phase: $0)
+          })
+        let session = InstallerSession(environment: environment)
+        await session.inspect()
+        let before = environment.requestShutdownCount
+        let accepted = try await session.prepareRecoveryHandoffAndShutdown()
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(environment.requestShutdownCount, before + 1)
+      }
+    }
+    func testRecoveryHandoffFailureDoesNotShutDown() async throws {
+      let environment = MockInstallerEnvironment()
+      environment.host = HostDisplay(
+        chipAndSpace: "Apple A18 Pro", supported: true,
+        existingInstalls: [
+          ExistingInstallDisplay(sourceIdentifier: "disk0s3", sizeDescription: "89 GB")
+        ])
+      let target = RecoveryAccountTarget(
+        volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444")
+      environment.accountReply = RecoveryAccountReply(ticket: "bound-ticket", target: target)
+      for changedTarget in [false, true] {
+        environment.handoffFails = !changedTarget
+        environment.handoffOverride = changedTarget ? RecoveryAccountReply() : nil
+        let session = InstallerSession(environment: environment)
+        await session.inspect()
+        do {
+          _ = try await session.prepareRecoveryHandoffAndShutdown()
+          XCTFail("Incomplete or changed Recovery handoff must fail")
+        } catch {}
+        XCTAssertEqual(environment.requestShutdownCount, 0)
+        XCTAssertFalse(session.isBusy)
+      }
+    }
+
+    func testCompletedInstallResumesOnlyAccountSetupWithoutExecutingAgain() async throws {
+      let environment = MockInstallerEnvironment()
+      environment.host = HostDisplay(
+        chipAndSpace: "Apple A18 Pro", supported: true,
+        existingInstalls: [
+          ExistingInstallDisplay(sourceIdentifier: "disk0s3", sizeDescription: "89 GB")
+        ])
+      let target = RecoveryAccountTarget(
+        volumeName: "Omarchy",
+        systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444")
+      environment.accountReply = RecoveryAccountReply(ticket: "bound-ticket", target: target)
+      let session = InstallerSession(environment: environment)
+      await session.inspect()
+      XCTAssertEqual(session.recoveryAccount?.target, target)
+      XCTAssertFalse(session.canChangeChannel)
+      try await session.prepareRecoveryAccount(username: "owner", password: Data("short".utf8))
+      XCTAssertEqual(environment.accountCalls, ["inspect", "prepare:bound-ticket:owner"])
+      XCTAssertEqual(environment.executeCount, 0)
+      XCTAssertEqual(environment.prepareCount, 0)
+      XCTAssertEqual(environment.prefetchStartCount, 0)
+    }
     func testChannelAvailabilityKeepsTheLatestCheck() async {
       let environment = MockInstallerEnvironment()
       let slow = OperationGate()
@@ -83,6 +165,20 @@
       await session.inspect()
       XCTAssertFalse(session.encryptLinuxDisk)
       XCTAssertFalse(environment.storedEncryptLinuxDisk)
+    }
+
+    func testMissingLiveInstallationCannotReachShutdownAfterCompletion() async throws {
+      let environment = MockInstallerEnvironment()
+      environment.accountReply = nil
+      let session = await ready(environment)
+      session.presentInstallCredentials()
+      await session.submit(try authorization())
+      guard case .failed(let failure) = session.phase else {
+        return XCTFail("A historical completion must not show the Recovery handoff")
+      }
+      XCTAssertEqual(failure.headline, "Installation could not be verified")
+      XCTAssertFalse(session.shutDown())
+      XCTAssertEqual(environment.requestShutdownCount, 0)
     }
 
     func testHappyPathFollowsTheTransitionTable() async throws {
@@ -1511,6 +1607,31 @@
   }
 
   final class MockInstallerEnvironment: InstallerEnvironment, @unchecked Sendable {
+    var accountReply: RecoveryAccountReply? = RecoveryAccountReply(
+      ticket: "completed-install",
+      target: RecoveryAccountTarget(
+        volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444"))
+    var accountCalls = [String]()
+    var handoffFails = false
+    var handoffOverride: RecoveryAccountReply?
+    func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply {
+      accountCalls.append("handoff:\(ticket)")
+      if handoffFails { throw AccountSetupFailure("fixture failure") }
+      return handoffOverride ?? accountReply!
+    }
+    func inspectRecoveryAccount() async throws -> RecoveryAccountReply? {
+      accountCalls.append("inspect")
+      return accountReply
+    }
+    func prepareRecoveryAccount(ticket: String, username: String, password: Data) async throws
+      -> RecoveryAccountReply
+    {
+      accountCalls.append("prepare:\(ticket):\(username)")
+      return accountReply!
+    }
     var host = MockInstallerEnvironment.supportedHost
     var plan = MockInstallerEnvironment.samplePlan
     var helper = HelperDisplay(status: .current)

@@ -1,0 +1,24 @@
+# Read by update-m1n1 (asahi-scripts) before it builds m1n1/boot.bin.
+#
+# update-m1n1 appends the device trees in the order its unquoted $DTBS glob
+# expands, and that order follows the locale of whoever runs it: pacman's
+# hook inherits the caller's. The C locale gives the same boot.bin however it
+# is rebuilt, which the boot check can then reproduce byte for byte.
+export LC_ALL=C
+
+# Package-owned device tree overlays under /usr/lib/omarchy-mac-boot/dtb-overlays
+# (dtb-overlays.sh). With none installed, DTBS keeps update-m1n1's default.
+if [ -r /usr/lib/omarchy-mac/boot/dtb-overlays.sh ]; then
+  . /usr/lib/omarchy-mac/boot/dtb-overlays.sh
+  dtb_overlays_update_m1n1 || :
+fi
+
+# The one Omarchy image for M1-M3 Macs and the MacBook Neo: choose this Mac's
+# m1n1, U-Boot and device trees, or stop update-m1n1 before it writes boot.bin.
+# Everything above is omarchy-mac-boot's packaged file, unchanged.
+if [ -r /usr/lib/omarchy-mac-image/update-m1n1-board ]; then
+  . /usr/lib/omarchy-mac-image/update-m1n1-board
+else
+  echo "update-m1n1: /usr/lib/omarchy-mac-image/update-m1n1-board is missing, so this Mac's m1n1 is unknown; m1n1/boot.bin is unchanged" >&2
+  exit 1
+fi

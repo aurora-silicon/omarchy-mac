@@ -27,6 +27,31 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
   private let prefetch = PayloadPrefetchOrchestrator()
   private var plannedPayload: StagedInstallerArtifact?
 
+  private func accountClient() throws -> AuthenticatedEngineXPCSubmitter {
+    let configuration = try InstallerReleaseConfigurationLocator().loadFromMainBundle()
+    return try AuthenticatedEngineXPCSubmitter(
+      machServiceName: configuration.helperMachServiceName,
+      helperCodeSigningRequirement: configuration.helperCodeSigningRequirement)
+  }
+
+  func inspectRecoveryAccount() async throws -> RecoveryAccountReply? {
+    guard refreshHelperStatus().isReady else { return nil }
+    // A helper another build installed refuses this app until helper setup
+    // replaces it; until then it has no installation to report.
+    guard await probeHelperStatus().isCurrent else { return nil }
+    let reply = try await accountClient().recoveryAccount(action: "inspect")
+    return reply.target == nil ? nil : reply
+  }
+
+  func prepareRecoveryHandoff(ticket: String) async throws -> RecoveryAccountReply {
+    try await accountClient().recoveryAccount(action: "handoff", ticket: ticket)
+  }
+
+  func openStartupDisk() -> Bool {
+    NSWorkspace.shared.open(
+      URL(fileURLWithPath: "/System/Library/PreferencePanes/StartupDisk.prefPane"))
+  }
+
   var payloadPrefetchRequired: Bool { true }
 
   var payloadPrefetchState: PayloadPrefetchState {
@@ -600,7 +625,9 @@ final class LiveInstallerEnvironment: InstallerEnvironment, @unchecked Sendable 
       blockingReason: blockingReason(host: host, engineFailure: engineFailure),
       existingInstalls: existing,
       spaceShortfall: space?.shortfall,
-      unsupportedModel: unsupportedModel
+      unsupportedModel: unsupportedModel,
+      powerButtonGuide: MacPowerButtonGuide(
+        deviceIdentifier: host.identity.deviceIdentifier, modelIdentifier: host.identity.model)
     )
   }
 

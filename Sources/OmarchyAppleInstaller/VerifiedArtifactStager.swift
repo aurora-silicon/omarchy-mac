@@ -223,6 +223,7 @@ public enum ArtifactStageError: Error, Equatable, Sendable {
   case sizeMismatch(expected: UInt64, actual: UInt64)
   case digestMismatch(expected: String, actual: String)
   case destinationConflict(String)
+  case bundledArtifactMissing(String)
 }
 
 /// Stages pinned artifacts into a private directory, accepting bytes only when
@@ -256,25 +257,47 @@ public struct VerifiedArtifactStager: Sendable {
   private let downloader: any ArtifactDownloading
   private let promoter: AtomicArtifactFilePromoter
   private let bundledEngineDirectory: URL?
+  private let bundledArtifactDirectory: URL?
+  private let requiresBundledArtifacts: Bool
 
   public init() {
     downloader = RangedArtifactDownloader()
     promoter = AtomicArtifactFilePromoter()
     bundledEngineDirectory = Bundle.main.resourceURL?.appendingPathComponent("Engine/artifacts")
+    bundledArtifactDirectory = Bundle.main.resourceURL?.appendingPathComponent("Artifacts")
+    requiresBundledArtifacts =
+      Bundle.main.object(forInfoDictionaryKey: "OmarchyOfflineBundle") as? Bool == true
   }
 
   init(
     downloader: any ArtifactDownloading,
     promoter: AtomicArtifactFilePromoter = AtomicArtifactFilePromoter(),
-    bundledEngineDirectory: URL? = nil
+    bundledEngineDirectory: URL? = nil,
+    bundledArtifactDirectory: URL? = nil,
+    requiresBundledArtifacts: Bool = false
   ) {
     self.downloader = downloader
     self.promoter = promoter
     self.bundledEngineDirectory = bundledEngineDirectory
+    self.bundledArtifactDirectory = bundledArtifactDirectory
+    self.requiresBundledArtifacts = requiresBundledArtifacts
   }
 
   public func matches(_ artifact: PinnedInstallerArtifact, at fileURL: URL) -> Bool {
     (try? verify(artifact, at: fileURL)) != nil
+  }
+
+  public func requiresNetwork(for artifact: PinnedInstallerArtifact) -> Bool {
+    !requiresBundledArtifacts && bundledSource(for: artifact) == nil
+  }
+
+  private func bundledSource(for artifact: PinnedInstallerArtifact) -> URL? {
+    var directories = [bundledArtifactDirectory].compactMap { $0 }
+    if artifact.role == "engine", artifact.parts.isEmpty, let bundledEngineDirectory {
+      directories.append(bundledEngineDirectory)
+    }
+    return directories.map { $0.appendingPathComponent(artifact.fileName) }
+      .first { FileManager.default.fileExists(atPath: $0.path) }
   }
 
   public func stage(
@@ -313,12 +336,10 @@ public struct VerifiedArtifactStager: Sendable {
       )
     }
 
-    if artifact.role == "engine", artifact.parts.isEmpty,
-      let source = bundledEngineDirectory?.appendingPathComponent(artifact.fileName),
-      fileManager.fileExists(atPath: source.path)
-    {
-      // Bundled engines still have to match the authenticated catalog exactly.
+    if let source = bundledSource(for: artifact) {
+      // Every bundled artifact must match the authenticated catalog exactly.
       try verify(artifact, at: source)
+      try Task.checkCancellation()
       let pending = stagingDirectory.appendingPathComponent(".pending-\(UUID().uuidString)")
       defer { try? fileManager.removeItem(at: pending) }
       try fileManager.copyItem(at: source, to: pending)
@@ -326,12 +347,17 @@ public struct VerifiedArtifactStager: Sendable {
       try verify(artifact, at: pending)
       try Task.checkCancellation()
       try fileManager.moveItem(at: pending, to: destination)
+      removeParts(of: artifact, in: stagingDirectory, fileManager: fileManager)
       report(
         progress, artifact: artifact, phase: .verified, bytesCompleted: artifact.expectedSizeBytes)
       return StagedInstallerArtifact(
         artifact: artifact, fileURL: destination, reusedExistingFile: false,
         materialization: .verifiedCopyFallback
       )
+    }
+
+    guard !requiresBundledArtifacts else {
+      throw ArtifactStageError.bundledArtifactMissing(artifact.fileName)
     }
 
     guard !artifact.parts.isEmpty else {

@@ -642,8 +642,12 @@ class Config(unittest.TestCase):
     def test_the_engine_is_the_one_the_app_pins(self):
         engine = self.config["engine"]
         build_app = (ROOT / "Packaging" / "build-app.sh").read_text()
-        self.assertIn(f'engine_file_name="{engine["fileName"]}"', build_app)
-        self.assertIn(f'engine_digest="{engine["sha256"]}"', build_app)
+        self.assertIn('python3 "$script_directory/read-validation-engine.py"', build_app)
+        name, digest, size = subprocess.check_output(
+            [sys.executable, str(ROOT / "Packaging/read-validation-engine.py")], text=True
+        ).split()
+        self.assertEqual((name, digest, int(size)),
+                         (engine["fileName"], engine["sha256"], engine["sizeBytes"]))
         lock = json.loads((ROOT / "Engine" / "source-lock.json").read_text())
         self.assertEqual((lock["validation_artifact"]["filename"], lock["validation_artifact"]["size_bytes"],
                           lock["validation_artifact"]["sha256"], lock["downstream_overlay"]["version"]),

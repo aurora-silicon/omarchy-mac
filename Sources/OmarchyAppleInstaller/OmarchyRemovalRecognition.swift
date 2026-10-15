@@ -10,8 +10,11 @@
 
     static let minimumFreeSpace: UInt64 = 1 << 30
     static let memberGap: UInt64 = 16 << 20
-    // asahi-installer's STUB_SIZE is 2,499,805,184 bytes.
-    static let stubSizes: ClosedRange<UInt64> = 2_300_000_000...2_700_000_000
+    // asahi-installer's STUB_SIZE is 2,499,805,184 bytes; a stub on macOS 26
+    // firmware (the MacBook Neo) is 5,999,951,872.
+    static let stubSizes: [ClosedRange<UInt64>] = [
+      2_300_000_000...2_700_000_000, 5_800_000_000...6_200_000_000,
+    ]
     static let maximumESP: UInt64 = 1 << 30
 
     static func recognize(_ snapshot: RemovalSnapshot) throws -> RemovalLayout {
@@ -85,7 +88,8 @@
         let systems = volumes.filter { $0.roles == ["System"] }
         let data = volumes.filter { $0.roles == ["Data"] }
         guard !systems.isEmpty, !data.isEmpty else { return .foreign }
-        guard stubSizes.contains(part.size), volumes.count == 4, systems.count == 1,
+        guard stubSizes.contains(where: { $0.contains(part.size) }), volumes.count == 4,
+          systems.count == 1,
           data.count == 1, let group = systems[0].group, data[0].group == group,
           volumes.filter({ $0.roles == ["Preboot"] }).count == 1,
           volumes.filter({ $0.roles == ["Recovery"] }).count == 1
@@ -250,9 +254,13 @@
       return created
     }
 
-    /// m1n1's variables follow the first "STACKBOT" up to the first NUL, one per
-    /// line (asahi-installer m1n1.py extract_vars). nil when there is no such region.
+    /// The EFI partitions a startup container's m1n1 chainloads. Aurora's J700
+    /// Stage 1 (the MacBook Neo) names its one ESP in a versioned, CRC-checked
+    /// config block; asahi's m1n1 keeps variables after the first "STACKBOT" up
+    /// to the first NUL, one per line (asahi-installer m1n1.py extract_vars).
+    /// nil when neither is there.
     static func efiPartitions(bootObject: Data) -> [String]? {
+      if let aurora = auroraStage1Partition(bootObject: bootObject) { return [aurora] }
       guard let marker = bootObject.range(of: Data("STACKBOT".utf8)) else { return nil }
       let tail = bootObject[marker.upperBound...]
       let region = tail.prefix { $0 != 0 }
@@ -260,6 +268,41 @@
       let key = "chosen.asahi,efi-system-partition="
       return String(decoding: region, as: UTF8.self).split(separator: "\n")
         .filter { $0.hasPrefix(key) }.map { String($0.dropFirst(key.count)) }
+    }
+
+    /// Aurora's J700 Stage 1 config block (aurora-silicon/m1n1
+    /// tools/fill_stage1_config.py): magic, then version, proxy window, a
+    /// NUL-padded 40-byte ESP PARTUUID and a 192-byte Stage 2 path, then the
+    /// CRC-32 of those fields. nil unless there is exactly one valid version-1
+    /// block naming an ESP.
+    static func auroraStage1Partition(bootObject: Data) -> String? {
+      let magic = Data("AURORA-S1-CFG01\0".utf8)
+      let bodySize = 4 + 4 + 40 + 192
+      let bytes = [UInt8](bootObject)
+      guard let first = bootObject.range(of: magic),
+        bootObject.range(of: magic, in: first.upperBound..<bootObject.endIndex) == nil
+      else { return nil }
+      let start = first.upperBound - bootObject.startIndex
+      guard start + bodySize + 4 <= bytes.count else { return nil }
+      let body = Array(bytes[start..<(start + bodySize)])
+      func word(_ offset: Int) -> UInt32 {
+        (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[offset + $1]) << (8 * $1) }
+      }
+      guard word(start) == 1, word(start + bodySize) == crc32(body) else { return nil }
+      let field = body[8..<48].prefix { $0 != 0 }
+      guard body[(8 + field.count)..<48].allSatisfy({ $0 == 0 }),
+        let uuid = UUID(uuidString: String(decoding: field, as: UTF8.self))
+      else { return nil }
+      return uuid.uuidString
+    }
+
+    static func crc32(_ bytes: [UInt8]) -> UInt32 {
+      var crc: UInt32 = 0xFFFF_FFFF
+      for byte in bytes {
+        crc ^= UInt32(byte)
+        for _ in 0..<8 { crc = crc & 1 == 1 ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1 }
+      }
+      return ~crc
     }
   }
 
