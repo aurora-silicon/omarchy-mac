@@ -124,3 +124,27 @@ The `macos-release` environment accepts `v*` tags and `main`, requires one appro
 | `NOTARY_API_KEY_P8_BASE64` | the key's `AuthKey_<ID>.p8`, base64 (downloadable once) | `base64 -i AuthKey_<ID>.p8 \| gh secret set NOTARY_API_KEY_P8_BASE64 --env macos-release` |
 
 Switching to Omacom's Developer ID replaces these secrets and `INSTALLER_TEAM_ID`/`INSTALLER_APP_SIGNING_IDENTITY` in `identity.conf` (with a regenerated `Release/release.json`); testers reinstall once because the helper trusts only its own team.
+
+## Neo developer releases
+
+A Neo developer release is an ad hoc app on a disk image that carries a sealed
+catalog, so every download URL is fixed by the build; nothing is fetched to
+redirect it. Publish the engine, image package and installer metadata in one
+public folder first, then:
+
+```sh
+Packaging/neo/seal-catalog.py RELEASE_DIR --key KEY --base-url URL \
+  --engine installer-<version>.tar.gz --image <image>.zip --metadata installer_data-<name>.json \
+  --build-number "$(date -u +%y%m%d%H%M)" --revision "$(git rev-parse HEAD)" --evidence developer-neo-<name>
+Packaging/neo/build-release.sh RELEASE_DIR OUTPUT_DIR BUILD_NUMBER   # on a Mac
+```
+
+`RELEASE_DIR` holds the trust root and the previous `catalog.json`, which the
+seal points at the new files and signs with the matching raw Ed25519 key. The
+engine is the one `Engine/source-lock.json` pins (see `docs/extraction.md`),
+in both `Engine/artifacts` and `RELEASE_DIR/engine-artifacts`.
+`build-release.sh` writes an ad hoc `release.json` for this checkout's
+identity, builds the Recovery app and the app, checks that the app carries the
+sealed catalog, and makes `Omarchy-Installer-Neo-macOS27-BUILD_NUMBER.dmg`
+the way `Packaging/release/sign-and-package` stages its image. Upload the DMG to the same folder: the catalog names it
+there. Build numbers are never reused.
