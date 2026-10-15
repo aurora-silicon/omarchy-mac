@@ -849,8 +849,9 @@ class FinalizerWfxtTest(unittest.TestCase):
     def test_neo_finalization_preserves_one_exact_wfxt_override(self):
         self.assertEqual(self.finalize("neo-j700"), ["zswap.enabled=0", "rootfstype=btrfs", "arm64.nowfxt"])
 
-    def test_generic_finalization_keeps_existing_command_line(self):
-        self.assertEqual(self.finalize("generic"), ["zswap.enabled=0", "rootfstype=btrfs"])
+    def test_generic_finalization_carries_the_wfxt_override(self):
+        # feat/neo writes no target profile, and the same image boots the Neo.
+        self.assertEqual(self.finalize("generic"), ["zswap.enabled=0", "rootfstype=btrfs", "arm64.nowfxt"])
 
 
 if __name__ == "__main__":

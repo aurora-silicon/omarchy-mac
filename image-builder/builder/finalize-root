@@ -84,7 +84,7 @@ set_assignment() {
 }
 
 configure_grub_defaults() {
-  local grub cmdline="zswap.enabled=0 rootfstype=btrfs" target_profile
+  local grub cmdline="zswap.enabled=0 rootfstype=btrfs arm64.nowfxt"
   grub=$(path etc/default/grub)
   mkdir -p -- "${grub%/*}"
   [[ -e $grub ]] || : >"$grub"
@@ -94,12 +94,11 @@ configure_grub_defaults() {
   set_assignment "$grub" GRUB_TIMEOUT 1
   set_assignment "$grub" GRUB_TIMEOUT_STYLE hidden
   set_assignment "$grub" GRUB_VIDEO_BACKEND efi_gop
-  target_profile=$(path var/lib/omarchy/image/target)
-  # UEFI load options replace Aura's DT bootargs. Preserve the T8140 WFxT
-  # workaround in the generated UKI and in later first-boot rebuilds.
-  if [[ -f $target_profile ]] && grep -qx 'image_target_profile=neo-j700' "$target_profile"; then
-    cmdline+=" arm64.nowfxt"
-  fi
+  # UEFI load options replace the device tree's /chosen/bootargs, which is
+  # where the MacBook Neo's arm64.nowfxt comes from (t8140-j700.dts: its
+  # secondary cores lose state in WFIT). Every image carries it, so the UKI and
+  # later first-boot rebuilds keep it whatever Mac the image lands on. M1 to M3
+  # have no FEAT_WFxT (Armv8.7), so the token changes nothing there.
   set_assignment "$grub" GRUB_CMDLINE_LINUX "$cmdline"
   # The Mac's device tree registers a serial console, and Plymouth drops to its
   # text view while one is active: mx-mac's qualified boot line ignores it.
