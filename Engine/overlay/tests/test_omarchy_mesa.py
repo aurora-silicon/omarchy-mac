@@ -1,6 +1,7 @@
 import os
 import plistlib
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
@@ -8,7 +9,10 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from omarchy_mesa import MesaError, calibration, collect, has_builtin_sensor  # noqa: E402
+from omarchy_mesa import (  # noqa: E402
+    DKIOCGETBLOCKCOUNT, DKIOCGETBLOCKSIZE, MesaError, calibration, collect, device_size,
+    has_builtin_sensor,
+)
 
 
 def der(tag, body):
@@ -59,6 +63,18 @@ class Fsc2CalibrationTests(unittest.TestCase):
             device = os.path.join(root, "rdisk0s1")
             Path(device).write_bytes(b"\0" * 9000 + blob + b"\0" * 9000)
             self.assertEqual(collect(device), {"apple/mesacal-j700.bin": blob})
+
+    def test_a_raw_disk_device_is_sized_by_its_driver(self):
+        # Seeking to the end of /dev/rdiskN reports 0 on macOS, which refused
+        # every Touch ID Neo's container; its driver reports the real size.
+        answers = {DKIOCGETBLOCKSIZE: struct.pack("I", 4096),
+                   DKIOCGETBLOCKCOUNT: struct.pack("Q", 140800)}
+        fd = os.open(os.devnull, os.O_RDONLY)
+        try:
+            size = device_size(fd, ioctl=lambda _fd, request, _arg: answers[request])
+        finally:
+            os.close(fd)
+        self.assertEqual(size, 576716800)
 
     def test_an_empty_device_is_refused(self):
         with tempfile.TemporaryDirectory() as root:

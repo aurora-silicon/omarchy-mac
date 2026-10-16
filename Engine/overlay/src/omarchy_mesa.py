@@ -7,14 +7,20 @@ sensor-equipped J700 has not yet been hardware-qualified. No calibration
 is read on J700 variants without an on-board SPI2 sensor controller.
 """
 
+import fcntl
 import os
 import plistlib
+import stat
+import struct
 import subprocess
 from xml.parsers.expat import ExpatError
 
 FIRMWARE_NAME = "apple/mesacal-j700.bin"
 # The iBoot System Container is about 550 MB; refuse anything far larger.
 CONTAINER_MAXIMUM = 1 << 30
+# <sys/disk.h>: _IOR('d', 24, uint32_t) and _IOR('d', 25, uint64_t).
+DKIOCGETBLOCKSIZE = 0x40046418
+DKIOCGETBLOCKCOUNT = 0x40086419
 
 
 class MesaError(Exception):
@@ -173,12 +179,23 @@ def has_builtin_sensor(run=subprocess.run):
     return "spi2" in names
 
 
+def device_size(fd, ioctl=fcntl.ioctl):
+    """Bytes in a disk device or file. Seeking to the end of a macOS raw disk
+    device (/dev/rdiskN) reports 0, so a character device's size comes from
+    its driver's block size and count."""
+    if not stat.S_ISCHR(os.fstat(fd).st_mode):
+        return os.lseek(fd, 0, os.SEEK_END)
+    block_size, = struct.unpack("I", ioctl(fd, DKIOCGETBLOCKSIZE, bytes(4)))
+    block_count, = struct.unpack("Q", ioctl(fd, DKIOCGETBLOCKCOUNT, bytes(8)))
+    return block_size * block_count
+
+
 def collect(device):
     """{firmware path: bytes} for this Mac's Touch ID, read from the raw
     iBoot System Container device, never written."""
     fd = os.open(device, os.O_RDONLY)
     try:
-        size = os.lseek(fd, 0, os.SEEK_END)
+        size = device_size(fd)
         if not 0 < size <= CONTAINER_MAXIMUM:
             raise MesaError(f"{device} is {size} bytes, not an iBoot System Container")
         os.lseek(fd, 0, os.SEEK_SET)

@@ -141,7 +141,7 @@
     }
   },
   "downstream_overlay": {
-    "version": "v0.9.2-omarchy.40",
+    "version": "v0.9.2-omarchy.40.1",
     "capability": "candidate_bound_full_os_stage_one_authenticated_recovery",
     "engine_modes": [
       "inspect",
@@ -266,12 +266,12 @@
       {
         "path": "overlay/src/omarchy_mesa.py",
         "destination": "src/omarchy_mesa.py",
-        "sha256": "82ab6990b2ab87e1d42cf925fac735e9dd9f7419e17c61786eeccdc75fa9acbe"
+        "sha256": "383787b2e3da68ac999dc98f7a256af954652d4cbf16b1de06a87ce4ffe5c5c9"
       },
       {
         "path": "overlay/tests/test_omarchy_mesa.py",
         "destination": "tests/test_omarchy_mesa.py",
-        "sha256": "d5de2e6a251fafe4075fc56f6e397bd5efb8887f413ebd8a0a7e4017717dba26"
+        "sha256": "9a9f116ba9099b0aad251df7c32ff732cd717e0a687ebd47068d3a187543f4f4"
       },
       {
         "path": "overlay/src/omarchy_firmware.py",
@@ -330,7 +330,7 @@
     },
     {
       "path": "rebuild-python-overlay.py",
-      "sha256": "09a465de66529a7485241b6dffdcdf46e735a6ef4b3eb6527932e44a8b1668d3"
+      "sha256": "2651975273b44fc9de318f90c32ce90b35b35888bc16252a86e7c31f0bf8ade0"
     }
   ],
   "validation_artifact": {
