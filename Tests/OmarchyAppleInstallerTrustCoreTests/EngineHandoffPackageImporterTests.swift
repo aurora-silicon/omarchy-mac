@@ -16,8 +16,16 @@
   private final class ImportedByteObservation: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
-    func record(_ bytes: Int) { lock.lock(); defer { lock.unlock() }; value = max(value, bytes) }
-    var maximum: Int { lock.lock(); defer { lock.unlock() }; return value }
+    func record(_ bytes: Int) {
+      lock.lock()
+      defer { lock.unlock() }
+      value = max(value, bytes)
+    }
+    var maximum: Int {
+      lock.lock()
+      defer { lock.unlock() }
+      return value
+    }
   }
 
   final class EngineHandoffPackageImporterTests: XCTestCase {
@@ -113,9 +121,12 @@
       let archive = fixture.source.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
       try writePrivate(bytes, to: archive)
       let manifestURL = fixture.source.appendingPathComponent("manifest.json")
-      var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
-      manifest["recovery_template"] = ["file_name": NativeRecoveryTemplate.archiveFileName,
-                                       "digest": digest(bytes), "size_bytes": bytes.count]
+      var manifest = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+      manifest["recovery_template"] = [
+        "file_name": NativeRecoveryTemplate.archiveFileName,
+        "digest": digest(bytes), "size_bytes": bytes.count,
+      ]
       try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL, options: .atomic)
       let destination = fixture.destination
       let observed = ImportedByteObservation()
@@ -123,10 +134,15 @@
         if role == "recovery-template" {
           // Observe any bytes already written before this read. An oversized
           // first read models growth after fstat, without a scheduling race.
-          for package in try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil) {
+          for package in try FileManager.default.contentsOfDirectory(
+            at: destination, includingPropertiesForKeys: nil)
+          {
             let target = package.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
             if let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
-              let size = attributes[.size] as? NSNumber { observed.record(size.intValue) }
+              let size = attributes[.size] as? NSNumber
+            {
+              observed.record(size.intValue)
+            }
           }
           if try source.offset() == 0 {
             return (try source.read(upToCount: limit) ?? Data()) + Data([1])
