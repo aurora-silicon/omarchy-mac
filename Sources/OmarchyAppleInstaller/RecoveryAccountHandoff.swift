@@ -3,20 +3,28 @@
   import Foundation
   import RecoveryAccountCore
 
+  public enum RecoveryHandoffKind: String, Codable, Equatable, Sendable {
+    case native, legacy
+  }
+
   public struct RecoveryAccountReply: Codable, Equatable, Sendable {
     public let ticket: String?
     public let target: RecoveryAccountTarget?
     public let record: RecoveryAccountRecord?
     public let message: String?
+    public let handoffKind: RecoveryHandoffKind?
+    public var effectiveHandoffKind: RecoveryHandoffKind { handoffKind ?? .native }
 
     public init(
       ticket: String? = nil, target: RecoveryAccountTarget? = nil,
-      record: RecoveryAccountRecord? = nil, message: String? = nil
+      record: RecoveryAccountRecord? = nil, message: String? = nil,
+      handoffKind: RecoveryHandoffKind? = nil
     ) {
       self.ticket = ticket
       self.target = target
       self.record = record
       self.message = message
+      self.handoffKind = handoffKind
     }
   }
 
@@ -24,6 +32,19 @@
     let binding: String
     let target: RecoveryAccountTarget
     let espUUID: String
+    let handoffKind: RecoveryHandoffKind
+    let legacyFingerprint: String?
+
+    init(
+      binding: String, target: RecoveryAccountTarget, espUUID: String,
+      handoffKind: RecoveryHandoffKind = .native, legacyFingerprint: String? = nil
+    ) {
+      self.binding = binding
+      self.target = target
+      self.espUUID = espUUID
+      self.handoffKind = handoffKind
+      self.legacyFingerprint = legacyFingerprint
+    }
   }
 
   enum RecoveryAccountHandoff {
@@ -349,17 +370,12 @@
             evidence[identifier] = try RecoveryAccountInstaller.protectedRead(
               URL(fileURLWithPath: file.path + ".\(identifier).evidence"), limit: 65536)
           }
-          let identity = try completedEvidence(transcript: bytes, evidence: evidence)
-          if let current = try? liveTarget(group: identity.group, esp: identity.esp) {
-            do {
-              try requireLivePartitions(evidence: evidence, listing: diskList)
-            } catch { continue }
-            // Recovery already finished this one: it is installed, not waiting.
-            if recoveryFinished(current) { continue }
-            found.append(
-              CompletedRecoveryInstallation(
-                binding: file.deletingPathExtension().lastPathComponent, target: current,
-                espUUID: identity.esp))
+          if let completed = try verifiedCompletion(
+            binding: file.deletingPathExtension().lastPathComponent,
+            transcript: bytes, evidence: evidence, listing: diskList,
+            resolve: liveTarget, finished: recoveryFinished)
+          {
+            found.append(completed)
           }
         } catch {
           // A historical or incomplete record is not a current handoff.
@@ -373,6 +389,22 @@
           "Choose which completed installation should receive a recovery account.")
       }
       return found.first
+    }
+
+    static func verifiedCompletion(
+      binding: String, transcript: Data, evidence: [String: Data], listing: [String: Any],
+      resolve: (String, String) throws -> (
+        target: RecoveryAccountTarget, kind: RecoveryHandoffKind, fingerprint: String?
+      ),
+      finished: (RecoveryAccountTarget) -> Bool
+    ) throws -> CompletedRecoveryInstallation? {
+      let identity = try completedEvidence(transcript: transcript, evidence: evidence)
+      try requireLivePartitions(evidence: evidence, listing: listing)
+      let current = try resolve(identity.group, identity.esp)
+      if finished(current.target) { return nil }
+      return CompletedRecoveryInstallation(
+        binding: binding, target: current.target, espUUID: identity.esp,
+        handoffKind: current.kind, legacyFingerprint: current.fingerprint)
     }
 
     /// Recovery's Finish Installation writes this receipt on the installed
@@ -439,7 +471,9 @@
       }
     }
 
-    private static func liveTarget(group: String, esp: String) throws -> RecoveryAccountTarget {
+    private static func liveTarget(group: String, esp: String) throws
+      -> (target: RecoveryAccountTarget, kind: RecoveryHandoffKind, fingerprint: String?)
+    {
       let bytes = try AccountNativeCommand.checked(
         "/usr/sbin/diskutil", ["apfs", "list", "-plist"])
       guard
@@ -479,6 +513,29 @@
       guard let mount = system["MountPoint"] as? String else {
         throw AccountSetupFailure("Couldn’t mount the completed installation.")
       }
+      let systemURL = URL(fileURLWithPath: mount)
+      if let fingerprint = try LegacyRecoveryHandoff().fingerprint(system: systemURL, group: group) {
+        guard let reference = system["APFSContainerReference"] as? String,
+          let container = containers.first(where: { $0["ContainerReference"] as? String == reference })
+        else { throw AccountSetupFailure("The installation container changed.") }
+        let boots = (container["Volumes"] as? [[String: Any]] ?? []).filter {
+          ($0["Roles"] as? [String] ?? []).contains("Preboot")
+        }
+        guard boots.count == 1, let preboot = boots[0]["APFSVolumeUUID"] as? String,
+          let name = system["VolumeName"] as? String
+        else { throw AccountSetupFailure("The installation’s Preboot volume is ambiguous.") }
+        let boot = try AccountNativeCommand.disk(preboot)
+        let efi = try AccountNativeCommand.disk(esp)
+        guard (efi["DiskUUID"] as? String)?.uppercased() == esp,
+          data["APFSContainerReference"] as? String == reference,
+          boot["APFSContainerReference"] as? String == reference
+        else { throw AccountSetupFailure("The Recovery volume identities changed.") }
+        let target = RecoveryAccountTarget(
+          volumeName: name, systemUUID: systemUUID.uppercased(), dataUUID: dataUUID.uppercased(),
+          groupUUID: group, prebootUUID: preboot.uppercased())
+        try target.validate()
+        return (target, .legacy, fingerprint)
+      }
       let path = try RecoveryInstallData.configuration(
         system: URL(fileURLWithPath: mount), appName: InstallerProductIdentity.recoveryAppBundleName
       )
@@ -500,7 +557,7 @@
         volumeName: name, systemUUID: systemUUID.uppercased(), dataUUID: dataUUID.uppercased(),
         groupUUID: group, prebootUUID: preboot)
       try target.validate()
-      return target
+      return (target, .native, nil)
     }
   }
 #endif

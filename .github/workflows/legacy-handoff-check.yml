@@ -1,0 +1,52 @@
+name: Legacy Recovery handoff validation
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/verified-legacy-recovery]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      XCODEBUILDMCP_SENTRY_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install the pinned native build driver
+        run: |
+          mkdir -p "$RUNNER_TEMP/tools" "$RUNNER_TEMP/evidence"
+          cd "$RUNNER_TEMP/tools"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://github.com/getsentry/XcodeBuildMCP/releases/download/v2.7.0/xcodebuildmcp-2.7.0-darwin-arm64.tar.gz -o tool.tar.gz
+          echo 'bd724a2c0e6ffe027b3f46257e66d626149a64cd045f4867124bd683b3cf081a  tool.tar.gz' | shasum -a 256 -c -
+          tar -xzf tool.tar.gz
+          echo "$PWD/xcodebuildmcp-2.7.0-darwin-arm64/bin" >> "$GITHUB_PATH"
+      - name: Record source and toolchain
+        run: |
+          { git rev-parse HEAD; sw_vers; xcrun swift --version; xcodebuild -version; } > "$RUNNER_TEMP/evidence/toolchain.txt"
+      - name: Check exact source formatting
+        run: |
+          xcrun swift-format format -i --recursive Package.swift Sources Plugins Tests
+          git diff --binary > "$RUNNER_TEMP/evidence/format.patch"
+          test ! -s "$RUNNER_TEMP/evidence/format.patch"
+          xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests
+      - name: Validate completed handoffs and session routing
+        run: |
+          set -euo pipefail
+          for configuration in debug release; do
+            xcodebuildmcp swift-package test --package-path "$PWD" --configuration "$configuration" \
+              --filter 'RecoveryAccountTests|LegacyRecoveryHandoffTests|InstallerSessionTests|ClosedEngineHelperServerTests' \
+              2>&1 | tee "$RUNNER_TEMP/evidence/$configuration.log"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: legacy-handoff-evidence
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 14

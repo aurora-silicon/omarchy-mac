@@ -8,6 +8,50 @@
 
   @MainActor
   final class InstallerSessionTests: XCTestCase {
+    func testVerifiedLegacyHandoffResumesWithoutReinstallingOrCreatingNativeAccounts() async throws {
+      let environment = MockInstallerEnvironment()
+      environment.shutdownAccepted = true
+      let target = RecoveryAccountTarget(
+        volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444")
+      environment.accountReply = RecoveryAccountReply(
+        ticket: "legacy-ticket", target: target, handoffKind: .legacy)
+      let session = InstallerSession(environment: environment)
+      await session.inspect()
+      XCTAssertTrue(session.usesLegacyRecovery)
+      XCTAssertEqual(environment.executeCount, 0)
+      XCTAssertEqual(environment.prepareCount, 0)
+      do {
+        try await session.prepareRecoveryAccount(username: "owner", password: Data("test".utf8))
+        XCTFail("Legacy recovery must never prepare a native account")
+      } catch {}
+      let accepted = try await session.prepareRecoveryHandoffAndShutdown()
+      XCTAssertTrue(accepted)
+      XCTAssertEqual(environment.executeCount, 0)
+      XCTAssertEqual(environment.requestShutdownCount, 1)
+    }
+
+    func testRecoveryKindCannotChangeBetweenInspectionAndShutdown() async throws {
+      let environment = MockInstallerEnvironment()
+      let target = RecoveryAccountTarget(
+        volumeName: "Omarchy", systemUUID: "11111111-1111-4111-8111-111111111111",
+        dataUUID: "22222222-2222-4222-8222-222222222222",
+        groupUUID: "33333333-3333-4333-8333-333333333333",
+        prebootUUID: "44444444-4444-4444-8444-444444444444")
+      environment.accountReply = RecoveryAccountReply(
+        ticket: "legacy-ticket", target: target, handoffKind: .legacy)
+      let session = InstallerSession(environment: environment)
+      await session.inspect()
+      environment.handoffOverride = RecoveryAccountReply(ticket: "legacy-ticket", target: target)
+      do {
+        _ = try await session.prepareRecoveryHandoffAndShutdown()
+        XCTFail("Changing the handoff kind must prevent shutdown")
+      } catch {}
+      XCTAssertEqual(environment.requestShutdownCount, 0)
+    }
+
     func testRecoveryHandoffCanShutDownBeforeCreatingAccount() async throws {
       let environment = MockInstallerEnvironment()
       environment.shutdownAccepted = true

@@ -748,6 +748,9 @@
     }
 
     public func prepareRecoveryAccount(username: String, password: Data) async throws {
+      guard !usesLegacyRecovery else {
+        throw AccountSetupFailure("Complete this installation in Finish Installation in Recovery.")
+      }
       guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
       isBusy = true
       defer { isBusy = false }
@@ -756,6 +759,9 @@
     }
 
     public func finalizeRecoveryAccount(password: Data) async throws {
+      guard !usesLegacyRecovery else {
+        throw AccountSetupFailure("Complete this installation in Finish Installation in Recovery.")
+      }
       guard !isBusy, let ticket = recoveryAccount?.ticket else { return }
       isBusy = true
       defer { isBusy = false }
@@ -766,12 +772,14 @@
     public func openStartupDisk() -> Bool { environment.openStartupDisk() }
 
     public var powerButtonGuide: MacPowerButtonGuide { lastHost?.powerButtonGuide ?? .generic }
+    public var usesLegacyRecovery: Bool { recoveryAccount?.effectiveHandoffKind == .legacy }
 
     public func prepareRecoveryHandoffAndShutdown() async throws -> Bool {
       guard !isBusy else { return false }
       isBusy = true
       defer { isBusy = false }
       let originalTarget = recoveryAccount?.target
+      let originalKind = recoveryAccount?.effectiveHandoffKind
       guard let refreshed = try await environment.inspectRecoveryAccount(),
         let target = refreshed.target, let ticket = refreshed.ticket
       else {
@@ -779,11 +787,15 @@
           "No completed installation is present on disk. Run the installation again before shutting down."
         )
       }
-      if let originalTarget, originalTarget != target {
+      if let originalTarget,
+        originalTarget != target || originalKind != refreshed.effectiveHandoffKind
+      {
         throw AccountSetupFailure("The Recovery target changed. Inspect the installation again.")
       }
       let reply = try await environment.prepareRecoveryHandoff(ticket: ticket)
-      guard reply.target == target, reply.ticket == ticket else {
+      guard reply.target == target, reply.ticket == ticket,
+        reply.effectiveHandoffKind == refreshed.effectiveHandoffKind
+      else {
         throw AccountSetupFailure("The Recovery target changed. Inspect the installation again.")
       }
       recoveryAccount = reply

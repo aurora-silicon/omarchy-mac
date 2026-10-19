@@ -43,7 +43,11 @@ struct RecoveryHandoffView: View {
         }
         Text("Don’t restart normally yet: unfinished setup can cause a boot loop.")
           .font(OmarchyTheme.detail).foregroundStyle(OmarchyTheme.caution)
-        Text("Have your macOS owner’s password ready. You’ll create your recovery account there.")
+        Text(
+          session?.usesLegacyRecovery == true
+            ? "Have your macOS owner’s password ready. Follow Finish Installation to complete setup."
+            : "Have your macOS owner’s password ready. You’ll create your recovery account there."
+        )
           .font(OmarchyTheme.detail).foregroundStyle(OmarchyTheme.secondaryText)
       }.font(OmarchyTheme.body)
     } actions: {

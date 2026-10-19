@@ -363,11 +363,17 @@
       var evidence = [String: Data]()
       for id in ids {
         var value: [String: Any] = ["plan_digest": digest]
+        if id == "apfs-target-prepared" {
+          value["uuid"] = target.systemUUID
+          value["size_bytes"] = 6000
+        }
         if id == "stub-and-esp-installed" {
           value["apfs_vgid"] = target.groupUUID
           value["efi_partition"] = esp
           value["populated_partitions"] = [
-            ["name": "EFI", "partition_uuid": esp], ["name": "Boot"], ["name": "Root"],
+            ["name": "EFI", "partition_uuid": esp, "partition_size_bytes": 1000],
+            ["name": "Boot", "partition_uuid": target.dataUUID, "partition_size_bytes": 2000],
+            ["name": "Root", "partition_uuid": target.prebootUUID, "partition_size_bytes": 3000],
           ]
         }
         evidence[id] = try JSONSerialization.data(withJSONObject: value)
@@ -398,6 +404,30 @@
         transcript: transcript, evidence: evidence)
       XCTAssertEqual(result.group, target.groupUUID)
       XCTAssertEqual(result.esp, esp)
+      let parts: [[String: Any]] = [
+        ["DiskUUID": target.systemUUID, "Size": UInt64(6000)],
+        ["DiskUUID": esp, "Size": UInt64(1000)],
+        ["DiskUUID": target.dataUUID, "Size": UInt64(2000)],
+        ["DiskUUID": target.prebootUUID, "Size": UInt64(3000)],
+      ]
+      for kind in [RecoveryHandoffKind.native, .legacy] {
+        let verified = try RecoveryAccountHandoff.verifiedCompletion(
+          binding: digest, transcript: transcript, evidence: evidence,
+          listing: ["AllDisksAndPartitions": [["Partitions": parts]]],
+          resolve: { group, observedESP in
+            XCTAssertEqual(group, self.target.groupUUID)
+            XCTAssertEqual(observedESP, esp)
+            return (self.target, kind, kind == .legacy ? "bound-legacy-files" : nil)
+          }, finished: { _ in false })
+        XCTAssertEqual(verified?.handoffKind, kind)
+        XCTAssertEqual(verified?.target, target)
+        XCTAssertThrowsError(
+          try RecoveryAccountHandoff.verifiedCompletion(
+            binding: digest, transcript: transcript, evidence: evidence,
+            listing: ["AllDisksAndPartitions": [["Partitions": Array(parts.dropLast())]]],
+            resolve: { _, _ in XCTFail("Changed disk must be rejected first"); return (self.target, kind, nil) },
+            finished: { _ in false }))
+      }
       var damaged = evidence
       damaged[ids[1]]!.append(32)
       XCTAssertThrowsError(

@@ -207,10 +207,12 @@
         let id = UUID().uuidString
         recoveryAccountTargets = recoveryAccountTargets.filter { $0.value.1 > Date() }
         recoveryAccountTargets[id] = (completed, Date().addingTimeInterval(1800))
-        let record = try await Task.detached {
-          try RecoveryAccountInstaller.inspect(completed.target)
+        let record: RecoveryAccountRecord? = try await Task.detached {
+          guard completed.handoffKind == .native else { return nil }
+          return try RecoveryAccountInstaller.inspect(completed.target)
         }.value
-        return RecoveryAccountReply(ticket: id, target: completed.target, record: record)
+        return RecoveryAccountReply(
+          ticket: id, target: completed.target, record: record, handoffKind: completed.handoffKind)
       }
       guard let (approved, expiry) = recoveryAccountTargets[ticket], expiry > Date(),
         let observed = try await Task.detached(operation: {
@@ -223,12 +225,14 @@
       }
       let record: RecoveryAccountRecord? = try await Task.detached {
         try RecoveryAccountHandoff.requireStartupSelection(for: observed.target)
+        guard observed.handoffKind == .native else { return nil }
         try RecoveryAccountHandoff.updateRecoveryApp(for: observed.target)
         return try RecoveryAccountInstaller.inspect(observed.target)
 
       }.value
       recoveryAccountTargets[ticket] = (observed, Date().addingTimeInterval(1800))
-      return RecoveryAccountReply(ticket: ticket, target: observed.target, record: record)
+      return RecoveryAccountReply(
+        ticket: ticket, target: observed.target, record: record, handoffKind: observed.handoffKind)
     }
 
     public func removal(
