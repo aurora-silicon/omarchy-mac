@@ -66,7 +66,7 @@
           "size_bytes": mode == "oversize"
             ? Int(NativeRecoveryTemplate.maximumArchiveBytes + 1) : bytes.count,
         ]
-        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL, options: .atomic)
         switch mode {
         case "changed": try Data("changed container".utf8).write(to: archive)
         case "symlink":

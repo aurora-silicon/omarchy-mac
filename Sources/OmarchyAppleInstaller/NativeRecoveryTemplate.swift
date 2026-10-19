@@ -8,6 +8,7 @@
     case unavailable
     case unsafeTemplate
     case invalidIdentity
+    case invalidExecutable
   }
 
   struct PreparedNativeRecoveryTemplate: Sendable {
@@ -133,7 +134,7 @@
       }
     }
 
-    private static func verify(_ app: URL, requirement: String) throws {
+    static func verify(_ app: URL, requirement: String) throws {
       _ = try AccountNativeCommand.checked(
         "/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=" + requirement, app.path])
     }
@@ -231,6 +232,8 @@
 
     private static func inventory(_ app: URL, owner: uid_t?) throws -> Inventory {
       try requireSafe(app, directory: true, owner: owner)
+      let app = app.resolvingSymlinksInPath()
+      let rootComponents = app.pathComponents
       var failure: Error?
       guard let enumerator = FileManager.default.enumerator(
         at: app, includingPropertiesForKeys: nil,
@@ -257,7 +260,11 @@
         guard total <= 128 << 20 else { throw NativeRecoveryTemplateError.unsafeTemplate }
         let data = try Data(contentsOf: path)
         guard data.count == Int(status.st_size) else { throw NativeRecoveryTemplateError.unsafeTemplate }
-        let relative = String(path.path.dropFirst(app.path.count + 1))
+        let components = path.standardizedFileURL.pathComponents
+        guard components.starts(with: rootComponents), components.count > rootComponents.count else {
+          throw NativeRecoveryTemplateError.unsafeTemplate
+        }
+        let relative = components.dropFirst(rootComponents.count).joined(separator: "/")
         files[relative] = FileIdentity(
           sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), bytes: data.count)
       }
@@ -273,10 +280,11 @@
       guard info?["OmarchyRecoveryBuildMode"] as? String == "recovery",
         info?["OmarchyRecoveryDataLayout"] as? String == "external-install-data-v1",
         info?["CFBundleExecutable"] as? String == "OmarchyRecovery",
-        info?["CFBundleDisplayName"] as? String == InstallerProductIdentity.appName,
-        lstat(executable.path, &status) == 0, status.st_mode & 0o111 != 0,
-        files["Contents/MacOS/OmarchyRecovery"] != nil
+        info?["CFBundleDisplayName"] as? String == InstallerProductIdentity.appName
       else { throw NativeRecoveryTemplateError.invalidIdentity }
+      guard lstat(executable.path, &status) == 0, status.st_mode & 0o111 != 0,
+        files["Contents/MacOS/OmarchyRecovery"] != nil
+      else { throw NativeRecoveryTemplateError.invalidExecutable }
       return Inventory(files: files)
     }
   }

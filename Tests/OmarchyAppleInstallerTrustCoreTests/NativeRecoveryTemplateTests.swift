@@ -13,6 +13,8 @@
         attributes: [.posixPermissions: 0o700])
       let info: [String: Any] = [
         "CFBundleExecutable": "OmarchyRecovery",
+        "CFBundleIdentifier": "org.example.native-recovery.fixture",
+        "CFBundlePackageType": "APPL",
         "CFBundleDisplayName": InstallerProductIdentity.appName,
         "OmarchyRecoveryBuildMode": "recovery",
         "OmarchyRecoveryDataLayout": "external-install-data-v1",
@@ -124,9 +126,53 @@
         try bytes.write(to: archive)
         XCTAssertThrowsError(try NativeRecoveryTemplate.prepare(
           archive: archive, in: root, owner: geteuid(), requirement: "pinned",
-          verify: { _ in throw NativeRecoveryTemplateError.invalidIdentity }))
+          verify: { _ in
+            if mode == "signature" { throw NativeRecoveryTemplateError.invalidIdentity }
+          }))
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix("native-recovery-") })
       }
+    }
+
+    func testReconstructedAppMustSatisfyTheActualPinnedCodeSignature() throws {
+      let (root, app) = try fixture()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let binary = app.appendingPathComponent("Contents/MacOS/OmarchyRecovery")
+      try FileManager.default.removeItem(at: binary)
+      let source = root.appendingPathComponent("entry.c")
+      try Data("int main(void) { return 0; }\n".utf8).write(to: source)
+      let compiler = Process()
+      compiler.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+      compiler.arguments = ["clang", source.path, "-o", binary.path]
+      try compiler.run()
+      compiler.waitUntilExit()
+      XCTAssertEqual(compiler.terminationStatus, 0)
+      func codesign(_ arguments: [String]) throws -> String {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        task.arguments = arguments
+        let output = Pipe()
+        task.standardOutput = output
+        task.standardError = output
+        try task.run()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        XCTAssertEqual(task.terminationStatus, 0)
+        return String(decoding: bytes, as: UTF8.self)
+      }
+      _ = try codesign(["--force", "--sign", "-", app.path])
+      let description = try codesign(["--display", "--verbose=4", app.path])
+      let hash = try XCTUnwrap(description.split(separator: "\n").first { $0.hasPrefix("CDHash=") })
+      let requirement = "cdhash H\"" + hash.dropFirst(7) + "\""
+      let archive = root.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
+      try NativeRecoveryTemplate.archiveData(from: app).write(to: archive)
+      let prepared = try NativeRecoveryTemplate.prepare(
+        archive: archive, in: root, owner: geteuid(), requirement: requirement
+      ) { try NativeRecoveryTemplate.verify($0, requirement: requirement) }
+      defer { prepared.remove() }
+      let wrong = "cdhash H\"" + String(repeating: "0", count: 40) + "\""
+      XCTAssertThrowsError(try NativeRecoveryTemplate.prepare(
+        archive: archive, in: root, owner: geteuid(), requirement: wrong
+      ) { try NativeRecoveryTemplate.verify($0, requirement: wrong) })
     }
 
     func testPublicationRetainsOldTreeUntilTheNewEntryIsDurable() throws {
