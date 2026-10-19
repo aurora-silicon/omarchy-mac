@@ -17,7 +17,9 @@
       let plist = try PropertyListSerialization.data(
         fromPropertyList: ["CFBundleExecutable": "step2_launcher.sh"], format: .xml, options: 0)
       return (root, [
-        ".IAPhysicalMedia": plist, prefix + "Info.plist": plist,
+        ".IAPhysicalMedia": try PropertyListSerialization.data(
+          fromPropertyList: ["AppName": "Finish Installation.app"], format: .xml, options: 0),
+        prefix + "Info.plist": plist,
         prefix + "MacOS/step2_launcher.sh": launcher,
         prefix + "Resources/step2.sh": Data("#!/bin/sh\nVGID=\"\(group)\"\n".utf8),
         prefix + "Resources/boot.bin": Data([1, 2, 3, 4]),
@@ -76,6 +78,16 @@
           at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: path.path, withDestinationPath: "/absent")
         XCTAssertNil(try fingerprint(root, files))
+      }
+    }
+
+    func testRecoveryMarkerMustLaunchTheVerifiedApp() throws {
+      let (root, files) = try fixture()
+      for marker: [String: String] in [[:], ["AppName": "Another.app"]] {
+        var changed = files
+        changed[".IAPhysicalMedia"] = try PropertyListSerialization.data(
+          fromPropertyList: marker, format: .xml, options: 0)
+        XCTAssertThrowsError(try fingerprint(root, changed))
       }
     }
 

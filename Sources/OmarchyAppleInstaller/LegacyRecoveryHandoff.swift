@@ -53,7 +53,9 @@
           as? [String: Any],
         info["CFBundleExecutable"] as? String == "step2_launcher.sh",
         let marker = files[".IAPhysicalMedia"],
-        (try PropertyListSerialization.propertyList(from: marker, format: nil)) is [String: Any],
+        let markerInfo = try PropertyListSerialization.propertyList(from: marker, format: nil)
+          as? [String: Any],
+        markerInfo["AppName"] as? String == "Finish Installation.app",
         let launcher = files[app + "MacOS/step2_launcher.sh"],
         Self.digest(launcher) == launcherDigest,
         let scriptBytes = files[app + "Resources/step2.sh"],
