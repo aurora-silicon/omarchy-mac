@@ -20,7 +20,8 @@
         handoffDirectory: fixture.handoffDirectory,
         submitter: submitter,
         authorization: try machineOwnerAuthorization(),
-        restoreImage: fixture.restoreImage
+        restoreImage: fixture.restoreImage,
+        recoveryTemplate: nil
       )
 
       let result = try await ClosedEngineProcessAdapter().execute(
@@ -96,7 +97,8 @@
               handoffDirectory: fixture.handoffDirectory,
               submitter: submitter,
               authorization: try machineOwnerAuthorization(),
-              restoreImage: decoder
+              restoreImage: decoder,
+              recoveryTemplate: nil
             )
           )
         ) {
@@ -130,7 +132,8 @@
             handoffDirectory: fixture.handoffDirectory,
             submitter: submitter,
             authorization: try machineOwnerAuthorization(),
-            restoreImage: fixture.restoreImage
+            restoreImage: fixture.restoreImage,
+            recoveryTemplate: nil
           )
         )
       ) {
@@ -159,7 +162,8 @@
           handoffDirectory: fixture.handoffDirectory,
           submitter: submitter,
           authorization: try machineOwnerAuthorization(),
-          restoreImage: fixture.restoreImage
+          restoreImage: fixture.restoreImage,
+          recoveryTemplate: nil
         )
       )
 
@@ -205,7 +209,8 @@
           handoffDirectory: fixture.handoffDirectory,
           submitter: submitter,
           authorization: try machineOwnerAuthorization(),
-          restoreImage: fixture.restoreImage
+          restoreImage: fixture.restoreImage,
+          recoveryTemplate: nil
         )
       )
 
@@ -253,7 +258,8 @@
             handoffDirectory: fixture.handoffDirectory,
             submitter: submitter,
             authorization: try machineOwnerAuthorization(),
-            restoreImage: fixture.restoreImage
+            restoreImage: fixture.restoreImage,
+            recoveryTemplate: nil
           )
         )
       ) {
@@ -280,7 +286,8 @@
         submitter: submitter,
         authorization: try machineOwnerAuthorization(),
         operation: .retryRecoveryAuthorization,
-        restoreImage: fixture.restoreImage
+        restoreImage: fixture.restoreImage,
+        recoveryTemplate: nil
       )
 
       _ = try await ClosedEngineProcessAdapter().execute(
@@ -318,7 +325,8 @@
             handoffDirectory: fixture.handoffDirectory,
             submitter: submitter,
             authorization: try machineOwnerAuthorization(),
-            restoreImage: fixture.restoreImage
+            restoreImage: fixture.restoreImage,
+            recoveryTemplate: nil
           )
         )
       ) {

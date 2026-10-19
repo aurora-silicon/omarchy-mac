@@ -88,7 +88,7 @@ def app_inventory(app):
     return {"schema": 1, "buildMode": "recovery", "files": files}
 
 
-def validate_source(app_source, manifest_path, run=subprocess.run):
+def validate_source(app_source, manifest_path, run=subprocess.run, requirement=None):
     app_source = Path(app_source)
     try:
         manifest = json.loads(Path(manifest_path).read_text())
@@ -107,7 +107,12 @@ def validate_source(app_source, manifest_path, run=subprocess.run):
         executable = app_source / "Contents/MacOS/OmarchyRecovery"
         if not executable.is_file():
             raise RecoveryError("native Recovery executable is missing")
-        run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app_source)], check=True)
+        command = ["/usr/bin/codesign", "--verify", "--deep", "--strict"]
+        if requirement is not None:
+            if not isinstance(requirement, str) or not requirement:
+                raise RecoveryError("native Recovery signature identity is missing")
+            command.append("-R=" + requirement)
+        run(command + [str(app_source)], check=True)
     except (OSError, KeyError, json.JSONDecodeError, plistlib.InvalidFileException) as error:
         raise RecoveryError("native Recovery app template is incomplete") from error
     return manifest
@@ -149,7 +154,38 @@ def validate_payload(package):
     return manifest
 
 
-def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owner=None):
+def source_bootstrap(dutil, source_os, authorized_owner=None, target_group=None):
+    """Validate the exact authenticated source owner before target mutation."""
+    if source_os is None:
+        raise RecoveryError("native Recovery requires the original source OS")
+    source = source_system_volume(dutil, source_os)
+    source_uuid = identifier(source.get("VolumeUUID"))
+    source_group = identifier(source.get("APFSVolumeGroupID"))
+    if source_group != identifier(source_os.vgid) or source_group == target_group:
+        raise RecoveryError("bootstrap source volume identity changed")
+    users = dutil.get("apfs", "listUsers", source_uuid, "-plist")
+    owners = {identifier(user.get("APFSCryptoUserUUID"))
+              for user in users.get("Users", []) if user.get("VolumeOwner") is True}
+    if authorized_owner is None:
+        authorized_owner = os.environ.get("OMARCHY_MACHINE_OWNER", "")
+    if not isinstance(authorized_owner, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", authorized_owner):
+        raise RecoveryError("authorized bootstrap owner is unavailable")
+    source_preboot = dutil.get("info", "-plist", source_os.preboot)
+    if identifier(source_preboot.get("VolumeUUID")) != identifier(source_os.preboot_vgid):
+        raise RecoveryError("bootstrap source Preboot identity changed")
+    admin_path = Path(source_os.preboot) / source_group / "var/db/AdminUserRecoveryInfo.plist"
+    try:
+        admins = plistlib.loads(admin_path.read_bytes())
+        selected = identifier(admins[authorized_owner]["GeneratedUID"])
+    except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException) as error:
+        raise RecoveryError("authorized bootstrap owner is absent from source Preboot metadata") from error
+    if selected not in owners:
+        raise RecoveryError("authorized bootstrap user is not an APFS source volume owner")
+    return {"mode": "source-volume-owner", "sourceSystemUUID": source_uuid,
+                 "sourceGroupUUID": source_group, "ownerUUIDs": [selected]}
+
+
+def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owner=None, expected_bootstrap=None):
     osi = installer.osi
     system = Path(osi.system)
     info = installer.dutil.get("info", "-plist", str(system))
@@ -168,33 +204,10 @@ def target_config(installer, esp_uuid, esp_root, source_os=None, authorized_owne
     if (not isinstance(name, str) or not 1 <= len(name) <= 80
             or "/" in name or any(ord(c) < 32 or ord(c) == 127 for c in name)):
         raise RecoveryError("invalid target volume name")
-    bootstrap = None
-    if source_os is not None:
-        source = source_system_volume(installer.dutil, source_os)
-        source_uuid = identifier(source.get("VolumeUUID"))
-        source_group = identifier(source.get("APFSVolumeGroupID"))
-        if source_group != identifier(source_os.vgid) or source_group == group:
-            raise RecoveryError("bootstrap source volume identity changed")
-        users = installer.dutil.get("apfs", "listUsers", source_uuid, "-plist")
-        owners = {identifier(user.get("APFSCryptoUserUUID"))
-                  for user in users.get("Users", []) if user.get("VolumeOwner") is True}
-        if authorized_owner is None:
-            authorized_owner = os.environ.get("OMARCHY_MACHINE_OWNER", "")
-        if not isinstance(authorized_owner, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", authorized_owner):
-            raise RecoveryError("authorized bootstrap owner is unavailable")
-        source_preboot = installer.dutil.get("info", "-plist", source_os.preboot)
-        if identifier(source_preboot.get("VolumeUUID")) != identifier(source_os.preboot_vgid):
-            raise RecoveryError("bootstrap source Preboot identity changed")
-        admin_path = Path(source_os.preboot) / source_group / "var/db/AdminUserRecoveryInfo.plist"
-        try:
-            admins = plistlib.loads(admin_path.read_bytes())
-            selected = identifier(admins[authorized_owner]["GeneratedUID"])
-        except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException) as error:
-            raise RecoveryError("authorized bootstrap owner is absent from source Preboot metadata") from error
-        if selected not in owners:
-            raise RecoveryError("authorized bootstrap user is not an APFS source volume owner")
-        bootstrap = {"mode": "source-volume-owner", "sourceSystemUUID": source_uuid,
-                     "sourceGroupUUID": source_group, "ownerUUIDs": [selected]}
+    bootstrap = (source_bootstrap(installer.dutil, source_os, authorized_owner, group)
+                 if source_os is not None else None)
+    if expected_bootstrap is not None and bootstrap != expected_bootstrap:
+        raise RecoveryError("source owner changed after native Recovery preflight")
     return {
         "schema": 2, "volumeName": name, "systemUUID": identifier(info.get("VolumeUUID")),
         "groupUUID": group, "prebootUUID": preboot_uuid, "espUUID": esp_uuid,
@@ -296,7 +309,8 @@ def _payload(path, maximum=256 << 20):
 
 
 def stage(installer, esp_uuid, esp_root, app_source=None,
-          manifest_path=None, run=subprocess.run, source_os=None):
+          manifest_path=None, run=subprocess.run, source_os=None,
+          requirement=None, authorized_owner=None, expected_bootstrap=None):
     """Called after OS/ESP installation and common stage-1 target patching.
 
     Preserve upstream's Finish Installation resource paths for resume checks;
@@ -306,8 +320,8 @@ def stage(installer, esp_uuid, esp_root, app_source=None,
     template_root = Path(esp_root) / PAYLOAD_DIRECTORY
     app_source = Path(app_source) if app_source is not None else template_root / APP_NAME
     manifest_path = Path(manifest_path) if manifest_path is not None else template_root / MANIFEST_NAME
-    template = validate_source(app_source, manifest_path, run)
-    config = target_config(installer, esp_uuid, esp_root, source_os)
+    template = validate_source(app_source, manifest_path, run, requirement=requirement)
+    config = target_config(installer, esp_uuid, esp_root, source_os, authorized_owner, expected_bootstrap)
     system = Path(installer.osi.system)
     esp_root = Path(esp_root)
     stage1 = _payload(installer.boot_obj_path)

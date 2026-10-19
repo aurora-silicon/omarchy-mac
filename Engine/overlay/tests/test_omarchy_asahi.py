@@ -232,6 +232,53 @@ class AsahiStage1AdapterTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_helper_native_template_overrides_legacy_payload_metadata(self):
+        installer = FakeInstaller(FakeDiskUtil([[self.free]]))
+        adapter = self._adapter(installer)
+        adapter.recovery_app = "/private/job/Recovery.app"
+        adapter.recovery_manifest = "/private/job/recovery.json"
+        adapter.recovery_requirement = 'cdhash H"' + 'a' * 40 + '"'
+        adapter.authorized_owner = "mina"
+        with patch("omarchy_asahi.omarchy_recovery.validate_source") as validate, patch(
+            "omarchy_asahi.omarchy_recovery.source_bootstrap"
+        ) as bootstrap:
+            bootstrap.return_value = {"ownerUUIDs": ["original owner"]}
+            adapter.preflight(self.plan)
+        self.assertTrue(adapter.native_recovery_gui)
+        self.assertNotIn("recovery_gui", adapter.template)
+        validate.assert_called_once_with(
+            adapter.recovery_app, adapter.recovery_manifest,
+            requirement=adapter.recovery_requirement,
+        )
+        bootstrap.assert_called_once_with(installer.dutil, installer.cur_os, "mina")
+        adapter.prepare_target(self.plan)
+        with patch("omarchy_asahi.omarchy_recovery.stage") as stage:
+            adapter.install_stub_and_esp(self.plan)
+        self.assertEqual(stage.call_args.kwargs, {
+            "source_os": installer.cur_os, "app_source": adapter.recovery_app,
+            "manifest_path": adapter.recovery_manifest,
+            "requirement": adapter.recovery_requirement, "authorized_owner": "mina",
+            "expected_bootstrap": {"ownerUUIDs": ["original owner"]},
+        })
+
+    def test_invalid_helper_template_or_source_owner_stops_before_disk_calls(self):
+        import omarchy_recovery
+        for failed in ("template", "owner"):
+            installer = FakeInstaller(FakeDiskUtil([[self.free]]))
+            adapter = self._adapter(installer)
+            adapter.recovery_app = "/private/job/Recovery.app"
+            adapter.recovery_manifest = "/private/job/recovery.json"
+            adapter.recovery_requirement = "fixed identity"
+            with patch("omarchy_asahi.omarchy_recovery.validate_source") as validate, patch(
+                "omarchy_asahi.omarchy_recovery.source_bootstrap"
+            ) as bootstrap:
+                (validate if failed == "template" else bootstrap).side_effect = omarchy_recovery.RecoveryError("rejected")
+                with self.assertRaisesRegex(AsahiAdapterError, "native Recovery preflight failed"):
+                    adapter.preflight(self.plan)
+            self.assertIsNone(adapter.osins)
+            self.assertFalse(adapter.preflight_complete)
+            self.assertIsNone(adapter.template)
+
     def test_preflight_accepts_the_partition_floor(self):
         metadata = self._target_metadata()
         metadata["floor_size"] = 40 * GIB

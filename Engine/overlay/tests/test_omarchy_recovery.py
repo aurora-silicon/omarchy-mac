@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import plistlib
 import subprocess
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -215,6 +216,28 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse((self.system / ".omarchy-recovery-publication.json").exists())
         self.assertEqual(plistlib.loads(self.marker.read_bytes())["AppName"], recovery.APP_NAME)
 
+    def test_helper_snapshot_stages_native_app_without_any_esp_template(self):
+        helper = self.root / "private-helper-job"
+        helper.mkdir()
+        app = helper / recovery.APP_NAME
+        manifest = helper / recovery.MANIFEST_NAME
+        shutil.copytree(self.app, app)
+        shutil.copy(self.manifest, manifest)
+        original = recovery.app_inventory(app)
+        shutil.rmtree(self.template)
+        requirement = 'cdhash H"' + 'a' * 40 + '"'
+        recovery.stage(self.installer, ESP, str(self.esp), app_source=app,
+                       manifest_path=manifest, requirement=requirement, run=self.fake_run)
+        self.assertEqual(recovery.app_inventory(app), original)
+        self.assertEqual(recovery.app_inventory(self.system / recovery.APP_NAME), original)
+        self.assertIn("-R=" + requirement, self.commands[0])
+        self.assertTrue((self.system / recovery.INSTALL_DATA_DIRECTORY / "install-config.json").is_file())
+        self.assertEqual(plistlib.loads(self.marker.read_bytes())["AppName"], recovery.APP_NAME)
+
+    def test_missing_source_os_is_not_an_ownerless_native_install(self):
+        with self.assertRaisesRegex(recovery.RecoveryError, "original source OS"):
+            recovery.source_bootstrap(self.installer.dutil, None, "source-user")
+
     def test_wrong_target_esp_stops_before_any_mutation(self):
         before = self.marker.read_bytes()
         self.infos[str(self.esp)]["DiskUUID"] = SYSTEM
@@ -374,6 +397,9 @@ class RecoveryTests(unittest.TestCase):
                 recovery.target_config(self.installer, ESP, str(self.esp), source_os, missing)
         other = recovery.target_config(self.installer, ESP, str(self.esp), source_os, "other-user")
         self.assertEqual(other["bootstrap"]["ownerUUIDs"], [other_owner])
+        with self.assertRaisesRegex(recovery.RecoveryError, "source owner changed"):
+            recovery.target_config(self.installer, ESP, str(self.esp), source_os,
+                                   "other-user", expected_bootstrap=config["bootstrap"])
         source_os.vgid = SYSTEM
         with self.assertRaisesRegex(recovery.RecoveryError, "source volume identity changed"):
             recovery.target_config(self.installer, ESP, str(self.esp), source_os, "source-user")

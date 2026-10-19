@@ -113,14 +113,9 @@
           "This installer is missing its native Recovery app. Reinstall the updated installer package."
         )
       }
-      guard
-        let requirement = ProcessInfo.processInfo.environment[
-          "OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT"],
-        requirement.range(of: "\\Acdhash H\"[0-9a-f]{40,64}\"\\z", options: .regularExpression)
-          != nil
+      guard let requirement = NativeRecoveryTemplate.requirement(environment: ProcessInfo.processInfo.environment)
       else {
-        throw AccountSetupFailure(
-          "The helper has no verified Recovery-template identity. Reinstall this build’s helper.")
+        throw AccountSetupFailure("The helper has no verified Recovery-template identity. Reinstall this build’s helper.")
       }
       _ = try AccountNativeCommand.checked(
         "/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=" + requirement, source.path])

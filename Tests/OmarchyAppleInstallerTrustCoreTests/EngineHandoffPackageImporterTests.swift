@@ -50,6 +50,46 @@
       XCTAssertEqual(try Data(contentsOf: decoder), Data("signed decoder".utf8))
     }
 
+    func testRecoveryContainerIsImportedWithItsDigestAndRejectsUnsafeSource() throws {
+      for mode in ["valid", "changed", "symlink", "fifo", "renamed", "oversize"] {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let bytes = Data("bounded recovery container".utf8)
+        let archive = fixture.source.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
+        try writePrivate(bytes, to: archive)
+        let manifestURL = fixture.source.appendingPathComponent("manifest.json")
+        var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        manifest["recovery_template"] = ["file_name": mode == "renamed" ? "foreign.json" : NativeRecoveryTemplate.archiveFileName,
+                                         "digest": digest(bytes), "size_bytes": mode == "oversize" ? Int(NativeRecoveryTemplate.maximumArchiveBytes + 1) : bytes.count]
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        switch mode {
+        case "changed": try Data("changed container".utf8).write(to: archive)
+        case "symlink":
+          try FileManager.default.removeItem(at: archive)
+          try FileManager.default.createSymbolicLink(at: archive, withDestinationURL: fixture.engineURL)
+        case "fifo":
+          try FileManager.default.removeItem(at: archive)
+          XCTAssertEqual(mkfifo(archive.path, 0o600), 0)
+        default: break
+        }
+        let source = try openDirectory(fixture.source)
+        defer { try? source.close() }
+        if mode == "valid" {
+          let imported = try EngineHandoffPackageImporter().prepare(from: source, in: fixture.destination)
+          XCTAssertEqual(try Data(contentsOf: XCTUnwrap(imported.recoveryTemplateURL)), bytes)
+          XCTAssertEqual(try modeOfRecovery(imported.recoveryTemplateURL!), 0o400)
+        } else {
+          XCTAssertThrowsError(try EngineHandoffPackageImporter().prepare(from: source, in: fixture.destination))
+          XCTAssertTrue(try importedEntries(in: fixture.destination).isEmpty)
+        }
+      }
+    }
+
+    private func modeOfRecovery(_ url: URL) throws -> Int {
+      let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+      return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+    }
+
     func testAPackageWithoutTheAppsDecoderOrWithAnotherIsRejected() throws {
       for (restoreImageCase, expected) in [
         (RestoreImageCase.absent, EngineHandoffImportError.invalidManifest),

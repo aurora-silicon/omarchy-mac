@@ -40,6 +40,7 @@
     private let authorization: MachineOwnerAuthorization
     private let operation: EngineHandoffOperation
     private let restoreImage: URL
+    private let recoveryTemplate: URL?
 
     /// `restoreImage` is the app's signed decoder in its sealed
     /// Contents/Helpers; the helper receives a copy with the package.
@@ -49,7 +50,9 @@
       submitter: any EngineHandoffSubmitting,
       authorization: MachineOwnerAuthorization,
       operation: EngineHandoffOperation = .install,
-      restoreImage: URL = RestoreImageHelper.bundledURL()
+      restoreImage: URL = RestoreImageHelper.bundledURL(),
+      recoveryTemplate: URL? = Bundle.main.bundleURL.appendingPathComponent(
+        "Contents/Resources/RecoveryTemplate/" + InstallerProductIdentity.recoveryAppBundleName)
     ) {
       self.assets = assets
       self.handoffDirectory = handoffDirectory
@@ -57,6 +60,7 @@
       self.authorization = authorization
       self.operation = operation
       self.restoreImage = restoreImage
+      self.recoveryTemplate = recoveryTemplate
     }
 
     public func execute(_ invocation: ClosedEngineInvocation) async throws -> Data {
@@ -67,6 +71,7 @@
             invocation: invocation,
             assets: assets,
             restoreImage: restoreImage,
+            recoveryTemplate: recoveryTemplate,
             in: handoffDirectory
           )
         }
@@ -88,12 +93,14 @@
       "request.json",
       "identity.json",
       RestoreImageHelper.fileName,
+      NativeRecoveryTemplate.archiveFileName,
     ]
 
     func prepare(
       invocation: ClosedEngineInvocation,
       assets: PreparedInstallerAssets,
       restoreImage: URL,
+      recoveryTemplate: URL?,
       in handoffDirectory: URL
     ) throws -> PreparedEngineHandoff {
       try validateBindings(invocation: invocation, assets: assets)
@@ -148,6 +155,19 @@
       }
       let restoreImageURL = pending.appendingPathComponent(RestoreImageHelper.fileName)
       let restoreImageArtifact = try copyRestoreImage(restoreImage, to: restoreImageURL)
+      let recoveryArtifact: EngineHandoffArtifact?
+      if let recoveryTemplate {
+        let bytes = try NativeRecoveryTemplate.archiveData(from: recoveryTemplate)
+        let file = pending.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
+        try bytes.write(to: file, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        recoveryArtifact = EngineHandoffArtifact(
+          fileName: NativeRecoveryTemplate.archiveFileName,
+          digest: "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+          sizeBytes: UInt64(bytes.count))
+      } else {
+        recoveryArtifact = nil
+      }
       try copyVerified(assets.engine, role: "engine", to: engineURL)
       try copyVerified(assets.metadata, role: "metadata", to: metadataURL)
       try copyVerified(assets.payload, role: "payload", to: payloadURL)
@@ -174,7 +194,8 @@
         EngineHandoffManifest(
           invocation: invocation,
           assets: assets,
-          restoreImage: restoreImageArtifact
+          restoreImage: restoreImageArtifact,
+          recoveryTemplate: recoveryArtifact
         ),
         to: manifestURL
       )
@@ -501,11 +522,13 @@
     let payload: EngineHandoffArtifact
     let repairManifest: EngineHandoffArtifact?
     let restoreImage: EngineHandoffArtifact
+    let recoveryTemplate: EngineHandoffArtifact?
 
     init(
       invocation: ClosedEngineInvocation,
       assets: PreparedInstallerAssets,
-      restoreImage: EngineHandoffArtifact
+      restoreImage: EngineHandoffArtifact,
+      recoveryTemplate: EngineHandoffArtifact?
     ) {
       bindingDigest = invocation.candidateIdentity.bindingDigest
       engine = EngineHandoffArtifact(staged: assets.engine)
@@ -515,6 +538,7 @@
         EngineHandoffArtifact(staged: $0)
       }
       self.restoreImage = restoreImage
+      self.recoveryTemplate = recoveryTemplate
     }
 
     enum CodingKeys: String, CodingKey {
@@ -527,6 +551,7 @@
       case payload
       case repairManifest = "repair_manifest"
       case restoreImage = "restore_image"
+      case recoveryTemplate = "recovery_template"
     }
   }
 

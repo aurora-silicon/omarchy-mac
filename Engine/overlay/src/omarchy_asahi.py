@@ -1180,6 +1180,10 @@ class AsahiStage1Adapter:
         raw_partition_writer=None,
         image_flush=flush_device,
         full_readback=False,
+        recovery_app=None,
+        recovery_manifest=None,
+        recovery_requirement=None,
+        authorized_owner=None,
     ):
         self.installer = installer
         self.metadata_path = metadata_path
@@ -1191,6 +1195,11 @@ class AsahiStage1Adapter:
         self.image_writer = raw_partition_writer or open_target
         self.image_flush = image_flush
         self.full_readback = full_readback
+        self.recovery_app = recovery_app
+        self.recovery_manifest = recovery_manifest
+        self.recovery_requirement = recovery_requirement
+        self.authorized_owner = authorized_owner
+        self.source_bootstrap = None
         self.template = None
         self.osins = None
         self.os_firmware = None
@@ -1200,6 +1209,20 @@ class AsahiStage1Adapter:
     def preflight(self, plan):
         if self.preflight_complete:
             return
+        helper_recovery = (self.recovery_app, self.recovery_manifest, self.recovery_requirement)
+        if any(value is not None for value in helper_recovery):
+            if not all(isinstance(value, str) and value for value in helper_recovery):
+                raise AsahiAdapterError("incomplete helper Recovery template contract")
+            try:
+                omarchy_recovery.validate_source(
+                    self.recovery_app, self.recovery_manifest,
+                    requirement=self.recovery_requirement,
+                )
+                self.source_bootstrap = omarchy_recovery.source_bootstrap(
+                    self.installer.dutil, self.installer.cur_os, self.authorized_owner,
+                )
+            except (omarchy_recovery.RecoveryError, subprocess.CalledProcessError) as error:
+                raise AsahiAdapterError("native Recovery preflight failed") from error
         metadata = self._load_metadata()
         templates = [
             template
@@ -1446,6 +1469,11 @@ class AsahiStage1Adapter:
                 self.installer.ins, self.osins.efi_part.uuid,
                 self.installer.dutil.mount(self.osins.efi_part.name),
                 source_os=self.installer.cur_os,
+                app_source=self.recovery_app,
+                manifest_path=self.recovery_manifest,
+                requirement=self.recovery_requirement,
+                authorized_owner=self.authorized_owner,
+                expected_bootstrap=self.source_bootstrap,
             )
         for target in self.osins.idata_targets:
             self.installer.ins.collect_installer_data(target)
@@ -2036,8 +2064,8 @@ class AsahiStage1Adapter:
         recovery_mode = self.template.get("recovery_gui")
         if recovery_mode not in (None, "omarchy-native-v1"):
             raise AsahiAdapterError("unknown Recovery GUI contract")
-        self.native_recovery_gui = recovery_mode is not None
-        if self.native_recovery_gui:
+        self.native_recovery_gui = self.recovery_app is not None or recovery_mode is not None
+        if self.recovery_app is None and self.native_recovery_gui:
             try:
                 omarchy_recovery.validate_payload(self.osins.pkg)
             except omarchy_recovery.RecoveryError as error:

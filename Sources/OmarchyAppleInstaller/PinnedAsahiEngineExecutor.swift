@@ -26,6 +26,8 @@
     case restoreImageUnavailable
     /// The decoder's signature does not satisfy the requirement.
     case restoreImageRejected
+    case recoveryTemplateRejected
+    case recoveryTemplateUnsupported
   }
 
   public struct PinnedAsahiEngineArchive: Equatable, Sendable {
@@ -62,6 +64,7 @@
     private let extractionOptions: [String]
     private let restoreImageRequirement: String?
     private let verifyRestoreImage: @Sendable (URL, String) throws -> Void
+    private let prepareRecoveryTemplate: @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate
 
     /// `restoreImageRequirement` is the code requirement an install's decoder
     /// must satisfy; by default the one this process's launchd job implies.
@@ -75,6 +78,7 @@
       extractionOptions = []
       self.restoreImageRequirement = restoreImageRequirement
       verifyRestoreImage = { try RestoreImageHelper.verify($0, requirement: $1) }
+      prepareRecoveryTemplate = { try NativeRecoveryTemplate.prepare(package: $0) }
     }
 
     init(
@@ -84,6 +88,9 @@
       restoreImageRequirement: String? = nil,
       verifyRestoreImage: @escaping @Sendable (URL, String) throws -> Void = {
         try RestoreImageHelper.verify($0, requirement: $1)
+      },
+      prepareRecoveryTemplate: @escaping @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate = {
+        try NativeRecoveryTemplate.prepare(package: $0)
       }
     ) {
       self.effectiveUserID = effectiveUserID
@@ -91,6 +98,7 @@
       self.extractionOptions = extractionOptions
       self.restoreImageRequirement = restoreImageRequirement
       self.verifyRestoreImage = verifyRestoreImage
+      self.prepareRecoveryTemplate = prepareRecoveryTemplate
     }
 
     public func execute(
@@ -111,12 +119,20 @@
       } catch {
         throw PinnedAsahiEngineExecutionError.restoreImageRejected
       }
+      let recovery: PreparedNativeRecoveryTemplate
+      do {
+        recovery = try prepareRecoveryTemplate(package)
+      } catch {
+        throw PinnedAsahiEngineExecutionError.recoveryTemplateRejected
+      }
+      defer { recovery.remove() }
       let journal = try preparePersistentJournal(for: package)
       var environment = installEnvironment(
         package: package,
         authorization: authorization,
         operation: operation
       )
+      environment.merge(recovery.environment) { _, new in new }
       environment[RestoreImageHelper.pathEnvironmentVariable] = restoreImage.path
       environment[RestoreImageHelper.requirementEnvironmentVariable] = restoreImageRequirement
       return try run(
@@ -232,6 +248,18 @@
       try validateArchiveEntries(archive)
       try extract(archive, into: bundle)
       try validateExtractedBundle(bundle)
+      if additionalEnvironment["OMARCHY_RECOVERY_APP"] != nil {
+        do {
+          let capabilities = bundle.appendingPathComponent("engine-capabilities.json")
+          try requireRegularFile(capabilities, executable: false)
+          guard let values = try JSONSerialization.jsonObject(with: Data(contentsOf: capabilities)) as? [String: Any],
+            values["schema"] as? Int == 1,
+            values["nativeRecoveryInput"] as? String == "helper-template-v1"
+          else { throw PinnedAsahiEngineExecutionError.recoveryTemplateUnsupported }
+        } catch {
+          throw PinnedAsahiEngineExecutionError.recoveryTemplateUnsupported
+        }
+      }
 
       let transcriptURL =
         journal

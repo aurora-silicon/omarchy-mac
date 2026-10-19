@@ -23,6 +23,9 @@ ENVIRONMENT_KEYS = {
     "OMARCHY_ENGINE_BINDING_DIGEST",
     "OMARCHY_ENGINE_PLAN_DIGEST",
     "OMARCHY_MACHINE_OWNER",
+    "OMARCHY_RECOVERY_APP",
+    "OMARCHY_RECOVERY_MANIFEST",
+    "OMARCHY_RECOVERY_REQUIREMENT",
     "DISTRO",
     "DISTRO_DOCS",
     "OMARCHY_INSTALLER_NAME",
@@ -271,6 +274,10 @@ class EngineRuntime:
             metadata_path=self.values["OMARCHY_ENGINE_METADATA"],
             payload_path=self.values["OMARCHY_ENGINE_PAYLOAD"],
             stub_size=stub_size,
+            recovery_app=self.values["OMARCHY_RECOVERY_APP"],
+            recovery_manifest=self.values["OMARCHY_RECOVERY_MANIFEST"],
+            recovery_requirement=self.values["OMARCHY_RECOVERY_REQUIREMENT"],
+            authorized_owner=self.values["OMARCHY_MACHINE_OWNER"],
             full_readback=os.environ.get("OMARCHY_FULL_READBACK") == "1",
         )
         with omarchy_asahi.timing("preflight"):
