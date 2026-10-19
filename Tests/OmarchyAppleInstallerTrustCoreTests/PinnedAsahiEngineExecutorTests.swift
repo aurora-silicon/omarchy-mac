@@ -227,9 +227,11 @@
       let executor = rootExecutor(prepareRecoveryTemplate: { _ in
         throw NativeRecoveryTemplateError.unavailable
       })
-      await assertThrowsErrorAsync(try await executor.execute(
-        fixture.package, authorization: try machineOwnerAuthorization()
-      )) { XCTAssertEqual($0 as? PinnedAsahiEngineExecutionError, .recoveryTemplateRejected) }
+      await assertThrowsErrorAsync(
+        try await executor.execute(
+          fixture.package, authorization: try machineOwnerAuthorization()
+        )
+      ) { XCTAssertEqual($0 as? PinnedAsahiEngineExecutionError, .recoveryTemplateRejected) }
       XCTAssertTrue(try executionEntries(in: fixture.root).isEmpty)
       XCTAssertFalse(FileManager.default.fileExists(atPath: journalDirectory(fixture.root).path))
     }
@@ -237,13 +239,16 @@
     func testOlderEngineCannotIgnoreTheNativeRecoveryContract() async throws {
       let fixture = try makeFixture(includeRecoveryCapability: false)
       defer { try? FileManager.default.removeItem(at: fixture.root) }
-      await assertThrowsErrorAsync(try await rootExecutor().execute(
-        fixture.package, authorization: try machineOwnerAuthorization()
-      )) { XCTAssertEqual($0 as? PinnedAsahiEngineExecutionError, .recoveryTemplateUnsupported) }
+      await assertThrowsErrorAsync(
+        try await rootExecutor().execute(
+          fixture.package, authorization: try machineOwnerAuthorization()
+        )
+      ) { XCTAssertEqual($0 as? PinnedAsahiEngineExecutionError, .recoveryTemplateUnsupported) }
       XCTAssertTrue(try executionEntries(in: fixture.root).isEmpty)
-      XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).allSatisfy {
-        !$0.hasPrefix("fixture-recovery-")
-      })
+      XCTAssertTrue(
+        try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).allSatisfy {
+          !$0.hasPrefix("fixture-recovery-")
+        })
     }
 
     func testRecoveryRetryUsesDedicatedEngineMode() async throws {
@@ -571,16 +576,21 @@
       extractionOptions: [String] = [],
       restoreImageRequirement: String? = restoreImageRequirement,
       verifyRestoreImage: @escaping @Sendable (URL, String) throws -> Void = { _, _ in },
-      prepareRecoveryTemplate: @escaping @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate = { package in
-        let parent = package.packageURL.deletingLastPathComponent()
-        let directory = parent.appendingPathComponent("fixture-recovery-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let app = directory.appendingPathComponent("Recovery.app")
-        let manifest = directory.appendingPathComponent("inventory.json")
-        try Data("fixture app".utf8).write(to: app)
-        try Data("{}".utf8).write(to: manifest)
-        return PreparedNativeRecoveryTemplate(directory: directory, app: app, manifest: manifest, requirement: "fixture requirement")
-      }
+      prepareRecoveryTemplate:
+        @escaping @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate =
+        { package in
+          let parent = package.packageURL.deletingLastPathComponent()
+          let directory = parent.appendingPathComponent("fixture-recovery-\(UUID().uuidString)")
+          try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+          let app = directory.appendingPathComponent("Recovery.app")
+          let manifest = directory.appendingPathComponent("inventory.json")
+          try Data("fixture app".utf8).write(to: app)
+          try Data("{}".utf8).write(to: manifest)
+          return PreparedNativeRecoveryTemplate(
+            directory: directory, app: app, manifest: manifest, requirement: "fixture requirement")
+        }
     ) -> PinnedAsahiEngineExecutor {
       PinnedAsahiEngineExecutor(
         effectiveUserID: { 0 },

@@ -129,6 +129,30 @@
       }
     }
 
+    func testPublicationRetainsOldTreeUntilTheNewEntryIsDurable() throws {
+      let (root, app) = try fixture()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let prepared = try NativeRecoveryTemplate.prepare(
+        source: app, in: root, owner: geteuid(), requirement: "identity", verify: { _ in })
+      defer { prepared.remove() }
+      let destination = root.appendingPathComponent("retained")
+      try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+      try Data("previous".utf8).write(to: destination.appendingPathComponent("previous.txt"))
+      var flushed = false
+      XCTAssertThrowsError(try NativeRecoveryTemplate.publish(
+        prepared, to: destination, owner: geteuid(), verify: { _ in },
+        flushTree: { _ in flushed = true }, flushDirectory: { _ in
+          XCTAssertTrue(flushed)
+          throw NativeRecoveryTemplateError.unsafeTemplate
+        }))
+      XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent(InstallerProductIdentity.recoveryAppBundleName).path))
+      let previous = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter {
+        $0.lastPathComponent.hasPrefix(".native-recovery-")
+      }
+      XCTAssertEqual(previous.count, 1)
+      XCTAssertEqual(try Data(contentsOf: previous[0].appendingPathComponent("previous.txt")), Data("previous".utf8))
+    }
+
     func testHelperRequirementDoesNotAcceptUnpinnedAdHocCode() {
       XCTAssertNil(NativeRecoveryTemplate.requirement(environment: [:]))
       XCTAssertNil(NativeRecoveryTemplate.requirement(environment: ["OMARCHY_RECOVERY_TEMPLATE_REQUIREMENT": "anchor trusted"]))

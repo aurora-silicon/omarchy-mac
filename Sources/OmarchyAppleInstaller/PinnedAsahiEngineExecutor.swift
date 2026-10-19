@@ -64,7 +64,8 @@
     private let extractionOptions: [String]
     private let restoreImageRequirement: String?
     private let verifyRestoreImage: @Sendable (URL, String) throws -> Void
-    private let prepareRecoveryTemplate: @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate
+    private let prepareRecoveryTemplate:
+      @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate
 
     /// `restoreImageRequirement` is the code requirement an install's decoder
     /// must satisfy; by default the one this process's launchd job implies.
@@ -89,9 +90,11 @@
       verifyRestoreImage: @escaping @Sendable (URL, String) throws -> Void = {
         try RestoreImageHelper.verify($0, requirement: $1)
       },
-      prepareRecoveryTemplate: @escaping @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate = {
-        try NativeRecoveryTemplate.prepare(package: $0)
-      }
+      prepareRecoveryTemplate:
+        @escaping @Sendable (ImportedEngineHandoffPackage) throws -> PreparedNativeRecoveryTemplate =
+        {
+          try NativeRecoveryTemplate.prepare(package: $0)
+        }
     ) {
       self.effectiveUserID = effectiveUserID
       self.expectedFileOwnerID = expectedFileOwnerID
@@ -252,7 +255,9 @@
         do {
           let capabilities = bundle.appendingPathComponent("engine-capabilities.json")
           try requireRegularFile(capabilities, executable: false)
-          guard let values = try JSONSerialization.jsonObject(with: Data(contentsOf: capabilities)) as? [String: Any],
+          guard
+            let values = try JSONSerialization.jsonObject(with: Data(contentsOf: capabilities))
+              as? [String: Any],
             values["schema"] as? Int == 1,
             values["nativeRecoveryInput"] as? String == "helper-template-v1"
           else { throw PinnedAsahiEngineExecutionError.recoveryTemplateUnsupported }

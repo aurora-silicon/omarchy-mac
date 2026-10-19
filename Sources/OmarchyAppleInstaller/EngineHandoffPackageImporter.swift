@@ -176,9 +176,12 @@
         throw EngineHandoffImportError.unsafeFile("restore-image")
       }
 
-      let recoveryTemplateURL = manifest.recoveryTemplate.map { package.appendingPathComponent($0.fileName) }
+      let recoveryTemplateURL = manifest.recoveryTemplate.map {
+        package.appendingPathComponent($0.fileName)
+      }
       if let artifact = manifest.recoveryTemplate, let recoveryTemplateURL {
-        try copyArtifact(artifact, role: "recovery-template", from: sourceDescriptor, to: recoveryTemplateURL)
+        try copyArtifact(
+          artifact, role: "recovery-template", from: sourceDescriptor, to: recoveryTemplateURL)
       }
       keepPackage = true
       return ImportedEngineHandoffPackage(
@@ -362,7 +365,9 @@
           keys: manifestKeys,
           error: .invalidManifest
         )
-        for key in ["engine", "metadata", "payload", "repair_manifest", "restore_image", "recovery_template"]
+        for key in [
+          "engine", "metadata", "payload", "repair_manifest", "restore_image", "recovery_template",
+        ]
         where object[key] != nil {
           guard let artifact = object[key] as? [String: Any],
             Set(artifact.keys) == ["file_name", "digest", "size_bytes"]
@@ -395,7 +400,9 @@
             .allSatisfy(validArtifact),
           manifest.restoreImage.fileName == RestoreImageHelper.fileName,
           manifest.restoreImage.sizeBytes <= RestoreImageHelper.maximumBytes,
-          manifest.recoveryTemplate == nil || (manifest.recoveryTemplate?.fileName == NativeRecoveryTemplate.archiveFileName && manifest.recoveryTemplate!.sizeBytes <= NativeRecoveryTemplate.maximumArchiveBytes)
+          manifest.recoveryTemplate == nil
+            || (manifest.recoveryTemplate?.fileName == NativeRecoveryTemplate.archiveFileName
+              && manifest.recoveryTemplate!.sizeBytes <= NativeRecoveryTemplate.maximumArchiveBytes)
         else {
           throw EngineHandoffImportError.invalidManifest
         }

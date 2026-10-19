@@ -2,6 +2,7 @@
   import CryptoKit
   import Darwin
   import Foundation
+  import RecoveryAccountCore
 
   enum NativeRecoveryTemplateError: Error, Equatable {
     case unavailable
@@ -138,23 +139,41 @@
     }
 
     private static func publish(_ prepared: PreparedNativeRecoveryTemplate) throws {
-      let destination = URL(fileURLWithPath: InstallerProductIdentity.installedRecoveryTemplateDirectory)
+      try publish(
+        prepared, to: URL(fileURLWithPath: InstallerProductIdentity.installedRecoveryTemplateDirectory), owner: 0,
+        verify: { try verify($0, requirement: prepared.requirement) })
+    }
+
+    static func publish(
+      _ prepared: PreparedNativeRecoveryTemplate, to destination: URL, owner: uid_t,
+      verify: (URL) throws -> Void,
+      flushTree: (URL) throws -> Void = RecoveryFileTransaction.flushTree,
+      flushDirectory: (URL) throws -> Void = RecoveryFileTransaction.flushDirectory
+    ) throws {
       let parent = destination.deletingLastPathComponent()
-      try requireSafe(parent, directory: true, owner: 0)
+      try requireSafe(parent, directory: true, owner: owner)
       let staged = parent.appendingPathComponent(".native-recovery-\(UUID().uuidString)")
       try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-      defer { try? FileManager.default.removeItem(at: staged) }
+      var retireStaged = true
+      defer { if retireStaged { try? FileManager.default.removeItem(at: staged) } }
       let app = staged.appendingPathComponent(InstallerProductIdentity.recoveryAppBundleName)
       try FileManager.default.copyItem(at: prepared.app, to: app)
-      _ = try inventory(app, owner: 0)
-      try verify(app, requirement: prepared.requirement)
+      _ = try inventory(app, owner: owner)
+      try verify(app)
+      try flushTree(staged)
       if FileManager.default.fileExists(atPath: destination.path) {
-        try requireSafe(destination, directory: true, owner: 0)
+        try requireSafe(destination, directory: true, owner: owner)
         guard renameatx_np(AT_FDCWD, staged.path, AT_FDCWD, destination.path, UInt32(RENAME_SWAP)) == 0 else {
           throw NativeRecoveryTemplateError.unsafeTemplate
         }
+        // The exchanged old tree is rollback evidence until the new directory
+        // entry is durable. A flush failure must never delete it.
+        retireStaged = false
+        try flushDirectory(parent)
+        retireStaged = true
       } else {
         try FileManager.default.moveItem(at: staged, to: destination)
+        try flushDirectory(parent)
       }
     }
 
