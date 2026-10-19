@@ -70,7 +70,15 @@
   public struct EngineHandoffPackageImporter: Sendable {
     private static let maximumControlFileBytes = 65_536
 
-    public init() {}
+    private let readArtifactChunk: @Sendable (String, FileHandle, Int) throws -> Data?
+
+    public init() {
+      readArtifactChunk = { _, handle, limit in try handle.read(upToCount: limit) }
+    }
+
+    init(readArtifactChunk: @escaping @Sendable (String, FileHandle, Int) throws -> Data?) {
+      self.readArtifactChunk = readArtifactChunk
+    }
 
     public func prepare(
       from packageDirectory: FileHandle,
@@ -310,17 +318,17 @@
       )
       var hasher = SHA256()
       var size: UInt64 = 0
-      while let chunk = try sourceHandle.read(upToCount: 1_048_576),
+      while let chunk = try readArtifactChunk(role, sourceHandle, 1_048_576),
         !chunk.isEmpty
       {
-        try targetHandle.write(contentsOf: chunk)
-        hasher.update(data: chunk)
         let (updatedSize, overflow) = size.addingReportingOverflow(
           UInt64(chunk.count)
         )
-        guard !overflow else {
+        guard !overflow, updatedSize <= artifact.sizeBytes else {
           throw EngineHandoffImportError.sizeMismatch(role)
         }
+        try targetHandle.write(contentsOf: chunk)
+        hasher.update(data: chunk)
         size = updatedSize
       }
       try targetHandle.synchronize()

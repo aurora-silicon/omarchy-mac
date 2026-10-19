@@ -13,6 +13,13 @@
     case changedInTransit
   }
 
+  private final class ImportedByteObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func record(_ bytes: Int) { lock.lock(); defer { lock.unlock() }; value = max(value, bytes) }
+    var maximum: Int { lock.lock(); defer { lock.unlock() }; return value }
+  }
+
   final class EngineHandoffPackageImporterTests: XCTestCase {
     func testValidPackageIsRecopiedIntoPrivateHelperDirectory() throws {
       let fixture = try makeFixture()
@@ -97,6 +104,43 @@
     private func modeOfRecovery(_ url: URL) throws -> Int {
       let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
       return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+    }
+
+    func testGrowingRecoveryInputIsRejectedBeforeWritingBeyondItsDeclaredSize() throws {
+      let fixture = try makeFixture()
+      defer { try? FileManager.default.removeItem(at: fixture.root) }
+      let bytes = Data("bounded recovery container".utf8)
+      let archive = fixture.source.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
+      try writePrivate(bytes, to: archive)
+      let manifestURL = fixture.source.appendingPathComponent("manifest.json")
+      var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+      manifest["recovery_template"] = ["file_name": NativeRecoveryTemplate.archiveFileName,
+                                       "digest": digest(bytes), "size_bytes": bytes.count]
+      try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL, options: .atomic)
+      let destination = fixture.destination
+      let observed = ImportedByteObservation()
+      let importer = EngineHandoffPackageImporter(readArtifactChunk: { role, source, limit in
+        if role == "recovery-template" {
+          // Observe any bytes already written before this read. An oversized
+          // first read models growth after fstat, without a scheduling race.
+          for package in try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil) {
+            let target = package.appendingPathComponent(NativeRecoveryTemplate.archiveFileName)
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
+              let size = attributes[.size] as? NSNumber { observed.record(size.intValue) }
+          }
+          if try source.offset() == 0 {
+            return (try source.read(upToCount: limit) ?? Data()) + Data([1])
+          }
+        }
+        return try source.read(upToCount: limit)
+      })
+      let source = try openDirectory(fixture.source)
+      defer { try? source.close() }
+      XCTAssertThrowsError(try importer.prepare(from: source, in: destination)) {
+        XCTAssertEqual($0 as? EngineHandoffImportError, .sizeMismatch("recovery-template"))
+      }
+      XCTAssertEqual(observed.maximum, 0)
+      XCTAssertTrue(try importedEntries(in: destination).isEmpty)
     }
 
     func testAPackageWithoutTheAppsDecoderOrWithAnotherIsRejected() throws {
