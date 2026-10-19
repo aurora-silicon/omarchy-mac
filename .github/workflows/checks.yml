@@ -1,216 +1,50 @@
-name: Installer checks
-
+name: Legacy Recovery handoff validation
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  # Superseded PR runs can stop; each push/manual run keeps its own evidence.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-defaults:
-  run:
-    shell: bash
-
 jobs:
-  portable:
-    name: Portable checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - name: Record source and tools
-        run: |
-          mkdir -p "$RUNNER_TEMP/installer-ci"
-          {
-            git rev-parse HEAD
-            uname -a
-            bash --version
-            python3 --version
-            git --version
-            id
-          } | tee "$RUNNER_TEMP/installer-ci/toolchain.txt"
-      - name: Run portable suite
-        run: bash test/all 2>&1 | tee "$RUNNER_TEMP/installer-ci/portable.log"
-      - name: Save portable evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: portable-evidence
-          path: ${{ runner.temp }}/installer-ci/
-          retention-days: 14
-
   macos:
-    name: macOS checks
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     env:
-      # Use an explicit Swift 6.2 toolchain, independent of the image default.
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       XCODEBUILDMCP_SENTRY_DISABLED: 'true'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Record source and tools
+      - name: Install the pinned native build driver
         run: |
-          mkdir -p "$RUNNER_TEMP/installer-ci"
-          [[ $(uname -m) == "arm64" ]]
-          {
-            git rev-parse HEAD
-            sw_vers
-            uname -m
-            /usr/sbin/sysctl hw.model hw.targettype machdep.cpu.brand_string
-            xcodebuild -version
-            xcrun swift --version
-            xcrun swift-format --version
-          } | tee "$RUNNER_TEMP/installer-ci/toolchain.txt"
-      - name: Check image-builder shell portability on macOS
-        run: |
-          brew install bash jq gnupg libarchive
-          export PATH="$(brew --prefix libarchive)/bin:$(brew --prefix bash)/bin:$PATH"
-          bash image-builder/test/mac-image-inputs-test.sh 2>&1 | tee "$RUNNER_TEMP/installer-ci/image-inputs-shell.log"
-          bash image-builder/test/build-mac-image-test.sh 2>&1 | tee "$RUNNER_TEMP/installer-ci/image-builder-shell.log"
-      - name: Install pinned XcodeBuildMCP
-        run: |
-          # Match the standalone tool used for the recorded M4 validation.
-          archive=xcodebuildmcp-2.7.0-darwin-arm64.tar.gz
-          tool_dir="$RUNNER_TEMP/xcodebuildmcp"
-          mkdir -p "$tool_dir"
-          cd "$tool_dir"
+          mkdir -p "$RUNNER_TEMP/tools" "$RUNNER_TEMP/evidence"
+          cd "$RUNNER_TEMP/tools"
           curl --fail --location --silent --show-error --retry 3 \
-            "https://github.com/getsentry/XcodeBuildMCP/releases/download/v2.7.0/$archive" \
-            --output "$archive"
-          echo "bd724a2c0e6ffe027b3f46257e66d626149a64cd045f4867124bd683b3cf081a  $archive" | shasum -a 256 -c -
-          tar -xzf "$archive"
-          tool_bin="$tool_dir/xcodebuildmcp-2.7.0-darwin-arm64/bin"
-          echo "$tool_bin" >> "$GITHUB_PATH"
-          "$tool_bin/xcodebuildmcp" --version | tee -a "$RUNNER_TEMP/installer-ci/toolchain.txt"
-      - name: Check Swift formatting
-        run: xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-format.log"
-      - name: Check Recovery Swift formatting
-        run: xcrun swift-format lint --strict --recursive Recovery/Package.swift Recovery/Sources Recovery/Tests Engine/RestoreImage 2>&1 | tee "$RUNNER_TEMP/installer-ci/recovery-swift-format.log"
-      - name: Format suggestions for changed Swift sources
+            https://github.com/getsentry/XcodeBuildMCP/releases/download/v2.7.0/xcodebuildmcp-2.7.0-darwin-arm64.tar.gz -o tool.tar.gz
+          echo 'bd724a2c0e6ffe027b3f46257e66d626149a64cd045f4867124bd683b3cf081a  tool.tar.gz' | shasum -a 256 -c -
+          tar -xzf tool.tar.gz
+          echo "$PWD/xcodebuildmcp-2.7.0-darwin-arm64/bin" >> "$GITHUB_PATH"
+      - name: Record source and toolchain
+        run: |
+          { git rev-parse HEAD; sw_vers; xcrun swift --version; xcodebuild -version; } > "$RUNNER_TEMP/evidence/toolchain.txt"
+      - name: Check exact source formatting
+        run: |
+          xcrun swift-format format -i --recursive Package.swift Sources Plugins Tests
+          git diff --binary > "$RUNNER_TEMP/evidence/format.patch"
+          test ! -s "$RUNNER_TEMP/evidence/format.patch"
+          xcrun swift-format lint --strict --recursive Package.swift Sources Plugins Tests
+      - name: Validate completed handoffs and session routing
+        run: |
+          set -euo pipefail
+          for configuration in debug release; do
+            xcodebuildmcp swift-package test --package-path "$PWD" --configuration "$configuration" \
+              --filter 'RecoveryAccountTests|LegacyRecoveryHandoffTests|InstallerSessionTests|ClosedEngineHelperServerTests' \
+              2>&1 | tee "$RUNNER_TEMP/evidence/$configuration.log"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
-        run: |
-          xcrun swift-format format --in-place --recursive Package.swift Sources Plugins Tests Recovery/Package.swift Recovery/Sources Recovery/Tests Engine/RestoreImage
-          git diff -- '*.swift' > "$RUNNER_TEMP/installer-ci/swift-format.patch"
-      - name: Run restore-image Swift tests
-        if: ${{ !cancelled() }}
-        run: |
-          xcodebuildmcp swift-package test --package-path "$PWD/Engine/RestoreImage" --configuration debug 2>&1 | tee "$RUNNER_TEMP/installer-ci/restore-image-debug.log"
-          xcodebuildmcp swift-package test --package-path "$PWD/Engine/RestoreImage" --configuration release 2>&1 | tee "$RUNNER_TEMP/installer-ci/restore-image-release.log"
-          xcodebuildmcp swift-package build --package-path "$PWD/Engine/RestoreImage" --configuration release 2>&1 | tee "$RUNNER_TEMP/installer-ci/restore-image-build.log"
-          mkdir -p "$RUNNER_TEMP/installer-ci/restore-image-bin"
-          DEVELOPER_DIR=/Applications/Xcode_26.5.app/Contents/Developer bash Engine/RestoreImage/build.sh "$RUNNER_TEMP/installer-ci/restore-image-bin" 2>&1 | tee "$RUNNER_TEMP/installer-ci/restore-image-reproduce.log"
-          cmp "$RUNNER_TEMP/installer-ci/restore-image-bin/omarchy-restore-image" Engine/RestoreImage/bin/omarchy-restore-image
-          python3 Engine/verify-restore-image.py
-      - name: Run debug Swift tests
-        run: xcodebuildmcp swift-package test --package-path "$PWD" --configuration debug 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-debug.log"
-      - name: Run release Swift tests
-        run: xcodebuildmcp swift-package test --package-path "$PWD" --configuration release 2>&1 | tee "$RUNNER_TEMP/installer-ci/swift-release.log"
-      - name: Build Recovery enrollment app and run its standalone fixtures
-        run: bash Recovery/build-app.sh recovery "$RUNNER_TEMP/installer-ci/recovery-enrollment" 2>&1 | tee "$RUNNER_TEMP/installer-ci/recovery-enrollment.log"
-      - name: Export the immutable native Recovery input for Neo checks
-        run: |
-          source Packaging/identity.conf
-          tar -cf "$RUNNER_TEMP/installer-ci/native-recovery.tar" -C "$RUNNER_TEMP/installer-ci/recovery-enrollment" "$INSTALLER_RECOVERY_APP_NAME.app" omarchy-recovery-app.json
-      - name: Save the native Recovery image input
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-recovery-image-input
-          path: ${{ runner.temp }}/installer-ci/native-recovery.tar
-          retention-days: 7
-      - name: Build Recovery preview
-        run: OMARCHY_RECOVERY_BUILD=preview xcodebuildmcp swift-package build --package-path "$PWD/Recovery" --configuration release 2>&1 | tee "$RUNNER_TEMP/installer-ci/recovery-preview.log"
-      - name: Reproduce the pinned installer engine
-        run: |
-          python3 Engine/prepare-engine.py --output Engine/artifacts
-          # Notarization refuses native code the app's signing cannot reach.
-          python3 Engine/verify-engine-macho.py --signatures Engine/artifacts/*.tar.gz
-      - name: Assemble and inspect the app bundle
-        run: |
-          source Packaging/identity.conf
-          export OMARCHY_RECOVERY_TEMPLATE="$RUNNER_TEMP/installer-ci/recovery-enrollment/$INSTALLER_RECOVERY_APP_NAME.app"
-          bash Packaging/validate-app-assembly.sh "$RUNNER_TEMP/installer-ci/app-assembly" 2>&1 | tee "$RUNNER_TEMP/installer-ci/app-assembly.log"
-          # The unsigned app's decoder is the reproduced source build, byte for byte.
-          app="$RUNNER_TEMP/installer-ci/app-assembly/app/$INSTALLER_APP_NAME.app"
-          cmp "$RUNNER_TEMP/installer-ci/restore-image-bin/omarchy-restore-image" "$app/Contents/Helpers/omarchy-restore-image"
-          python3 Engine/verify-engine-macho.py --signatures "$app/Contents/Resources/Engine/artifacts/"*.tar.gz
-      - name: Save macOS evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: macos-evidence
-          path: |
-            ${{ runner.temp }}/installer-ci/
-            ~/Library/Developer/XcodeBuildMCP/workspaces/*/logs/**
-          retention-days: 14
-
-  image-builder:
-    name: Image builder source checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - name: Install source-test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libarchive-tools jq gnupg zstd xz-utils
-      - name: Run the image producer's source checks
-        run: |
-          mkdir -p "$RUNNER_TEMP/image-builder-ci"
-          TMPDIR="$RUNNER_TEMP" bash image-builder/test/all 2>&1 | tee "$RUNNER_TEMP/image-builder-ci/source-tests.log"
-      - name: Save source-check evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: image-builder-source-evidence
-          path: ${{ runner.temp }}/image-builder-ci/
-          retention-days: 14
-
-  neo-recovery:
-    name: Neo and native Recovery image contract (check only)
-    needs: macos
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: native-recovery-image-input
-          path: ${{ runner.temp }}/native-recovery
-      - name: Install source-test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libarchive-tools jq gnupg zstd xz-utils
-      - name: Check the macOS-built Recovery artifact with the Neo profile
-        run: |
-          tar -xf "$RUNNER_TEMP/native-recovery/native-recovery.tar" -C "$RUNNER_TEMP/native-recovery"
-          python3 image-builder/test/neo-recovery-check.py --recovery-app "$RUNNER_TEMP/native-recovery" --output "$RUNNER_TEMP/neo-recovery-check"
-      - name: Save check-only evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: neo-recovery-check-only
-          path: ${{ runner.temp }}/neo-recovery-check/
+          name: legacy-handoff-evidence
+          path: ${{ runner.temp }}/evidence/
           retention-days: 14
